@@ -1,0 +1,65 @@
+# Original RHI reference repository
+/.reference/
+
+# .NET build output
+**/bin/
+**/obj/
+**/TestResults/
+**/artifacts/
+**/publish/
+/dist/
+/release/
+
+# Coverage
+**/coverage/
+*.coverage
+*.coveragexml
+coverage.json
+coverage.info
+
+# NuGet packages
+*.nupkg
+*.snupkg
+packages/
+
+# IDE files
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+secrets.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# Crash dumps
+core
+core.*
+*.dmp
+
+# Generated packages
+*.AppImage
+*.pkg.tar.*
+*.tar.zst
+AppDir/
+
+# OS files
+.DS_Store
+Thumbs.db
