@@ -1,0 +1,323 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:core="using:RhiLinux.Core"
+        x:Class="RhiLinux.Gui.MainWindow"
+        Title="RHI Linux"
+        Width="1360" Height="820"
+        MinWidth="800" MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        Classes.motion="{Binding UseMotion}"
+        KeyDown="Window_KeyDown">
+  <Grid RowDefinitions="Auto,*">
+    <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}"
+            BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,0,1"
+            Padding="18,10">
+      <Grid ColumnDefinitions="Auto,24,2*,*,Auto,12,Auto,12,Auto" VerticalAlignment="Center">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+          <Border Width="30" Height="30" CornerRadius="8" Background="{DynamicResource SystemAccentColor}">
+            <TextBlock Text="R" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <TextBlock Text="RHI Linux" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+        </StackPanel>
+        <TextBox Grid.Column="2" x:Name="SearchBox" Classes="search" Watermark="Search games, AppID, or engine" MaxWidth="520"
+                 Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                 AutomationProperties.Name="Search installed games" />
+        <TextBlock Grid.Column="4" Text="{Binding GlobalStatus}" Classes="secondary"
+                   MaxWidth="230" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                   ToolTip.Tip="{Binding GlobalStatus}" />
+        <ComboBox Grid.Column="6" x:Name="ThemeSelector" MinWidth="104" SelectionChanged="ThemeSelector_SelectionChanged"
+                  AutomationProperties.Name="Application theme" ToolTip.Tip="Follow the system theme or choose a light or dark appearance">
+          <ComboBoxItem Content="System" />
+          <ComboBoxItem Content="Light" />
+          <ComboBoxItem Content="Dark" />
+        </ComboBox>
+        <Button Grid.Column="8" Width="38" Height="36" Padding="0" Click="Refresh_Click" IsEnabled="{Binding CanInteract}"
+                AutomationProperties.Name="Refresh Steam games" ToolTip.Tip="Rescan Steam libraries without losing the selected game">
+          <TextBlock Text="↻" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center"
+                     TextAlignment="Center" Margin="0,1,0,0" />
+        </Button>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" x:Name="WorkspaceGrid" ColumnDefinitions="310,5,*">
+      <Border Grid.Column="0" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,1,0">
+        <Grid RowDefinitions="Auto,Auto,*" Margin="12">
+          <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="5,3,5,8">
+            <TextBlock Text="Games" Classes="sectionTitle" />
+            <Border Grid.Column="1" Background="{DynamicResource SurfaceAltBrush}" CornerRadius="10" Padding="8,2">
+              <TextBlock Text="{Binding FilteredGameCount}" Classes="secondary" FontSize="12" />
+            </Border>
+          </Grid>
+          <TextBlock Grid.Row="1" IsVisible="{Binding ShowNoMatches}" Text="No games match this search."
+                     Classes="secondary" TextWrapping="Wrap" Margin="5,8,5,12" />
+          <ListBox Grid.Row="2" x:Name="GameList" Classes="gameList"
+                   ItemsSource="{Binding FilteredGames}" SelectedItem="{Binding SelectedGame, Mode=OneWay}"
+                   SelectionChanged="GameList_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                   AutomationProperties.Name="Installed Steam games">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid Margin="11,9" RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+                  <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding Name}" FontWeight="SemiBold"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                  <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding Engine}" Classes="secondary" FontSize="12" />
+                  <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding AppId}" Classes="secondary" FontSize="12" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+      <GridSplitter Grid.Column="1" x:Name="SidebarSplitter" ResizeDirection="Columns" Background="Transparent"
+                    MinWidth="5" Cursor="SizeWestEast" />
+
+      <Grid Grid.Column="2">
+        <ScrollViewer x:Name="GameContentScroll" Classes="gameContent" Classes.motion="{Binding UseMotion}"
+                      Classes.loading="{Binding IsSelectionLoading}"
+                      IsVisible="{Binding ShowGame}" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Margin="26,22,30,36" Spacing="18" MaxWidth="1500" HorizontalAlignment="Stretch">
+            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding SelectedGameTitle}" Classes="pageTitle"
+                         TextWrapping="Wrap" ToolTip.Tip="{Binding SelectedGameTitle}" />
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="{Binding SelectedGameSubtitle}" Classes="secondary" Margin="1,3,0,0" />
+              <StackPanel Grid.RowSpan="2" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button Classes="compact primary" Click="InstallRecommended_Click" IsEnabled="{Binding CanInstallRecommendedStack}"
+                        Content="{Binding PrimaryActionText}"
+                        ToolTip.Tip="Review and confirm the recommended action for this game" />
+                <Button Classes="compact" Click="CheckForUpdates_Click" IsEnabled="{Binding CanCheckForUpdates}"
+                        ToolTip.Tip="Check official sources for newer compatible files">Check for updates</Button>
+                <Button Classes="compact" Click="Restore_Click"
+                      ToolTip.Tip="Review recoverable backups for this game">Restore backups</Button>
+              </StackPanel>
+            </Grid>
+
+            <Border Classes="card">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="5">
+                  <TextBlock Text="{Binding SupportTitle}" Classes="sectionTitle" />
+                  <TextBlock Text="{Binding SupportMessage}" Classes="secondary" TextWrapping="Wrap" MaxWidth="780" />
+                </StackPanel>
+                <Border Grid.Column="1" Background="{DynamicResource AccentSoftBrush}" CornerRadius="12" Padding="11,5" VerticalAlignment="Top">
+                  <TextBlock Text="{Binding UpdateStatusText}" FontWeight="SemiBold" />
+                </Border>
+              </Grid>
+            </Border>
+
+            <Border Classes="warning" IsVisible="{Binding HasWarnings}">
+              <Grid ColumnDefinitions="Auto,*">
+                <TextBlock Text="!" FontSize="18" FontWeight="Bold" Margin="2,0,12,0" />
+                <TextBlock Grid.Column="1" Text="{Binding WarningText}" TextWrapping="Wrap" VerticalAlignment="Center" />
+              </Grid>
+            </Border>
+
+            <Expander x:Name="CompatibilityDetails" Header="Advanced compatibility details">
+              <Border Classes="card subtle" Margin="0,8,0,0">
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                  <TextBlock Text="Game profile" Classes="secondary" />
+                  <TextBlock Grid.Column="1" Text="{Binding ProfileSummary}" TextWrapping="Wrap" />
+                  <TextBlock Grid.Row="1" Text="Compatibility filename" Classes="secondary" />
+                  <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedProxy}" FontFamily="monospace" />
+                  <TextBlock Grid.Row="2" Text="Dependencies" Classes="secondary" />
+                  <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DependencySummary}" TextWrapping="Wrap" />
+                </Grid>
+              </Border>
+            </Expander>
+
+            <Expander Header="Advanced game details">
+              <Border Classes="card" Margin="0,8,0,0">
+                <StackPanel Spacing="15">
+                  <TextBlock Text="Game setup" Classes="sectionTitle" />
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="13">
+                  <TextBlock Grid.Row="0" Text="Executable" Classes="secondary" VerticalAlignment="Center" />
+                  <Grid Grid.Row="0" Grid.Column="1" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="7">
+                    <StackPanel>
+                      <TextBlock Text="{Binding ExecutableDisplay}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                 ToolTip.Tip="{Binding ExecutablePath}" />
+                      <TextBlock Text="{Binding ConfidenceText}" Classes="secondary" FontSize="12"
+                                 ToolTip.Tip="Confidence is based on PE architecture, engine layout, filename, size, and helper exclusions." />
+                    </StackPanel>
+                    <Button Grid.Column="1" Classes="compact quiet" Click="ChangeExecutable_Click"
+                            AutomationProperties.Name="Change game executable" ToolTip.Tip="Choose a Windows executable inside this game">Change</Button>
+                    <Button Grid.Column="2" Classes="compact quiet" Click="OpenExecutableFolder_Click"
+                            ToolTip.Tip="Open the executable folder in the desktop file manager">Open folder</Button>
+                  </Grid>
+                  <TextBlock Grid.Row="1" Text="Game folder" Classes="secondary" VerticalAlignment="Center" />
+                  <Grid Grid.Row="1" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="7">
+                    <TextBlock Text="{Binding DeploymentDisplay}" Classes="path" VerticalAlignment="Center"
+                               ToolTip.Tip="{Binding DeploymentPath}" />
+                    <Button Grid.Column="1" Classes="compact quiet" Click="ChangeDeploymentFolder_Click"
+                            ToolTip.Tip="Choose the folder where the game loads compatibility files">Change</Button>
+                  </Grid>
+                  <TextBlock Grid.Row="2" Text="Why selected" Classes="secondary" />
+                  <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectionReason}" TextWrapping="Wrap" />
+                  <TextBlock Grid.Row="3" Text="Proton prefix" Classes="secondary" VerticalAlignment="Center" />
+                  <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ProtonPrefixDisplay}" Classes="path"
+                             ToolTip.Tip="{Binding ProtonPrefixPath}" VerticalAlignment="Center" />
+                </Grid>
+                </StackPanel>
+              </Border>
+            </Expander>
+
+            <StackPanel Spacing="5">
+              <TextBlock Text="Required files" Classes="sectionTitle" />
+              <TextBlock Text="RHI Linux chooses compatible official files automatically. Individual actions are available under Advanced details." Classes="secondary" TextWrapping="Wrap" />
+            </StackPanel>
+            <ItemsControl ItemsSource="{Binding ComponentCards}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="310" /></ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="card" Width="298" MinHeight="210" Margin="0,0,12,12">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="9">
+                      <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding Name}" Classes="cardTitle" />
+                        <Border Grid.Column="1" Classes="statusBadge" CornerRadius="10" Padding="8,2">
+                          <TextBlock Text="{Binding State}" FontSize="12" FontWeight="SemiBold" />
+                        </Border>
+                      </Grid>
+                      <TextBlock Grid.Row="1" Text="{Binding Explanation}" TextWrapping="Wrap" Classes="secondary" />
+                      <StackPanel Grid.Row="2" Spacing="2">
+                        <TextBlock Text="{Binding Version, StringFormat='Version {0}'}" IsVisible="{Binding HasVersion}" />
+                      </StackPanel>
+                      <Button Grid.Row="3" Content="{Binding ActionText}" IsVisible="{Binding CanAct}" Classes="compact primary"
+                              HorizontalAlignment="Left" MinWidth="88" Click="ComponentAction_Click"
+                              ToolTip.Tip="Review and confirm this component action" />
+                      <Expander Grid.Row="4" Header="Advanced details" IsExpanded="{Binding IsDetailsExpanded, Mode=TwoWay}">
+                        <StackPanel Spacing="5" Margin="0,7,0,0">
+                          <TextBlock Text="{Binding SourceProfile}" Classes="secondary" />
+                          <TextBlock Text="{Binding TechnicalExplanation}" Classes="secondary" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Files}" Classes="path secondary" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Hash, StringFormat='SHA-256: {0}'}" IsVisible="{Binding HasHash}" Classes="path secondary" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding CachePath, StringFormat='Cache: {0}'}" IsVisible="{Binding HasCachePath}" Classes="path secondary" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding DisabledReason}" IsVisible="{Binding HasDisabledReason}" TextWrapping="Wrap" Classes="secondary"
+                                     ToolTip.Tip="{Binding DisabledReason}" />
+                          <Expander Header="Advanced troubleshooting" Margin="0,6,0,0">
+                            <StackPanel Spacing="5" Margin="0,5,0,0">
+                              <TextBlock Text="Use a local file only when automatic download support has failed and you know the file is from the official source."
+                                         Classes="secondary" TextWrapping="Wrap" />
+                              <Button Content="Use local artifact" Classes="compact" HorizontalAlignment="Left"
+                                      Click="UseLocalArtifact_Click" ToolTip.Tip="Troubleshooting feature: select a local component file" />
+                            </StackPanel>
+                          </Expander>
+                        </StackPanel>
+                      </Expander>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border Classes="card">
+              <StackPanel Spacing="10">
+                <TextBlock Text="Steam launch option" Classes="sectionTitle" />
+                <TextBlock Text="Add this to the selected game's Steam launch options after installing the compatibility setup."
+                           Classes="secondary" TextWrapping="Wrap" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="9">
+                  <TextBox Grid.Column="0" x:Name="LaunchOptionBox" Text="{Binding LaunchOption}" IsReadOnly="True"
+                           FontFamily="monospace" HorizontalContentAlignment="Left" AutomationProperties.Name="Steam launch option" />
+                  <Button Grid.Column="1" x:Name="CopyLaunchButton" Classes="primary" Click="CopyLaunch_Click">Copy</Button>
+                </Grid>
+                <TextBlock x:Name="CopyFeedback" Text="Copied to clipboard" Foreground="#FF268C52" IsVisible="False" />
+              </StackPanel>
+            </Border>
+
+            <Expander Header="Advanced executable details">
+              <Border Classes="card subtle" Margin="0,8,0,0">
+                <ItemsControl ItemsSource="{Binding Candidates}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="55,80,*" RowDefinitions="Auto,Auto" Margin="0,5">
+                        <TextBlock Text="{Binding Score}" FontWeight="SemiBold" />
+                        <TextBlock Grid.Column="1" Text="{Binding Confidence}" Classes="secondary" />
+                        <TextBlock Grid.Column="2" Text="{Binding Path}" Classes="path" ToolTip.Tip="{Binding Path}" />
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding Reasons}" Classes="secondary" FontSize="12" TextTrimming="CharacterEllipsis" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </Border>
+            </Expander>
+
+            <Expander Header="Settings">
+              <Border Classes="card subtle" Margin="0,8,0,0">
+                <StackPanel Spacing="10">
+                  <TextBlock Text="Download cache" Classes="sectionTitle" />
+                  <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="7">
+                    <TextBlock Text="Current size" Classes="secondary" />
+                    <TextBlock Grid.Column="1" Text="{Binding CacheSizeText}" />
+                    <TextBlock Grid.Row="1" Text="Last cleanup" Classes="secondary" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CacheCleanupText}" />
+                    <TextBlock Grid.Row="2" Text="Size limit" Classes="secondary" VerticalAlignment="Center" />
+                    <NumericUpDown Grid.Row="2" Grid.Column="1" Width="130" HorizontalAlignment="Left"
+                                   Minimum="0.0009765625" Maximum="2097151" Increment="0.25" FormatString="0.## GiB"
+                                   Value="{Binding CacheLimitGiB, Mode=TwoWay}" />
+                  </Grid>
+                  <WrapPanel Orientation="Horizontal">
+                    <Button Content="Clear unused files" Classes="compact" Margin="0,0,8,0"
+                            IsEnabled="{Binding CanManageCache}" Click="ClearCache_Click" />
+                    <Button Content="Verify cache" Classes="compact" IsEnabled="{Binding CanManageCache}"
+                            Click="VerifyCache_Click" />
+                  </WrapPanel>
+                  <CheckBox Content="Reduce non-essential motion" IsChecked="{Binding ReduceMotion, Mode=TwoWay}"
+                            ToolTip.Tip="Disable fades and other decorative transitions" />
+                </StackPanel>
+              </Border>
+            </Expander>
+          </StackPanel>
+        </ScrollViewer>
+
+        <Grid IsVisible="{Binding ShowGameLoading}" IsHitTestVisible="False"
+              HorizontalAlignment="Stretch" VerticalAlignment="Top" Margin="26,24,30,0" MaxWidth="1100">
+          <StackPanel Spacing="16">
+            <Border Classes="skeleton" Width="280" Height="30" HorizontalAlignment="Left" />
+            <Border Classes="skeleton" Width="190" Height="14" HorizontalAlignment="Left" />
+            <Border Classes="card skeletonCard">
+              <StackPanel Spacing="12">
+                <Border Classes="skeleton" Width="220" Height="20" HorizontalAlignment="Left" />
+                <Border Classes="skeleton" Height="13" />
+                <Border Classes="skeleton" Width="520" MaxWidth="520" Height="13" HorizontalAlignment="Left" />
+                <ProgressBar IsIndeterminate="True" Height="3" Margin="0,8,0,0" />
+              </StackPanel>
+            </Border>
+            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
+              <Border Grid.Column="0" Classes="card skeletonCard" Height="155" />
+              <Border Grid.Column="1" Classes="card skeletonCard" Height="155" />
+              <Border Grid.Column="2" Classes="card skeletonCard" Height="155" />
+            </Grid>
+          </StackPanel>
+        </Grid>
+
+        <Grid IsVisible="{Binding ShowWelcome}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460" Margin="30">
+          <StackPanel Spacing="10" HorizontalAlignment="Center">
+            <TextBlock Text="Select a Steam game" Classes="pageTitle" HorizontalAlignment="Center" />
+            <TextBlock Text="Installed Steam games are discovered automatically. Choose one from the sidebar to get started."
+                       Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+          </StackPanel>
+        </Grid>
+        <Grid IsVisible="{Binding ShowNoGames}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="500" Margin="30">
+          <StackPanel Spacing="10" HorizontalAlignment="Center">
+            <TextBlock Text="No compatible games found" Classes="pageTitle" HorizontalAlignment="Center" />
+            <TextBlock Text="Check that Steam is installed and at least one Proton Windows game has a valid executable."
+                       Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+            <Button Content="Scan again" Classes="primary" HorizontalAlignment="Center" Click="Refresh_Click" />
+          </StackPanel>
+        </Grid>
+        <Border IsVisible="{Binding HasError}" Classes="warning" VerticalAlignment="Bottom" Margin="24">
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBlock Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+            <Button Grid.Column="1" Content="Dismiss" Classes="compact quiet" Click="DismissError_Click" />
+          </Grid>
+        </Border>
+        <Border IsVisible="{Binding IsBusy}" Background="#66000000">
+          <Border Classes="card" HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="280">
+            <StackPanel Spacing="12">
+              <ProgressBar IsIndeterminate="True" />
+              <TextBlock Text="{Binding GlobalStatus}" TextAlignment="Center" TextWrapping="Wrap" />
+              <Button Content="Cancel" HorizontalAlignment="Center" Classes="compact" Click="Cancel_Click" />
+            </StackPanel>
+          </Border>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>

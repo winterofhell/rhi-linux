@@ -1,0 +1,14 @@
+"libraryfolders"
+{
+    "0"
+    {
+        "path" "fixture/native/Steam"
+        "label" ""
+        "apps" { "10" "1" }
+    }
+    "1"
+    {
+        "path" "fixture/Games\\Steam Library"
+        "apps" { "20" "1" }
+    }
+}

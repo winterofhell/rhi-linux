@@ -1,0 +1,49 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Core", "src/RhiLinux.Core/RhiLinux.Core.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Steam", "src/RhiLinux.Steam/RhiLinux.Steam.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Mods", "src/RhiLinux.Mods/RhiLinux.Mods.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290003}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Cli", "src/RhiLinux.Cli/RhiLinux.Cli.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290004}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Gui", "src/RhiLinux.Gui/RhiLinux.Gui.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Tests", "tests/RhiLinux.Tests/RhiLinux.Tests.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290006}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C1B27CB6-0D38-4EA0-877E-102564290001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290004}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290005}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290006}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290006}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290006}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290006}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

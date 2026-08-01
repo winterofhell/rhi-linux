@@ -1,0 +1,11 @@
+"libraryfolders"
+{
+    "0"
+    {
+        "path" "fixture-root-replaced-at-runtime"
+        "apps"
+        {
+            "424242" "1"
+        }
+    }
+}

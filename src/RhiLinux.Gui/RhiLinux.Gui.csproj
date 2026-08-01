@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.18" />
+    <ProjectReference Include="../RhiLinux.Core/RhiLinux.Core.csproj" />
+    <ProjectReference Include="../RhiLinux.Steam/RhiLinux.Steam.csproj" />
+    <ProjectReference Include="../RhiLinux.Mods/RhiLinux.Mods.csproj" />
+  </ItemGroup>
+</Project>

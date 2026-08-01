@@ -63,3 +63,17 @@ AppDir/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Downloaded binaries and archives
+*.dll
+*.exe
+*.pdb
+*.zip
+*.7z
+*.rar
+*.src.tar.*
+/pkg/
+
+# Explicitly allowed test fixtures
+!tests/fixtures/**/*.dll
+!tests/fixtures/**/*.exe

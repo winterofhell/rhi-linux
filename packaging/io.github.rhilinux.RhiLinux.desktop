@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=RHI Linux
+Comment=Manage Steam Proton graphics mod deployments
+Exec=rhi-linux-gui
+Terminal=false
+Categories=Game;

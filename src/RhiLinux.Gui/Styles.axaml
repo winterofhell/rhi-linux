@@ -1,0 +1,154 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Styles.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FFF2F4F7" />
+          <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="SurfaceAltBrush" Color="#FFF7F8FA" />
+          <SolidColorBrush x:Key="StrokeBrush" Color="#1F172033" />
+          <SolidColorBrush x:Key="SecondaryTextBrush" Color="#A6000000" />
+          <SolidColorBrush x:Key="AccentSoftBrush" Color="#1A246BCE" />
+          <SolidColorBrush x:Key="WarningBrush" Color="#FFFFF4CE" />
+          <SolidColorBrush x:Key="WarningStrokeBrush" Color="#FFD9A300" />
+          <SolidColorBrush x:Key="SuccessBrush" Color="#FFEAF7EE" />
+          <SolidColorBrush x:Key="ErrorBrush" Color="#FFFDEBEC" />
+          <SolidColorBrush x:Key="HoverBrush" Color="#120A1528" />
+          <SolidColorBrush x:Key="SkeletonBrush" Color="#160A1528" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FF1B1D22" />
+          <SolidColorBrush x:Key="SurfaceBrush" Color="#FF24272E" />
+          <SolidColorBrush x:Key="SurfaceAltBrush" Color="#FF2C3038" />
+          <SolidColorBrush x:Key="StrokeBrush" Color="#30DCE2F0" />
+          <SolidColorBrush x:Key="SecondaryTextBrush" Color="#C7E3E7F0" />
+          <SolidColorBrush x:Key="AccentSoftBrush" Color="#443F83D8" />
+          <SolidColorBrush x:Key="WarningBrush" Color="#FF3D3522" />
+          <SolidColorBrush x:Key="WarningStrokeBrush" Color="#FFD8A72B" />
+          <SolidColorBrush x:Key="SuccessBrush" Color="#FF193623" />
+          <SolidColorBrush x:Key="ErrorBrush" Color="#FF402024" />
+          <SolidColorBrush x:Key="HoverBrush" Color="#18FFFFFF" />
+          <SolidColorBrush x:Key="SkeletonBrush" Color="#20E2E8F4" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Styles.Resources>
+
+  <Style Selector="Window">
+    <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
+    <Setter Property="FontFamily" Value="Inter, Noto Sans, Segoe UI, sans-serif" />
+  </Style>
+  <Style Selector="Border.card">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="13" />
+    <Setter Property="Padding" Value="18" />
+  </Style>
+  <Style Selector="Border.card.subtle">
+    <Setter Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+  </Style>
+  <Style Selector="Border.warning">
+    <Setter Property="Background" Value="{DynamicResource WarningBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource WarningStrokeBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="Padding" Value="12" />
+  </Style>
+  <Style Selector="TextBlock.pageTitle">
+    <Setter Property="FontSize" Value="28" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="TextBlock.sectionTitle">
+    <Setter Property="FontSize" Value="18" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="TextBlock.cardTitle">
+    <Setter Property="FontSize" Value="16" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="TextBlock.secondary">
+    <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+  </Style>
+  <Style Selector="TextBlock.path">
+    <Setter Property="FontFamily" Value="monospace" />
+    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+  </Style>
+  <Style Selector="Button.primary">
+    <Setter Property="Background" Value="{DynamicResource SystemAccentColor}" />
+    <Setter Property="Foreground" Value="White" />
+  </Style>
+  <Style Selector="Button">
+    <Setter Property="CornerRadius" Value="9" />
+    <Setter Property="MinHeight" Value="36" />
+    <Setter Property="Padding" Value="13,7" />
+  </Style>
+  <Style Selector="Button:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource HoverBrush}" />
+  </Style>
+  <Style Selector="Button.quiet">
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+  <Style Selector="Button.danger">
+    <Setter Property="Foreground" Value="#FFE14B53" />
+  </Style>
+  <Style Selector="Button.danger:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource ErrorBrush}" />
+  </Style>
+  <Style Selector="Button.compact">
+    <Setter Property="Padding" Value="10,5" />
+    <Setter Property="MinHeight" Value="32" />
+  </Style>
+  <Style Selector="ListBox.gameList">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+  </Style>
+  <Style Selector="ListBox.gameList > ListBoxItem">
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="Margin" Value="0,2" />
+    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    <Setter Property="CornerRadius" Value="7" />
+  </Style>
+  <Style Selector="ListBox.gameList > ListBoxItem:selected">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+  </Style>
+  <Style Selector="TextBox.search">
+    <Setter Property="MinHeight" Value="36" />
+    <Setter Property="CornerRadius" Value="7" />
+  </Style>
+  <Style Selector="Border.statusBadge">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+  </Style>
+  <Style Selector="Border.skeleton">
+    <Setter Property="Background" Value="{DynamicResource SkeletonBrush}" />
+    <Setter Property="CornerRadius" Value="7" />
+  </Style>
+  <Style Selector="Border.skeletonCard">
+    <Setter Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+  </Style>
+  <Style Selector="ScrollViewer.gameContent.loading">
+    <Setter Property="Opacity" Value="0" />
+    <Setter Property="IsHitTestVisible" Value="False" />
+  </Style>
+  <Style Selector="ScrollViewer.gameContent.motion">
+    <Setter Property="Transitions">
+      <Transitions>
+        <DoubleTransition Property="Opacity" Duration="0:0:0.16" />
+      </Transitions>
+    </Setter>
+  </Style>
+  <Style Selector="Window.motion Border.card">
+    <Setter Property="Transitions">
+      <Transitions>
+        <DoubleTransition Property="Opacity" Duration="0:0:0.14" />
+        <BrushTransition Property="Background" Duration="0:0:0.14" />
+      </Transitions>
+    </Setter>
+  </Style>
+  <Style Selector="Expander">
+    <Setter Property="Margin" Value="0" />
+  </Style>
+</Styles>
