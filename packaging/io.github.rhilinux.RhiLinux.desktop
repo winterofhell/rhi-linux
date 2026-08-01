@@ -3,5 +3,6 @@ Type=Application
 Name=RHI Linux
 Comment=Manage Steam Proton graphics mod deployments
 Exec=rhi-linux-gui
+Icon=io.github.rhilinux.RhiLinux
 Terminal=false
 Categories=Game;
