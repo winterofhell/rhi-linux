@@ -251,8 +251,9 @@ public sealed class CoexistenceLifecycleTests
             status => status.Component == ComponentKind.ReShade);
         Assert.Equal(ComponentHealth.Installed, repaired.Health);
         var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot);
-        var managedReShade = Assert.Single(manifest.Files, file => file.Component == ComponentKind.ReShade);
-        Assert.Equal("dxgi.dll", managedReShade.RelativePath);
+        var managedReShade = Assert.Single(manifest.Files, file =>
+            file.Component == ComponentKind.ReShade &&
+            file.RelativePath.Equals("dxgi.dll", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("6.7.3", managedReShade.Version);
     }
 

@@ -25,8 +25,20 @@ public interface IStackStatusProvider
 
 public sealed class GameDiscoveryAdapter(SteamDiscoveryService service, IReadOnlyList<string>? steamRoots = null) : IGameDiscovery
 {
-    public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken) =>
-        service.ScanAsync(steamRoots, overrides, cancellationToken);
+    public IReadOnlyList<string>? ExtraSteamRoots { get; set; }
+
+    public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken)
+    {
+        var roots = new List<string>();
+        if (steamRoots is not null) roots.AddRange(steamRoots);
+        if (ExtraSteamRoots is not null) roots.AddRange(ExtraSteamRoots);
+        var includeDefaults = roots.Count > 0;
+        return service.ScanAsync(
+            roots.Count == 0 ? null : roots,
+            overrides,
+            cancellationToken,
+            includeDefaultRoots: includeDefaults);
+    }
 }
 
 public sealed class ComponentStatusProviderAdapter(ComponentDetector detector) : IComponentStatusProvider

@@ -17,6 +17,7 @@ public sealed partial class MainWindow : Window
     private CancellationTokenSource? operationCancellation;
     private CancellationTokenSource? selectionChangeCancellation;
     private bool initialized;
+    private bool closeRequested;
     private Grid Workspace => this.FindControl<Grid>("WorkspaceGrid") ?? throw new InvalidOperationException("Workspace grid was not loaded.");
     private ComboBox ThemeBox => this.FindControl<ComboBox>("ThemeSelector") ?? throw new InvalidOperationException("Theme selector was not loaded.");
     private ListBox GamesList => this.FindControl<ListBox>("GameList") ?? throw new InvalidOperationException("Game list was not loaded.");
@@ -48,17 +49,50 @@ public sealed partial class MainWindow : Window
         initialized = true;
     }
 
-    private void OnClosing(object? sender, WindowClosingEventArgs eventArgs)
+    private async void OnClosing(object? sender, WindowClosingEventArgs eventArgs)
     {
+        if (closeRequested) return;
+
+        // Defer close so preference I/O never blocks the Avalonia UI thread.
+        // Sync-over-async (.GetResult) deadlocks under AvaloniaSynchronizationContext.
+        eventArgs.Cancel = true;
+        closeRequested = true;
+
         selectionChangeCancellation?.Cancel();
         selectionChangeCancellation?.Dispose();
         selectionChangeCancellation = null;
         operationCancellation?.Cancel();
+        operationCancellation?.Dispose();
+        operationCancellation = null;
+        viewModel.CancelBackgroundWork();
+
         viewModel.Preferences.WindowWidth = Width;
         viewModel.Preferences.WindowHeight = Height;
         viewModel.Preferences.SidebarWidth = Workspace.ColumnDefinitions[0].ActualWidth;
         viewModel.Preferences.SelectedAppId = viewModel.SelectedGame?.AppId;
-        viewModel.SavePreferencesAsync().GetAwaiter().GetResult();
+
+        try
+        {
+            using var saveCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await viewModel.SavePreferencesAsync(saveCancellation.Token).ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            System.Diagnostics.Debug.WriteLine(exception);
+        }
+        finally
+        {
+            Closing -= OnClosing;
+            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
+                ReferenceEquals(desktop.MainWindow, this))
+            {
+                desktop.Shutdown();
+            }
+            else
+            {
+                Close();
+            }
+        }
     }
 
     private async void Refresh_Click(object? sender, RoutedEventArgs eventArgs)
@@ -97,8 +131,8 @@ public sealed partial class MainWindow : Window
         {
             if (this.FindControl<ScrollViewer>("GameContentScroll") is { } contentScroll)
                 contentScroll.Offset = default;
-            if (this.FindControl<Expander>("CompatibilityDetails") is { } compatibilityDetails)
-                compatibilityDetails.IsExpanded = false;
+            ResetWorkspaceExpanders();
+            currentViewModel.CollapseComponentDetails();
             await currentViewModel.SelectAsync(game, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -131,6 +165,14 @@ public sealed partial class MainWindow : Window
         if (ThemeBox.SelectedItem is not ComboBoxItem item || item.Content is not string theme) return;
         viewModel.Preferences.Theme = theme;
         ApplyTheme(theme);
+        _ = viewModel.SavePreferencesAsync();
+    }
+
+    private void ResetWorkspaceExpanders()
+    {
+        foreach (var name in new[] { "CompatibilityDetails", "AdvancedGameDetails", "AdvancedExecutableDetails", "ApplicationSettings" })
+            if (this.FindControl<Expander>(name) is { } expander)
+                expander.IsExpanded = false;
     }
 
     private static void ApplyTheme(string theme)
@@ -283,6 +325,15 @@ public sealed partial class MainWindow : Window
     {
         try { await viewModel.ClearUnusedCacheAsync(); }
         catch (Exception exception) { await MessageDialog.ShowAsync(this, "Cache cleanup failed", exception.Message); }
+    }
+
+    private async void ResetSettings_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        viewModel.ResetSettingsToDefaults();
+        ThemeBox.SelectedIndex = 0;
+        ApplyTheme("System");
+        await MessageDialog.ShowAsync(this, "Settings reset",
+            "Defaults were restored for cache limit, motion, automatic update checks, and the additional Steam library path.");
     }
 
     private async Task ShowPlanAsync(DeploymentPlan plan)

@@ -173,26 +173,42 @@ public sealed class ComponentDetector(GameProfileCatalog? profiles = null, Proxy
                 Explanation = "OptiScaler is active, but the required ReShade64.dll chaining file is missing. Repair is required.",
                 Verification = InstallationVerification.RepairNeeded
             };
-        else if (recognizedOptiProxy is not null && hasReShadeForChaining && !coexistConfigured)
-            opti = opti with
-            {
-                Health = ComponentHealth.IncorrectlyConfigured,
-                Explanation = "OptiScaler is installed, but ReShade chaining is not configured correctly. Repair is available.",
-                Verification = InstallationVerification.RepairNeeded
-            };
-        else if (recognizedOptiProxy is not null && !hasReShadeForChaining && !IsStandaloneOptiScalerConfigured(iniPath))
-            opti = opti with
-            {
-                Health = ComponentHealth.IncorrectlyConfigured,
-                Explanation = "OptiScaler is installed, but its standalone configuration is invalid for the current layout. Repair is available.",
-                Verification = InstallationVerification.RepairNeeded
-            };
-        else if (opti.Health == ComponentHealth.Installed && invalidPatcherRecords.Length > 0)
-            opti = opti with
-            {
-                Verification = InstallationVerification.OptionalCleanupAvailable,
-                Diagnostic = $"{invalidPatcherRecords.Length} legacy OptiPatcher ownership record(s) no longer match disk. OptiPatcher is not required by the current AMD layout; optional metadata cleanup is available."
-            };
+        else if (recognizedOptiProxy is not null && hasReShadeForChaining)
+        {
+            if (!TryReadOptiScalerPluginFlags(iniPath, out var chainReshade, out var chainAsi))
+                opti = opti with
+                {
+                    Health = ComponentHealth.IncorrectlyConfigured,
+                    Explanation = "OptiScaler.ini is malformed and cannot be verified. Repair can restore the required chaining keys while preserving other settings.",
+                    Verification = InstallationVerification.RepairNeeded
+                };
+            else if (chainReshade != true || chainAsi != true)
+                opti = opti with
+                {
+                    Health = ComponentHealth.Installed,
+                    Explanation = "OptiScaler is installed. ReShade chaining keys in OptiScaler.ini differ from the recommended values; this mutable configuration change does not require repair.",
+                    Verification = InstallationVerification.MetadataUnverified,
+                    Diagnostic = "User-editable OptiScaler.ini chaining keys differ from the coexistence defaults. Runtime files remain usable."
+                };
+        }
+        else if (recognizedOptiProxy is not null && !hasReShadeForChaining)
+        {
+            if (!TryReadOptiScalerPluginFlags(iniPath, out var soloReshade, out var soloAsi))
+                opti = opti with
+                {
+                    Health = ComponentHealth.IncorrectlyConfigured,
+                    Explanation = "OptiScaler.ini is malformed and cannot be verified. Repair can restore a valid standalone configuration while preserving other settings.",
+                    Verification = InstallationVerification.RepairNeeded
+                };
+            else if (!IsDisabledOrAutomatic(soloReshade) || !IsDisabledOrAutomatic(soloAsi))
+                opti = opti with
+                {
+                    Health = ComponentHealth.Installed,
+                    Explanation = "OptiScaler is installed. Standalone OptiScaler.ini keys differ from the recommended defaults; this mutable configuration change does not require repair.",
+                    Verification = InstallationVerification.MetadataUnverified,
+                    Diagnostic = "User-editable OptiScaler.ini keys differ from standalone defaults. Runtime files remain usable."
+                };
+        }
         else if (opti.Health == ComponentHealth.Available)
             opti = eligibility.Level switch
             {
@@ -202,6 +218,14 @@ public sealed class ComponentDetector(GameProfileCatalog? profiles = null, Proxy
                 OptiScalerCompatibilityLevel.BlockedByUnresolvedFileConflict =>
                     opti with { Health = ComponentHealth.Conflicting, Explanation = eligibility.Explanation },
                 _ => opti with { Health = ComponentHealth.DownloadRequired, Explanation = eligibility.Explanation }
+            };
+
+        if (opti.Health == ComponentHealth.Installed && invalidPatcherRecords.Length > 0 &&
+            opti.Verification is InstallationVerification.Managed or InstallationVerification.MetadataUnverified or InstallationVerification.None)
+            opti = opti with
+            {
+                Verification = InstallationVerification.OptionalCleanupAvailable,
+                Diagnostic = $"{invalidPatcherRecords.Length} legacy OptiPatcher ownership record(s) no longer match disk. OptiPatcher is not required by the current AMD layout; optional metadata cleanup is available."
             };
 
         return [reshade, reno, opti];
@@ -246,13 +270,21 @@ public sealed class ComponentDetector(GameProfileCatalog? profiles = null, Proxy
                 "The ownership manifest contains an invalid path outside the selected game. Repair is blocked until the manifest is corrected.");
         var owned = recorded;
         var missing = owned.Where(x => !File.Exists(Path.Combine(game.GameRoot, x.RelativePath))).ToArray();
-        var changed = owned.Where(x =>
+        var changedImmutable = owned.Where(x =>
         {
+            if (!IsImmutableRuntimeRecord(x)) return false;
+            var path = Path.Combine(game.GameRoot, x.RelativePath);
+            return File.Exists(path) && !Hash(path).Equals(x.Sha256, StringComparison.OrdinalIgnoreCase);
+        }).ToArray();
+        var changedMutable = owned.Where(x =>
+        {
+            if (IsImmutableRuntimeRecord(x)) return false;
             var path = Path.Combine(game.GameRoot, x.RelativePath);
             return File.Exists(path) && !Hash(path).Equals(x.Sha256, StringComparison.OrdinalIgnoreCase);
         }).ToArray();
         var installed = detected.Count > 0;
-        var metadataUnverified = installed && (missing.Length > 0 || changed.Length > 0 || manifest.MetadataMigrated);
+        var metadataUnverified = installed && (missing.Length > 0 || changedImmutable.Length > 0 ||
+            changedMutable.Length > 0 || manifest.MetadataMigrated);
         var verification = !installed ? InstallationVerification.None :
             owned.Length == 0 ? InstallationVerification.RecognizedExisting :
             metadataUnverified ? InstallationVerification.MetadataUnverified : InstallationVerification.Managed;
@@ -261,11 +293,24 @@ public sealed class ComponentDetector(GameProfileCatalog? profiles = null, Proxy
         var diagnostic = verification switch
         {
             InstallationVerification.RecognizedExisting => "Runtime files are recognized, but no RHI Linux ownership record exists. Removal remains disabled until ownership can be established safely.",
-            InstallationVerification.MetadataUnverified => $"Runtime verification succeeded. Ownership metadata differs from disk ({missing.Length} missing record(s), {changed.Length} changed hash(es)){(manifest.MetadataMigrated ? "; legacy schema was migrated in memory" : string.Empty)}. This metadata-only difference does not require repair.",
+            InstallationVerification.MetadataUnverified => $"Runtime verification succeeded. Ownership metadata differs from disk ({missing.Length} missing record(s), {changedImmutable.Length} immutable hash change(s), {changedMutable.Length} mutable configuration change(s)){(manifest.MetadataMigrated ? "; legacy schema was migrated in memory" : string.Empty)}. Mutable configuration drift does not require repair.",
             _ => null
         };
         return new(component, health, owned.Select(x => x.Version).FirstOrDefault(x => x is not null),
             detected.Select(Path.GetFileName).OfType<string>().ToArray(), explanation, verification, diagnostic);
+    }
+
+    private static bool IsImmutableRuntimeRecord(ManagedFile file)
+    {
+        if (file.FileClass is ManagedFileClass.MutableConfiguration or ManagedFileClass.UserEditableConfiguration or
+            ManagedFileClass.ManagedGeneratedFile or ManagedFileClass.Backup)
+            return false;
+        if (file.FileClass == ManagedFileClass.ImmutableRuntimeBinary) return true;
+        var extension = Path.GetExtension(file.RelativePath);
+        return !extension.Equals(".ini", StringComparison.OrdinalIgnoreCase) &&
+               !extension.Equals(".cfg", StringComparison.OrdinalIgnoreCase) &&
+               !extension.Equals(".toml", StringComparison.OrdinalIgnoreCase) &&
+               !extension.Equals(".log", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string[] ExistingManaged(GameManifest manifest, SteamGame game, ComponentKind component) => manifest.Files
@@ -279,39 +324,49 @@ public sealed class ComponentDetector(GameProfileCatalog? profiles = null, Proxy
          Path.GetExtension(path).Equals(".addon32", StringComparison.OrdinalIgnoreCase)) &&
         Path.GetFileName(path).Contains("renodx", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsCoexistenceConfigured(string iniPath)
+    private static bool TryReadOptiScalerPluginFlags(string iniPath, out bool? loadReshade, out bool? loadAsiPlugins)
     {
+        loadReshade = null;
+        loadAsiPlugins = null;
         if (!File.Exists(iniPath)) return false;
         try
         {
             var ini = IniDocument.Parse(File.ReadAllText(iniPath));
             var reshadeSection = ini.FindSectionContaining("LoadReshade");
             var asiSection = ini.FindSectionContaining("LoadAsiPlugins");
-            return reshadeSection is not null && asiSection is not null &&
-                ini.ValueCount(reshadeSection, "LoadReshade") == 1 &&
-                ini.ValueCount(asiSection, "LoadAsiPlugins") == 1 &&
-                ini.Get(reshadeSection, "LoadReshade")?.Equals("true", StringComparison.OrdinalIgnoreCase) == true &&
-                ini.Get(asiSection, "LoadAsiPlugins")?.Equals("true", StringComparison.OrdinalIgnoreCase) == true;
+            if (reshadeSection is not null && ini.ValueCount(reshadeSection, "LoadReshade") != 1) return false;
+            if (asiSection is not null && ini.ValueCount(asiSection, "LoadAsiPlugins") != 1) return false;
+            loadReshade = ParseOptionalBool(reshadeSection is null ? null : ini.Get(reshadeSection, "LoadReshade"));
+            loadAsiPlugins = ParseOptionalBool(asiSection is null ? null : ini.Get(asiSection, "LoadAsiPlugins"));
+            return true;
         }
-        catch (InvalidDataException) { return false; }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static bool? ParseOptionalBool(string? value)
+    {
+        if (value is null) return null;
+        if (value.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+        if (value.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+        return null;
+    }
+
+    private static bool IsCoexistenceConfigured(string iniPath)
+    {
+        if (!TryReadOptiScalerPluginFlags(iniPath, out var loadReshade, out var loadAsiPlugins)) return false;
+        return loadReshade == true && loadAsiPlugins == true;
     }
 
     private static bool IsStandaloneOptiScalerConfigured(string iniPath)
     {
-        if (!File.Exists(iniPath)) return false;
-        try
-        {
-            var ini = IniDocument.Parse(File.ReadAllText(iniPath));
-            var reshadeSection = ini.FindSectionContaining("LoadReshade");
-            var asiSection = ini.FindSectionContaining("LoadAsiPlugins");
-            var reshade = reshadeSection is null ? null : ini.Get(reshadeSection, "LoadReshade");
-            var asi = asiSection is null ? null : ini.Get(asiSection, "LoadAsiPlugins");
-            return (reshadeSection is null || ini.ValueCount(reshadeSection, "LoadReshade") == 1) &&
-                (asiSection is null || ini.ValueCount(asiSection, "LoadAsiPlugins") == 1) &&
-                IsDisabledOrAutomatic(reshade) && IsDisabledOrAutomatic(asi);
-        }
-        catch (InvalidDataException) { return false; }
+        if (!TryReadOptiScalerPluginFlags(iniPath, out var loadReshade, out var loadAsiPlugins)) return false;
+        return IsDisabledOrAutomatic(loadReshade) && IsDisabledOrAutomatic(loadAsiPlugins);
     }
+
+    private static bool IsDisabledOrAutomatic(bool? value) => value is null or false;
 
     private static bool IsDisabledOrAutomatic(string? value) => value is null ||
         value.Equals("false", StringComparison.OrdinalIgnoreCase) ||

@@ -1,9 +1,9 @@
 pkgname=rhi-linux
-pkgver=0.1.0
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Steam Proton mod deployment manager for AMD GPUs"
 arch=('x86_64')
-url="https://github.com/RankFTW/RHI"
+url="https://github.com/winterofhell/rhi-linux"
 license=('GPL-3.0-only')
 depends=('dotnet-runtime-8.0' 'fontconfig' 'libarchive')
 makedepends=('dotnet-sdk-8.0')

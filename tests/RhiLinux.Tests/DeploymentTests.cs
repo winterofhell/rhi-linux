@@ -288,7 +288,9 @@ public sealed class DeploymentTests
 
         Assert.True(result.Succeeded, result.Error);
         var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot);
-        var moved = Assert.Single(manifest.Files, file => file.Component == ComponentKind.ReShade);
+        var moved = Assert.Single(manifest.Files, file =>
+            file.Component == ComponentKind.ReShade &&
+            Path.GetFileName(file.RelativePath).Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("ReShade64.dll", Path.GetFileName(moved.RelativePath));
         Assert.Equal(reshade.Version, moved.Version);
         Assert.Equal(reshade.SourceUrl, moved.SourceUrl);

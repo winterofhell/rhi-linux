@@ -14,6 +14,8 @@ public sealed class UiPreferences
     public string SearchText { get; set; } = string.Empty;
     public int CacheLimitMiB { get; set; } = 5 * 1024;
     public bool ReduceMotion { get; set; }
+    public bool CheckForUpdatesAutomatically { get; set; } = true;
+    public string AdditionalSteamLibrary { get; set; } = string.Empty;
 }
 
 public interface IUiPreferencesStore
@@ -30,7 +32,8 @@ public sealed class JsonUiPreferencesStore(string path) : IUiPreferencesStore
     {
         if (!File.Exists(path)) return new UiPreferences();
         await using var input = File.OpenRead(path);
-        var preferences = await JsonSerializer.DeserializeAsync<UiPreferences>(input, Options, cancellationToken);
+        var preferences = await JsonSerializer.DeserializeAsync<UiPreferences>(input, Options, cancellationToken)
+            .ConfigureAwait(false);
         return preferences is { SchemaVersion: 1 } ? preferences : new UiPreferences();
     }
 
@@ -42,7 +45,7 @@ public sealed class JsonUiPreferencesStore(string path) : IUiPreferencesStore
         try
         {
             await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.WriteThrough))
-                await JsonSerializer.SerializeAsync(output, preferences, Options, cancellationToken);
+                await JsonSerializer.SerializeAsync(output, preferences, Options, cancellationToken).ConfigureAwait(false);
             File.Move(temporary, path, true);
         }
         finally

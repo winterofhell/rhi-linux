@@ -105,21 +105,36 @@ public static partial class OptiScalerBundleParser
                 classification.Feature, classification.CanOmitOnCollision));
         }
 
+        var uninstallScriptPaths = paths.Where(path =>
+            path.Contains("remove", StringComparison.OrdinalIgnoreCase) &&
+            (path.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
+             path.EndsWith(".sh", StringComparison.OrdinalIgnoreCase) ||
+             path.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase))).ToArray();
+        var uninstallText = string.Join('\n', uninstallScriptPaths.Select(path =>
+            File.ReadAllText(Path.Combine(extractedRoot, path.Replace('/', Path.DirectorySeparatorChar)))));
+        var obsoleteFromScripts = ParseUninstallTargets(uninstallText)
+            .Concat(KnownObsoletePaths)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         var decisions = new List<string>
         {
             "Copy runtime DLL and INI files while preserving their bundle-relative paths.",
             "Rename only OptiScaler.dll to the selected supported proxy filename.",
             "Keep OptiScaler.ini at the deployment root.",
             "For AMD Proton, retain the official Dxgi=auto default unless a reviewed profile overrides it.",
-            "Do not copy or execute setup scripts, uninstallers, readme files, or licenses."
+            "Do not copy or execute setup scripts, uninstallers, readme files, or licenses.",
+            "Use uninstall script file lists only as declarative references for native cleanup decisions."
         };
         if (scriptText.Contains("Dxgi=false", StringComparison.OrdinalIgnoreCase))
             decisions.Add("The official scripts disable Dxgi spoofing only when DLSS inputs are explicitly declined.");
+        if (uninstallScriptPaths.Length > 0)
+            decisions.Add($"Parsed {uninstallScriptPaths.Length} uninstall helper(s) for declarative cleanup targets without executing them.");
 
         var auxiliary = files.Where(x => x.RuntimeRequired && x.Role is not "OptiScaler runtime" and not "Default configuration")
             .Select(x => x.Role).Distinct(StringComparer.Ordinal).ToArray();
         return new(OptiScalerBundleManifest.CurrentSchemaVersion, releaseVersion, releaseTag, archiveAssetName, archiveSha256,
-            paths, files, "OptiScaler.ini", proxies, decisions, auxiliary, KnownObsoletePaths);
+            paths, files, "OptiScaler.ini", proxies, decisions, auxiliary, obsoleteFromScripts);
     }
 
     public static async Task WriteAsync(string path, OptiScalerBundleManifest manifest, CancellationToken token = default)
@@ -158,6 +173,19 @@ public static partial class OptiScalerBundleParser
             };
         }).ToArray();
         return result with { Files = normalizedFiles };
+    }
+
+    private static IEnumerable<string> ParseUninstallTargets(string uninstallText)
+    {
+        if (string.IsNullOrWhiteSpace(uninstallText)) yield break;
+        foreach (Match match in UninstallTargetRegex().Matches(uninstallText))
+        {
+            var value = match.Groups["file"].Value.Trim().Trim('"', '\'');
+            if (value.Length == 0) continue;
+            value = value.Replace('\\', '/');
+            if (value.Contains("..", StringComparison.Ordinal)) continue;
+            yield return Path.GetFileName(value);
+        }
     }
 
     private static BundleFileClassification Classify(string relativePath)
@@ -243,6 +271,9 @@ public static partial class OptiScalerBundleParser
 
     [GeneratedRegex(@"(?i)(?:dxgi|winmm|version|dbghelp|d3d12|wininet|winhttp)\.dll")]
     private static partial Regex SupportedProxyRegex();
+
+    [GeneratedRegex("""(?im)(?:del|rm|remove-item)\s+(?:/-f\s+|/[fq]+\s+|-\w+\s+)*(?<file>["']?[\w./\\-]+\.(?:dll|ini|asi|bat|sh|exe)["']?)""")]
+    private static partial Regex UninstallTargetRegex();
 
     private sealed record BundleFileClassification(
         bool Runtime,

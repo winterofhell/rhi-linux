@@ -5,17 +5,17 @@
         Width="820" Height="700" MinWidth="640" MinHeight="520"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
-    <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,16">
+    <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,16">
       <TextBlock Text="{Binding Title}" Classes="pageTitle" />
       <TextBlock Text="{Binding Subtitle}" Classes="secondary" TextWrapping="Wrap" />
       <TextBlock Text="{Binding CompatibilityMessage}" IsVisible="{Binding HasCompatibilityMessage}"
-                 TextWrapping="Wrap" Margin="0,5,0,0" />
+                 TextWrapping="Wrap" Margin="0,4,0,0" />
     </StackPanel>
 
-    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
-      <StackPanel Spacing="14">
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Padding="0,0,4,0">
+      <StackPanel Spacing="16">
         <Border Classes="warning" IsVisible="{Binding HasWarnings}">
-          <StackPanel Spacing="6">
+          <StackPanel Spacing="8">
             <TextBlock Text="Warnings" FontWeight="SemiBold" />
             <ItemsControl ItemsSource="{Binding Warnings}">
               <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate>
@@ -23,17 +23,17 @@
           </StackPanel>
         </Border>
 
-        <StackPanel Spacing="7">
-          <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="8">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
             <TextBlock Text="Installation plan" Classes="sectionTitle" />
             <TextBlock Grid.Column="1" Text="{Binding SummaryCount}" Classes="secondary" VerticalAlignment="Center" />
           </Grid>
           <ItemsControl ItemsSource="{Binding SummaryOperations}">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
-                <Border BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,0,1" Padding="5,10">
-                  <Grid ColumnDefinitions="36,*">
-                    <Border Width="26" Height="26" CornerRadius="13" Background="{DynamicResource AccentSoftBrush}" VerticalAlignment="Top">
+                <Border BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,0,1" Padding="4,12">
+                  <Grid ColumnDefinitions="40,*" ColumnSpacing="8">
+                    <Border Width="28" Height="28" CornerRadius="14" Background="{DynamicResource AccentSoftBrush}" VerticalAlignment="Top">
                       <TextBlock Text="{Binding Number}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" />
                     </Border>
                     <TextBlock Grid.Column="1" Text="{Binding Description}" TextWrapping="Wrap" VerticalAlignment="Center" />
@@ -44,13 +44,13 @@
           </ItemsControl>
         </StackPanel>
 
-        <Expander Header="Show technical details">
-          <StackPanel Spacing="7" Margin="0,8,0,0">
+        <Expander Header="Show technical details" Classes="compact">
+          <StackPanel Spacing="8" Margin="0,8,0,0">
             <TextBlock Text="{Binding OperationCount}" Classes="secondary" />
             <ItemsControl ItemsSource="{Binding Operations}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <TextBlock Text="{Binding Description}" Classes="path secondary" TextWrapping="Wrap" Margin="0,3" />
+                  <TextBlock Text="{Binding Description}" Classes="path secondary" TextWrapping="Wrap" Margin="0,4" />
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -58,7 +58,7 @@
         </Expander>
 
         <Border Classes="card" IsVisible="{Binding HasResult}">
-          <StackPanel Spacing="7">
+          <StackPanel Spacing="8">
             <TextBlock Text="{Binding ResultTitle}" Classes="sectionTitle" />
             <TextBlock Text="{Binding ResultMessage}" TextWrapping="Wrap" />
             <TextBlock Text="{Binding RollbackMessage}" IsVisible="{Binding HasRollbackMessage}" Classes="secondary" TextWrapping="Wrap" />
@@ -71,10 +71,10 @@
       </StackPanel>
     </ScrollViewer>
 
-    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" Margin="0,18,0,0">
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" Margin="0,16,0,0">
       <TextBlock Grid.Column="0" Text="{Binding ExecutionHint}" Classes="secondary" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0" />
-      <Button Grid.Column="1" Content="Cancel operation" IsVisible="{Binding IsRunning}" Click="CancelOperation_Click" />
-      <Button Grid.Column="2" Content="{Binding CloseText}" IsEnabled="{Binding CanClose}" Click="Close_Click" />
+      <Button Grid.Column="1" Classes="secondary" Content="Cancel operation" IsVisible="{Binding IsRunning}" Click="CancelOperation_Click" />
+      <Button Grid.Column="2" Classes="secondary" Content="{Binding CloseText}" IsEnabled="{Binding CanClose}" Click="Close_Click" />
       <Button Grid.Column="3" Content="{Binding ActionButtonText}" MinWidth="96" Classes="primary" IsVisible="{Binding CanExecute}" Click="Execute_Click"
               ToolTip.Tip="{Binding ExecutionHint}" />
     </Grid>

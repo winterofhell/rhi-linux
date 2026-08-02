@@ -6,7 +6,7 @@ RHI Linux automatically discovers Steam games and installs compatible ReShade, R
 
 ## Project status
 
-**Version 0.1.0 — Early Alpha**
+**Version 0.1.2 — Early Alpha**
 
 This release is usable, but it is still an early public build. Visual issues, compatibility problems, incomplete game profiles, and installation bugs may remain.
 
@@ -40,11 +40,13 @@ After installing a compatibility setup, copy the Steam launch option generated b
 
 ## AppImage
 
+The latest AppImage is currently v0.1.0. Version 0.1.2 is a source-only update.
+
 Download the AppImage from the latest GitHub pre-release, make it executable, and launch it:
 
 ```sh
-chmod +x RHI-0.1.0-x86_64.AppImage
-./RHI-0.1.0-x86_64.AppImage
+chmod +x RHI-Linux-0.1.0-x86_64.AppImage
+./RHI-Linux-0.1.0-x86_64.AppImage
 ```
 
 The AppImage section applies only when a release asset is available.

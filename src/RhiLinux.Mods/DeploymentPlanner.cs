@@ -49,10 +49,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot, cancellationToken);
         EnsureManifestBelongsToGame(manifest, game);
         var profile = await new GameProfileCatalog().MatchAsync(game, cancellationToken);
-        var requiresRepair = manifest.Files.Any(x =>
-                !File.Exists(Path.Combine(game.GameRoot, x.RelativePath)) ||
-                File.Exists(Path.Combine(game.GameRoot, x.RelativePath)) &&
-                !HashPath(Path.Combine(game.GameRoot, x.RelativePath)).Equals(x.Sha256, StringComparison.OrdinalIgnoreCase));
+        var requiresRepair = manifest.Files.Any(file => IsImmutableRuntimeDrift(game, file)) ||
+            HasUnparseableManagedOptiScalerIni(game, manifest);
         var targetArtifacts = new[] { artifacts.ReShade, artifacts.RenoDx, artifacts.OptiScaler }.OfType<ComponentArtifact>();
         var hasVersionUpdate = targetArtifacts.Any(artifact => manifest.Files.Any(file =>
             file.Component == artifact.Component && file.Version is not null && artifact.Version is not null &&
@@ -73,7 +71,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             artifacts.OptiScaler is not null ? ComponentKind.OptiScaler : ComponentKind.ReShade);
         AddOmittedBundleDecisions(plan, game, artifacts.OptiScalerBundle, selectedSupportFiles);
         if (proxySelection.Candidates.Any(x => !x.SafeForNewInstallation && File.Exists(x.Path)))
-            plan.CompatibilityMessage ??= "A compatible installation method was found. Existing game files will not be changed.";
+            plan.CompatibilityMessage ??= "A safe compatibility filename is available without changing existing game files.";
         plan.Operations.Add(new(DeploymentOperationType.CreateDirectory, game.DeploymentDirectory));
 
         var proxy = Path.Combine(game.DeploymentDirectory, proxyName);
@@ -162,6 +160,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         }
 
         AddFinalLayoutVerification(plan, game, artifacts, proxy, coexist, finalOpti, finalReShade);
+        if (finalReShade)
+            ReShadePresetService.ConfigureFreshInstallation(plan, manifest, game);
         plan.LaunchOption = finalOpti || finalReShade ? GenerateLaunchOption(proxyName) : null;
         SetExpectation(plan, ComponentKind.ReShade, finalReShade);
         SetExpectation(plan, ComponentKind.RenoDx,
@@ -193,7 +193,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             if (requested is null || !requested.SafeForNewInstallation || requested.ProhibitedByProfile)
             {
                 proxyName = diagnosis.SelectedProxy ?? throw BuildProxyConflict(diagnosis, game, artifact.Component);
-                plan.CompatibilityMessage = "A compatible installation method was found. Existing game files will not be changed.";
+                plan.CompatibilityMessage = "A safe compatibility filename is available without changing existing game files.";
             }
         }
         if (game.RequiresConfirmation)
@@ -241,7 +241,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                     });
                 if (!validReShadeHost)
                     throw new InvalidOperationException(
-                        "RenoDX requires managed full-addon ReShade. Use the recommended setup so both components are installed transactionally.");
+                        "RenoDX needs full-addon ReShade in the same install. Use the recommended setup so both are installed together.");
                 var addonDirectory = ResolveAddonDirectory(game.DeploymentDirectory, game.GameRoot);
                 plan.Operations.Add(new(DeploymentOperationType.CreateDirectory, addonDirectory));
                 await AddReplacementAsync(plan, manifest, game, artifact,
@@ -268,6 +268,10 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         plan.Operations.Add(new(DeploymentOperationType.VerifySha256,
             artifact.Component == ComponentKind.ReShade && optiPresent ? coexist : TargetFor(game, artifact, proxy),
             ExpectedSha256: NormalizedHash(artifact), Description: $"Verify installed {artifact.Component}"));
+        if (artifact.Component == ComponentKind.ReShade ||
+            artifact.Component == ComponentKind.RenoDx && HasValidManagedFile(manifest, game, ComponentKind.ReShade) ||
+            artifact.Component == ComponentKind.OptiScaler && HasValidManagedFile(manifest, game, ComponentKind.ReShade))
+            ReShadePresetService.ConfigureFreshInstallation(plan, manifest, game);
         plan.LaunchOption = artifact.Component is ComponentKind.ReShade or ComponentKind.OptiScaler
             ? GenerateLaunchOption(proxyName) : null;
         SetExpectation(plan, artifact.Component, true);
@@ -336,6 +340,9 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             SetExpectation(plan, ComponentKind.ReShade, true);
         if (component is ComponentKind.ReShade or ComponentKind.RenoDx && optiRemains)
             SetExpectation(plan, ComponentKind.OptiScaler, true);
+
+        var remainingProxy = RemainingManagedProxyName(manifest, game, componentsToRemove);
+        plan.LaunchOption = remainingProxy is null ? null : GenerateLaunchOption(remainingProxy);
         AddManifest(plan, game);
         return plan;
     }
@@ -588,13 +595,88 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
         foreach (var file in manifest.Files.Where(x =>
                      x.Component == ComponentKind.OptiPatcher ||
-                     x.Component == ComponentKind.OptiScaler && !expected.Contains(x.RelativePath)).ToArray())
+                     x.Component == ComponentKind.OptiScaler && !expected.Contains(x.RelativePath) ||
+                     artifacts.OptiScalerBundle.ObsoleteManagedPaths.Any(obsolete =>
+                         Path.GetFileName(x.RelativePath).Equals(obsolete, StringComparison.OrdinalIgnoreCase) &&
+                         x.Component is ComponentKind.OptiScaler or ComponentKind.OptiPatcher)).ToArray())
         {
             if (plan.Operations.Any(x => x.Type == DeploymentOperationType.DeleteManagedFile &&
                                         Path.GetRelativePath(game.GameRoot, x.Target).Equals(file.RelativePath, StringComparison.Ordinal)))
                 continue;
             AddManagedRemoval(plan, manifest, game, file);
         }
+    }
+
+    private static bool HasUnparseableManagedOptiScalerIni(SteamGame game, GameManifest manifest)
+    {
+        var record = manifest.Files.FirstOrDefault(file =>
+            file.Component == ComponentKind.OptiScaler &&
+            Path.GetFileName(file.RelativePath).Equals("OptiScaler.ini", StringComparison.OrdinalIgnoreCase));
+        if (record is null) return false;
+        var path = Path.Combine(game.GameRoot, record.RelativePath);
+        if (!File.Exists(path)) return false;
+        try
+        {
+            IniDocument.Parse(File.ReadAllText(path));
+            return false;
+        }
+        catch (InvalidDataException)
+        {
+            return true;
+        }
+    }
+
+    private static bool IsImmutableRuntimeDrift(SteamGame game, ManagedFile file)
+    {
+        if (!IsImmutableRuntimeFile(file)) return false;
+        var path = Path.Combine(game.GameRoot, file.RelativePath);
+        return !File.Exists(path) ||
+               !HashPath(path).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsImmutableRuntimeFile(ManagedFile file)
+    {
+        if (file.FileClass is ManagedFileClass.MutableConfiguration or ManagedFileClass.UserEditableConfiguration or
+            ManagedFileClass.ManagedGeneratedFile or ManagedFileClass.Backup)
+            return false;
+        if (file.FileClass == ManagedFileClass.ImmutableRuntimeBinary) return true;
+        var extension = Path.GetExtension(file.RelativePath);
+        return !extension.Equals(".ini", StringComparison.OrdinalIgnoreCase) &&
+               !extension.Equals(".cfg", StringComparison.OrdinalIgnoreCase) &&
+               !extension.Equals(".toml", StringComparison.OrdinalIgnoreCase) &&
+               !extension.Equals(".log", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? RemainingManagedProxyName(
+        GameManifest manifest,
+        SteamGame game,
+        IReadOnlyList<ComponentKind> removedComponents)
+    {
+        var remaining = manifest.Files
+            .Where(file => !removedComponents.Contains(file.Component))
+            .Where(file => SupportedProxyNames.Contains(Path.GetFileName(file.RelativePath), StringComparer.OrdinalIgnoreCase))
+            .Where(file => File.Exists(Path.Combine(game.GameRoot, file.RelativePath)))
+            .Select(file => Path.GetFileName(file.RelativePath))
+            .FirstOrDefault();
+        if (remaining is not null) return remaining;
+
+        // After OptiScaler removal, ReShade may be restored to the former proxy path via Move.
+        if (removedComponents.Contains(ComponentKind.OptiScaler))
+        {
+            var reshadeProxy = manifest.Files.FirstOrDefault(file =>
+                file.Component == ComponentKind.ReShade &&
+                (SupportedProxyNames.Contains(Path.GetFileName(file.RelativePath), StringComparer.OrdinalIgnoreCase) ||
+                 Path.GetFileName(file.RelativePath).Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase)));
+            if (reshadeProxy is not null)
+            {
+                var optiProxy = manifest.Files.FirstOrDefault(file =>
+                    file.Component == ComponentKind.OptiScaler &&
+                    SupportedProxyNames.Contains(Path.GetFileName(file.RelativePath), StringComparer.OrdinalIgnoreCase));
+                return optiProxy is null ? Path.GetFileName(reshadeProxy.RelativePath) : Path.GetFileName(optiProxy.RelativePath);
+            }
+        }
+
+        return null;
     }
 
     private static bool AddStandaloneReShadeRepair(
@@ -756,7 +838,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                 if (artifact.CanOmitOnCollision || artifact.Requirement is DeploymentFileRequirement.Optional or DeploymentFileRequirement.Conditional)
                 {
                     var existingHash = HashPath(target);
-                    plan.CompatibilityMessage ??= "A compatible installation method was found. Existing game files will not be changed.";
+                    plan.CompatibilityMessage ??= "A safe compatibility filename is available without changing existing game files.";
                     plan.Operations.Add(new(DeploymentOperationType.VerifySha256, target, ExpectedSha256: existingHash,
                         Description: $"Verify preserved existing file {Path.GetRelativePath(game.GameRoot, target)} was not changed"));
                     AddFileDecision(plan, artifact, target, DeploymentFileAction.PreserveExisting,
@@ -811,7 +893,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                 AddCopy(plan, artifact, target);
                 return;
             case TargetFileClassification.GameOwned when allowPreserveGameOwned:
-                plan.CompatibilityMessage ??= "A compatible installation method was found. Existing game files will not be changed.";
+                plan.CompatibilityMessage ??= "A safe compatibility filename is available without changing existing game files.";
                 plan.Operations.Add(new(DeploymentOperationType.VerifySha256, target,
                     ExpectedSha256: diagnostic.Sha256,
                     Description: $"Verify preserved game file {Path.GetRelativePath(game.GameRoot, target)} was not changed"));
@@ -822,7 +904,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             default:
                 if (artifact.CanOmitOnCollision || artifact.Requirement is DeploymentFileRequirement.Optional or DeploymentFileRequirement.Conditional)
                 {
-                    plan.CompatibilityMessage ??= "A compatible installation method was found. Existing game files will not be changed.";
+                    plan.CompatibilityMessage ??= "A safe compatibility filename is available without changing existing game files.";
                     plan.Operations.Add(new(DeploymentOperationType.VerifySha256, target,
                         ExpectedSha256: diagnostic.Sha256,
                         Description: $"Verify preserved existing file {Path.GetRelativePath(game.GameRoot, target)} was not changed"));

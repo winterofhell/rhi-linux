@@ -31,7 +31,7 @@ public sealed class ComponentDetectionTests
 
         Assert.Equal(ComponentHealth.Installed, status.Health);
         Assert.Equal(InstallationVerification.MetadataUnverified, status.Verification);
-        Assert.Contains("metadata-only", status.Diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("does not require repair", status.Diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -214,7 +214,9 @@ public sealed class ComponentDetectionTests
 
         var status = Assert.Single(await new ComponentDetector().DetectAsync(game), x => x.Component == ComponentKind.OptiScaler);
 
-        Assert.Equal(ComponentHealth.IncorrectlyConfigured, status.Health);
+        Assert.Equal(ComponentHealth.Installed, status.Health);
+        Assert.Equal(InstallationVerification.MetadataUnverified, status.Verification);
+        Assert.Contains("mutable configuration", status.Explanation, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

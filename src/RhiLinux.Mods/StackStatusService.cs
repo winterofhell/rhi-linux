@@ -22,13 +22,22 @@ public sealed class StackStatusService(HttpClient httpClient, XdgPaths paths)
         bool forceRefresh = false)
     {
         var proxyService = new ProxyDiagnosticsService(catalog);
-        var profile = await catalog.MatchAsync(game, cancellationToken);
-        var proxy = await proxyService.DiagnoseAsync(game, cancellationToken);
+        var detector = new ComponentDetector(catalog, proxyService);
+        var resolver = new OfficialArtifactResolver(httpClient, paths, catalog);
+
+        var profileTask = catalog.MatchAsync(game, cancellationToken);
+        var proxyTask = proxyService.DiagnoseAsync(game, cancellationToken);
+        await Task.WhenAll(profileTask, proxyTask);
+        var profile = await profileTask;
+        var proxy = await proxyTask;
         var eligibility = OptiScalerEligibilityService.Evaluate(game, profile, proxy);
-        var artifacts = await new OfficialArtifactResolver(httpClient, paths, catalog).ResolveAsync(
-            game, allowNetwork, cancellationToken, forceRefresh);
-        var detected = await new ComponentDetector(catalog, proxyService).DetectAsync(game, cancellationToken);
-        var adjusted = detected.Select(status => ApplyArtifactState(status, artifacts)).ToArray();
+
+        var artifactsTask = resolver.ResolveAsync(game, allowNetwork, cancellationToken, forceRefresh);
+        var detectedTask = detector.DetectAsync(game, cancellationToken);
+        await Task.WhenAll(artifactsTask, detectedTask);
+        var artifacts = await artifactsTask;
+        profile = artifacts.Profile;
+        var adjusted = (await detectedTask).Select(status => ApplyArtifactState(status, artifacts)).ToArray();
         var ownershipUnavailable = adjusted.Any(x => x.Health == ComponentHealth.ManifestUnavailable);
         bool IsUsable(ComponentKind component) => adjusted.Single(x => x.Component == component).Health is
             not ComponentHealth.Conflicting and not ComponentHealth.ForeignInstallation and
@@ -40,15 +49,15 @@ public sealed class StackStatusService(HttpClient httpClient, XdgPaths paths)
         var canInstall = proxy.HasSafeProxy && !ownershipUnavailable &&
             (canInstallRenoSetup || canInstallOptiScaler);
         var summary = !proxy.HasSafeProxy ? proxy.Reason : !artifacts.IsFullyAutomatic
-            ? "One or more required official artifacts could not be resolved."
-            : ownershipUnavailable ? "The ownership manifest could not be verified; modifying actions are blocked."
+            ? "One or more required official files could not be found."
+            : ownershipUnavailable ? "Ownership metadata could not be verified, so changes are blocked."
             : !canInstallRenoSetup && !canInstallOptiScaler
-                ? "No independently safe automatic component setup is currently available."
+                ? "No safe automatic setup is available right now."
             : adjusted.Any(x => x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
                 ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable) ? "Repair the managed installation."
-            : adjusted.Any(x => x.Health == ComponentHealth.Outdated) ? "A dependency-aware stack update is available."
-            : adjusted.Any(x => x.Health == ComponentHealth.Installed) ? "The managed stack is installed and consistent."
-            : "The recommended stack can be installed automatically.";
+            : adjusted.Any(x => x.Health == ComponentHealth.Outdated) ? "An update is available for installed components."
+            : adjusted.Any(x => x.Health == ComponentHealth.Installed) ? "The managed setup is installed and consistent."
+            : "The recommended setup can be installed.";
         return new(profile, proxy, artifacts, adjusted, eligibility, canInstall, summary);
     }
 

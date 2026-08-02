@@ -102,7 +102,7 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
     public bool CanExecute => !IsRunning && !HasResult;
     public bool CanClose => !IsRunning;
     public string CloseText => HasResult ? "Close" : "Cancel";
-    public string ExecutionHint => "Changes are backed up and applied transactionally after confirmation.";
+    public string ExecutionHint => "Changed files are backed up first. Confirm to apply the plan.";
 
     public void Begin()
     {

@@ -73,6 +73,11 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
     public static readonly Uri SourceUri =
         new("https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md");
 
+    private static readonly object MemoryGate = new();
+    private static string? MemoryCachePath;
+    private static DateTime MemoryCacheWriteTimeUtc;
+    private static CachedCatalog? MemoryCache;
+
     private string CacheDirectory => Path.Combine(paths.AppCacheDirectory, "metadata", "renodx-wiki");
     private string MarkdownCachePath => Path.Combine(CacheDirectory, "Mods.md");
     private string ETagCachePath => Path.Combine(CacheDirectory, "Mods.md.etag");
@@ -124,6 +129,7 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
                 Directory.CreateDirectory(CacheDirectory);
                 await WriteAtomicAsync(MarkdownCachePath, bytes, cancellationToken);
                 cacheWritten = true;
+                InvalidateMemoryCache(MarkdownCachePath);
                 if (etag is not null)
                     await WriteAtomicAsync(ETagCachePath, Encoding.UTF8.GetBytes(etag), cancellationToken);
                 else if (File.Exists(ETagCachePath))
@@ -242,7 +248,24 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
 
     private async Task<CachedCatalog?> ReadCachedAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(MarkdownCachePath)) return null;
+        if (!File.Exists(MarkdownCachePath))
+        {
+            InvalidateMemoryCache(MarkdownCachePath);
+            return null;
+        }
+
+        DateTime writeTimeUtc;
+        try { writeTimeUtc = File.GetLastWriteTimeUtc(MarkdownCachePath); }
+        catch (IOException) { return null; }
+
+        lock (MemoryGate)
+        {
+            if (MemoryCache is not null &&
+                string.Equals(MemoryCachePath, MarkdownCachePath, StringComparison.Ordinal) &&
+                MemoryCacheWriteTimeUtc == writeTimeUtc)
+                return MemoryCache;
+        }
+
         try
         {
             var bytes = await File.ReadAllBytesAsync(MarkdownCachePath, cancellationToken);
@@ -254,12 +277,32 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
                 var candidate = (await File.ReadAllTextAsync(ETagCachePath, cancellationToken)).Trim();
                 if (EntityTagHeaderValue.TryParse(candidate, out _)) etag = candidate;
             }
-            return new(records, etag);
+            var catalog = new CachedCatalog(records, etag);
+            lock (MemoryGate)
+            {
+                MemoryCachePath = MarkdownCachePath;
+                MemoryCacheWriteTimeUtc = writeTimeUtc;
+                MemoryCache = catalog;
+            }
+            return catalog;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
                                            InvalidDataException or DecoderFallbackException or RegexMatchTimeoutException)
         {
             return null;
+        }
+    }
+
+    private static void InvalidateMemoryCache(string path)
+    {
+        lock (MemoryGate)
+        {
+            if (string.Equals(MemoryCachePath, path, StringComparison.Ordinal))
+            {
+                MemoryCachePath = null;
+                MemoryCache = null;
+                MemoryCacheWriteTimeUtc = default;
+            }
         }
     }
 

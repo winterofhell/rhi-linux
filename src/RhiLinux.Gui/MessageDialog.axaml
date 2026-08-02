@@ -3,16 +3,16 @@
         x:Class="RhiLinux.Gui.MessageDialog"
         Width="480" SizeToContent="Height" MaxHeight="520"
         CanResize="False" WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-  <Grid RowDefinitions="Auto,Auto,Auto" Margin="22">
-    <StackPanel Grid.Row="0" Spacing="9">
+  <Grid RowDefinitions="Auto,Auto,Auto" Margin="24">
+    <StackPanel Grid.Row="0" Spacing="10">
       <TextBlock x:Name="TitleText" Classes="sectionTitle" TextWrapping="Wrap" />
       <TextBlock x:Name="MessageText" TextWrapping="Wrap" Classes="secondary" MaxWidth="430" />
     </StackPanel>
-    <Expander Grid.Row="1" x:Name="TechnicalDetails" Header="Technical details" IsVisible="False" Margin="0,12,0,0">
-      <TextBlock x:Name="TechnicalDetailsText" Classes="path secondary" TextWrapping="Wrap" MaxWidth="430" Margin="0,7,0,0" />
+    <Expander Grid.Row="1" x:Name="TechnicalDetails" Header="Technical details" Classes="compact" IsVisible="False" Margin="0,12,0,0">
+      <TextBlock x:Name="TechnicalDetailsText" Classes="path secondary" TextWrapping="Wrap" MaxWidth="430" Margin="0,8,0,0" />
     </Expander>
-    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,22,0,0">
-      <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" />
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,20,0,0">
+      <Button x:Name="CancelButton" Content="Cancel" Classes="secondary" Click="Cancel_Click" />
       <Button x:Name="ConfirmButton" Content="OK" Classes="primary" Click="Confirm_Click" />
     </StackPanel>
   </Grid>

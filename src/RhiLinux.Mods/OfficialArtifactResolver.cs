@@ -58,13 +58,21 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         var selections = new List<ArtifactSelection>();
 
         var metadataChecked = allowNetwork;
-        var manifestCheck = await manifest.CheckAsync(allowNetwork, cancellationToken);
-        metadataChecked &= manifestCheck.State == MetadataCheckState.Online;
+        var manifestTask = manifest.CheckAsync(allowNetwork, cancellationToken);
+        var wikiTask = wiki.GetAsync(allowNetwork, cancellationToken);
+        Task<(ArtifactSelection? Selection, bool Checked)> reshadeTask = allowNetwork
+            ? TryResolveReShadeAsync(game, cancellationToken)
+            : Task.FromResult<(ArtifactSelection? Selection, bool Checked)>((null, false));
+
+        await Task.WhenAll(manifestTask, wikiTask, reshadeTask);
+        var manifestCheck = await manifestTask;
+        metadataChecked &= !allowNetwork || manifestCheck.State == MetadataCheckState.Online;
         var manifestCatalog = await manifest.ReadCatalogAsync(cancellationToken);
-        var wikiCatalog = await wiki.GetAsync(allowNetwork, cancellationToken);
+        var wikiCatalog = await wikiTask;
         if (allowNetwork) metadataChecked &= wikiCatalog.State == RenoDxWikiFetchState.Online;
         if (wikiCatalog.Warning is not null) warnings.Add(wikiCatalog.Warning);
-        var reshadeAttempt = allowNetwork ? await TryResolveReShadeAsync(game, cancellationToken) : (Selection: (ArtifactSelection?)null, Checked: false);
+
+        var reshadeAttempt = await reshadeTask;
         metadataChecked &= reshadeAttempt.Checked;
         var reshade = reshadeAttempt.Selection;
         reshade ??= await FindCachedAsync(ComponentKind.ReShade, game.AppId, cancellationToken);
@@ -90,9 +98,11 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         var optiTechnicallyEligible = IsTechnicallyEligibleForOptiScaler(game);
         if (optiTechnicallyEligible)
         {
-            var optiAttempt = allowNetwork ? await TryResolveGitHubAsync(ComponentKind.OptiScaler, game.AppId, cancellationToken, forceRefresh) : (Selection: (ArtifactSelection?)null, Checked: false);
-            metadataChecked &= optiAttempt.Checked;
-            var opti = optiAttempt.Selection;
+            var optiAttempt = allowNetwork
+                ? await TryResolveGitHubAsync(ComponentKind.OptiScaler, game.AppId, cancellationToken, forceRefresh)
+                : ((ArtifactSelection?)null, false);
+            metadataChecked &= optiAttempt.Item2;
+            var opti = optiAttempt.Item1;
             opti ??= await FindCachedAsync(ComponentKind.OptiScaler, game.AppId, cancellationToken);
             if (opti is not null) selections.Add(await cache.InspectAsync(opti, cancellationToken));
             else warnings.Add("The official OptiScaler release could not be resolved and no valid cached release is available.");
@@ -393,7 +403,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             {
                 ComponentKind.OptiScaler => release.Assets.Where(x => x.Name.EndsWith(".7z", StringComparison.OrdinalIgnoreCase) &&
                     x.Name.Contains("OptiScaler", StringComparison.OrdinalIgnoreCase) &&
-                    !x.Name.Contains("debug", StringComparison.OrdinalIgnoreCase) && !x.Name.Contains("source", StringComparison.OrdinalIgnoreCase))
+                    !IsUnstableAssetName(x.Name))
                     .OrderByDescending(x => x.Name.Equals("OptiScaler.7z", StringComparison.OrdinalIgnoreCase))
                     .ThenBy(x => x.Name.Length).ThenBy(x => x.Name, StringComparer.Ordinal).FirstOrDefault(),
                 _ => null
@@ -450,6 +460,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
                   !selection.ETag.Equals(response.Headers.ETag.ToString(), StringComparison.Ordinal)) ||
                  (selection.LastModified is not null && response.Content.Headers.LastModified is not null &&
                   selection.LastModified != response.Content.Headers.LastModified));
+            // Snapshot display versions stay "snapshot"; only treat as outdated when remote identity metadata changes.
             return (changed ? selection with { CacheState = ArtifactCacheState.DownloadRequired } : selection, true);
         }
         catch (HttpRequestException) { return (selection, false); }
@@ -464,6 +475,13 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         GameProfileSupport.EngineFallback when profile.Profile.Engine == GameEngine.Unreal => ArtifactSupportKind.UnrealFallback,
         _ => ArtifactSupportKind.Unavailable
     };
+
+    private static bool IsUnstableAssetName(string assetName) =>
+        assetName.Contains("debug", StringComparison.OrdinalIgnoreCase) ||
+        assetName.Contains("source", StringComparison.OrdinalIgnoreCase) ||
+        assetName.Contains("nightly", StringComparison.OrdinalIgnoreCase) ||
+        assetName.Contains("preview", StringComparison.OrdinalIgnoreCase) ||
+        assetName.Contains("test", StringComparison.OrdinalIgnoreCase);
 
     private static IReadOnlyList<ResolvedArtifact> BuildComponents(
         GameProfileMatch profile,

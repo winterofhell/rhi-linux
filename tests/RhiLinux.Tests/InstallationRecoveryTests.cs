@@ -25,7 +25,7 @@ public sealed class InstallationRecoveryTests
 
         var plan = await new DeploymentPlanner().BuildRecommendedStackPlanAsync(game, artifacts);
 
-        Assert.Equal("A compatible installation method was found. Existing game files will not be changed.",
+        Assert.Equal("A safe compatibility filename is available without changing existing game files.",
             plan.CompatibilityMessage);
         Assert.DoesNotContain(plan.Operations, x => x.Type == DeploymentOperationType.Copy &&
             x.Target.Equals(target, StringComparison.Ordinal));

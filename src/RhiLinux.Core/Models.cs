@@ -69,6 +69,42 @@ public enum InstallationVerification
     Broken
 }
 
+public enum LaunchOptionStatus
+{
+    NotRequired,
+    NotDetected,
+    Missing,
+    NeedsUpdate,
+    Correct
+}
+
+public readonly record struct OperationContext(
+    uint AppId,
+    long SelectionGeneration,
+    string GameRoot,
+    string DeploymentDirectory,
+    string? Executable,
+    ComponentKind? Component = null)
+{
+    public static OperationContext From(SteamGame game, long generation, ComponentKind? component = null) =>
+        new(game.AppId, generation, game.GameRoot, game.DeploymentDirectory, game.Executable, component);
+
+    public bool Matches(SteamGame game, long generation) =>
+        AppId == game.AppId &&
+        SelectionGeneration == generation &&
+        PathsEqual(GameRoot, game.GameRoot) &&
+        PathsEqual(DeploymentDirectory, game.DeploymentDirectory);
+
+    public bool MatchesPlan(DeploymentPlan plan) =>
+        AppId == plan.AppId &&
+        SelectionGeneration == plan.SelectionGeneration &&
+        PathsEqual(GameRoot, plan.GameRoot) &&
+        PathsEqual(DeploymentDirectory, plan.DeploymentDirectory);
+
+    private static bool PathsEqual(string left, string right) =>
+        Path.GetFullPath(left).Equals(Path.GetFullPath(right), StringComparison.Ordinal);
+}
+
 public sealed record ExecutableCandidate(
     string Path,
     int Score,
@@ -105,12 +141,36 @@ public sealed record SteamManifestDiagnostic(
     string Disposition,
     string Reason);
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum SteamRootSource
+{
+    Explicit,
+    Environment,
+    Native,
+    Xdg,
+    Flatpak,
+    Snap,
+    SteamLibrary
+}
+
+public sealed record SteamRootDiagnostic(
+    string OriginalPath,
+    string CanonicalPath,
+    SteamRootSource Source,
+    bool Exists,
+    bool Readable,
+    bool Deduplicated,
+    int ManifestsFound,
+    int GamesIncluded,
+    string? SkipReason);
+
 public sealed record ScanResult(
     IReadOnlyList<SteamGame> Games,
     IReadOnlyList<string> SteamRoots,
     IReadOnlyList<string> Libraries,
     IReadOnlyList<string> Warnings,
-    IReadOnlyList<SteamManifestDiagnostic>? ManifestDiagnostics = null);
+    IReadOnlyList<SteamManifestDiagnostic>? ManifestDiagnostics = null,
+    IReadOnlyList<SteamRootDiagnostic>? RootDiagnostics = null);
 
 public sealed record ComponentStatus(
     ComponentKind Component,
@@ -145,7 +205,8 @@ public sealed record ManagedFile(
     string? SourceBundleSha256 = null,
     string? BundleRelativePath = null,
     string? BackupSha256 = null,
-    ManagedFileClass FileClass = ManagedFileClass.Unknown);
+    ManagedFileClass FileClass = ManagedFileClass.Unknown,
+    string? Purpose = null);
 
 public sealed record ConfigurationPatchRecord(
     string RelativePath,
@@ -218,7 +279,8 @@ public sealed record DeploymentOperation(
     string? BundleRelativePath = null,
     string? ConfigurationSchema = null,
     string? ConfigurationVersion = null,
-    bool ClearConfigurationPatch = false);
+    bool ClearConfigurationPatch = false,
+    string? Purpose = null);
 
 public sealed record DeploymentFileDecision(
     ComponentKind Component,
@@ -241,6 +303,7 @@ public sealed class DeploymentPlan
     public required uint AppId { get; init; }
     public required string GameRoot { get; init; }
     public required string DeploymentDirectory { get; init; }
+    public long SelectionGeneration { get; set; }
     public required string Action { get; set; }
     public bool RequiresConfirmation { get; init; } = true;
     public bool RequiresRepair { get; set; }

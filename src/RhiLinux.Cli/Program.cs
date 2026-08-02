@@ -28,7 +28,8 @@ internal static class CliApplication
             if (command == "scan")
             {
                 var roots = options.Values("steam-root");
-                var result = await discovery.ScanAsync(roots.Count == 0 ? null : roots, state.Overrides);
+                var result = await discovery.ScanAsync(roots.Count == 0 ? null : roots, state.Overrides,
+                    includeDefaultRoots: roots.Count > 0);
                 state.DiscoveredGames = result.Games.ToList(); state.LastScanUtc = DateTimeOffset.UtcNow;
                 if (!options.Has("no-save") && !diagnosticsReadOnly) await store.SaveAsync(state);
                 Write(result, options.Has("json"), options.Has("diagnostics") ? PrintDiagnosticScan : PrintScan);
@@ -36,7 +37,8 @@ internal static class CliApplication
             }
 
             var configuredRoots = options.Values("steam-root");
-            var currentScan = await discovery.ScanAsync(configuredRoots.Count == 0 ? null : configuredRoots, state.Overrides);
+            var currentScan = await discovery.ScanAsync(configuredRoots.Count == 0 ? null : configuredRoots, state.Overrides,
+                includeDefaultRoots: configuredRoots.Count > 0);
             state.DiscoveredGames = currentScan.Games.ToList();
             state.LastScanUtc = DateTimeOffset.UtcNow;
             if (!options.Has("no-save") && !diagnosticsReadOnly) await store.SaveAsync(state);
@@ -389,6 +391,13 @@ internal static class CliApplication
     private static void PrintDiagnosticScan(ScanResult result)
     {
         PrintScan(result);
+        Console.WriteLine($"Steam roots/libraries diagnosed: {result.RootDiagnostics?.Count ?? 0}");
+        foreach (var root in result.RootDiagnostics ?? [])
+            Console.WriteLine(
+                $"{root.Source,-12} exists={root.Exists} readable={root.Readable} dedupe={root.Deduplicated} " +
+                $"manifests={root.ManifestsFound} games={root.GamesIncluded} | original={root.OriginalPath} | " +
+                $"canonical={root.CanonicalPath}" +
+                (root.SkipReason is null ? string.Empty : $" | {root.SkipReason}"));
         Console.WriteLine($"Appmanifests: {result.ManifestDiagnostics?.Count ?? 0}");
         foreach (var diagnostic in result.ManifestDiagnostics ?? [])
             Console.WriteLine($"{diagnostic.Disposition,-10} {diagnostic.AppId?.ToString() ?? "unknown",-10} " +

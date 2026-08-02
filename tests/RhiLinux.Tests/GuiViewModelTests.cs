@@ -238,7 +238,7 @@ public sealed class GuiViewModelTests
         Assert.False(viewModel.HasUpdates);
         Assert.Null(viewModel.ErrorMessage);
         Assert.Null(viewModel.PreviousOperationResult);
-        Assert.Equal("Checking safe options…", viewModel.SelectedProxy);
+        Assert.Equal("Looking for a safe compatibility filename…", viewModel.SelectedProxy);
         provider.Complete(20);
         await secondSelection;
         Assert.All(viewModel.ComponentCards, card => Assert.False(card.IsDetailsExpanded));
@@ -720,7 +720,11 @@ public sealed class GuiViewModelTests
         Assert.Equal("Not installed", Card(ComponentHealth.DownloadRequired, Resolved(ComponentKind.RenoDx)).State);
         Assert.Equal("Not installed", Card(ComponentHealth.DownloadRequired,
             Resolved(ComponentKind.RenoDx, ArtifactSupportKind.UnityFallback)).State);
-        Assert.Equal("Repair needed", Card(ComponentHealth.RepairAvailable).State);
+        Assert.Equal("Repair needed", Card(ComponentHealth.Broken).State);
+        Assert.Equal("Needs attention", Card(ComponentHealth.RepairAvailable).State);
+        Assert.Equal("Repair needed", new ComponentCardViewModel(new ComponentStatus(
+            ComponentKind.OptiScaler, ComponentHealth.IncorrectlyConfigured, "1", ["dxgi.dll"], "broken ini",
+            InstallationVerification.RepairNeeded)).State);
         Assert.Equal("Experimental", Card(ComponentHealth.Experimental).State);
         Assert.Equal("Blocked", Card(ComponentHealth.Conflicting).State);
         Assert.Equal("Blocked", Card(ComponentHealth.MissingDependency).State);
@@ -728,7 +732,12 @@ public sealed class GuiViewModelTests
         Assert.Equal("Unknown existing installation", Card(ComponentHealth.ManifestUnavailable).State);
 
         Assert.All(Enum.GetValues<ComponentHealth>(), health => Assert.Contains(Card(health).State,
-            new[] { "Installed", "Not installed", "Update available", "Repair needed", "Experimental", "Unsupported", "Blocked", "Unknown existing installation" }));
+            new[]
+            {
+                "Installed", "Installed, metadata incomplete", "Not installed", "Update available",
+                "Repair needed", "Needs attention", "Experimental", "Unsupported", "Blocked",
+                "Unknown existing installation"
+            }));
     }
 
     [Fact]
@@ -805,6 +814,67 @@ public sealed class GuiViewModelTests
 
         Assert.Equal("remember", preferences.Saved?.SearchText);
         Assert.Equal(42u, preferences.Saved?.SelectedAppId);
+    }
+
+    [Fact]
+    public async Task PlanIsRejectedAfterSameGameReselectionGenerationAdvances()
+    {
+        var game = Game(10, "First");
+        var viewModel = Create(new FakeDiscovery([game]));
+        await viewModel.InitializeAsync();
+        var plan = await viewModel.BuildRestorePlanAsync();
+        Assert.True(viewModel.IsPlanForCurrentSelection(plan));
+
+        await viewModel.SelectAsync(game);
+        Assert.False(viewModel.IsPlanForCurrentSelection(plan));
+    }
+
+    [Fact]
+    public async Task SettingsResetRestoresDefaultsAndPersists()
+    {
+        var preferences = new MemoryPreferencesStore(new UiPreferences
+        {
+            CacheLimitMiB = 512,
+            CheckForUpdatesAutomatically = false,
+            AdditionalSteamLibrary = "/tmp/extra",
+            ReduceMotion = true
+        });
+        var viewModel = Create(new FakeDiscovery([]), preferences);
+        await viewModel.InitializeAsync();
+
+        viewModel.ResetSettingsToDefaults();
+
+        Assert.Equal(5 * 1024, preferences.Saved?.CacheLimitMiB);
+        Assert.True(preferences.Saved?.CheckForUpdatesAutomatically);
+        Assert.Equal(string.Empty, preferences.Saved?.AdditionalSteamLibrary);
+        Assert.False(preferences.Saved?.ReduceMotion);
+    }
+
+    [Fact]
+    public async Task SearchRankingPutsExactTitleBeforeWeakSubstring()
+    {
+        var viewModel = Create(new FakeDiscovery([
+            Game(10, "Cyberpunk 2077"),
+            Game(20, "Punk Band"),
+            Game(30, "Cyberpunk")
+        ]));
+        await viewModel.InitializeAsync();
+
+        viewModel.SearchText = "Cyberpunk";
+        Assert.Equal(30u, viewModel.FilteredGames[0].AppId);
+        Assert.Equal(10u, viewModel.FilteredGames[1].AppId);
+    }
+
+    [Fact]
+    public async Task CancelBackgroundWorkAdvancesSelectionGeneration()
+    {
+        var viewModel = Create(new FakeDiscovery([Game(10, "First")]));
+        await viewModel.InitializeAsync();
+        var firstPlan = await viewModel.BuildRestorePlanAsync();
+        Assert.True(viewModel.IsPlanForCurrentSelection(firstPlan));
+
+        viewModel.CancelBackgroundWork();
+        Assert.False(viewModel.IsPlanForCurrentSelection(firstPlan));
     }
 
     [Fact]
@@ -1214,7 +1284,9 @@ public sealed class GuiViewModelTests
                 Theme = preferences.Theme,
                 SearchText = preferences.SearchText,
                 CacheLimitMiB = preferences.CacheLimitMiB,
-                ReduceMotion = preferences.ReduceMotion
+                ReduceMotion = preferences.ReduceMotion,
+                CheckForUpdatesAutomatically = preferences.CheckForUpdatesAutomatically,
+                AdditionalSteamLibrary = preferences.AdditionalSteamLibrary
             };
             return Task.CompletedTask;
         }

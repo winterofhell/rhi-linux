@@ -681,7 +681,8 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             operation.SourceBundleSha256 ?? prior?.SourceBundleSha256,
             operation.BundleRelativePath ?? prior?.BundleRelativePath,
             backup.Sha256,
-            prior?.FileClass ?? ClassifyPath(relative)));
+            prior?.FileClass ?? ClassifyPath(relative),
+            operation.Purpose ?? prior?.Purpose));
     }
 
     private static async Task TrackAsync(DeploymentPlan plan, GameManifest manifest, DeploymentOperation operation, CancellationToken token)
@@ -704,7 +705,8 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             operation.SourceBundleSha256 ?? previous?.SourceBundleSha256,
             operation.BundleRelativePath ?? previous?.BundleRelativePath,
             backup.Sha256,
-            previous?.FileClass ?? ClassifyPath(relative)));
+            previous?.FileClass ?? ClassifyPath(relative),
+            operation.Purpose ?? previous?.Purpose));
     }
 
     private static ManagedFileClass ClassifyPath(string relativePath) =>

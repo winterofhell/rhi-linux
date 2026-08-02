@@ -238,6 +238,241 @@ public sealed class SteamDiscoveryTests
     }
 
     [Fact]
+    public async Task ExplicitRootHasHighestPriorityAndKeepsWorkingNativeResult()
+    {
+        using var temp = new TestDirectory();
+        var native = temp.Directory("native");
+        var explicitRoot = temp.Directory("explicit");
+        AddGame(temp, "native", 42, "Native Game", "Native", "Native.exe");
+        AddGame(temp, "explicit", 84, "Explicit Game", "Explicit", "Explicit.exe");
+        temp.Directory("broken", "not-steam");
+        var broken = temp.Combine("broken");
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector())
+            .ScanAsync([explicitRoot, broken, native], includeDefaultRoots: false);
+
+        Assert.Equal(2, result.Games.Count);
+        Assert.Contains(result.Games, game => game.AppId == 42);
+        Assert.Contains(result.Games, game => game.AppId == 84);
+        Assert.Contains(result.RootDiagnostics!, diagnostic =>
+            diagnostic.Source == SteamRootSource.Explicit &&
+            diagnostic.CanonicalPath == Path.GetFullPath(explicitRoot));
+    }
+
+    [Fact]
+    public async Task FlatpakStyleRootIsScannedThroughLibraryFolders()
+    {
+        using var temp = new TestDirectory();
+        var flatpak = temp.Directory("flatpak-home", ".var", "app", "com.valvesoftware.Steam", "data", "Steam");
+        var external = temp.Directory("external disk", "SteamLibrary");
+        temp.Directory(flatpak, "steamapps");
+        temp.File(Path.Combine(Path.GetRelativePath(temp.Path, flatpak), "steamapps", "libraryfolders.vdf"),
+            $"\"libraryfolders\" {{ \"0\" {{ \"path\" \"{Escape(flatpak)}\" }} \"1\" {{ \"path\" \"{Escape(external)}\" }} }}");
+        AddGame(temp, Path.GetRelativePath(temp.Path, external), 100, "Flatpak External", "FlatpakExt", "Game.exe");
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([flatpak]);
+
+        Assert.Equal(100u, Assert.Single(result.Games).AppId);
+        Assert.Contains(result.Libraries, library => library == Path.GetFullPath(external));
+    }
+
+    [Fact]
+    public async Task SnapStyleRootDiscoversInstalledGame()
+    {
+        using var temp = new TestDirectory();
+        var snap = temp.Directory("snap", "steam", "common", ".local", "share", "Steam");
+        AddGame(temp, Path.GetRelativePath(temp.Path, snap), 55, "Snap Game", "SnapGame", "Snap.exe");
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([snap]);
+
+        Assert.Equal(55u, Assert.Single(result.Games).AppId);
+        Assert.Contains(result.RootDiagnostics!, diagnostic =>
+            diagnostic.CanonicalPath == Path.GetFullPath(snap) && diagnostic.GamesIncluded == 1);
+    }
+
+    [Fact]
+    public async Task XdgDataHomeOverrideIsEnumeratedAsCandidate()
+    {
+        using var temp = new TestDirectory();
+        var xdg = temp.Directory("xdg-data");
+        var steam = temp.Directory("xdg-data", "Steam");
+        AddGame(temp, Path.GetRelativePath(temp.Path, steam), 77, "Xdg Game", "XdgGame", "Xdg.exe");
+        var previous = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("XDG_DATA_HOME", xdg);
+            var candidates = SteamDiscoveryService.DiscoverRootCandidates(includeDefaultRoots: true);
+            Assert.Contains(candidates, candidate =>
+                candidate.Source == SteamRootSource.Xdg &&
+                candidate.CanonicalPath == Path.GetFullPath(steam) &&
+                candidate.Exists);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XDG_DATA_HOME", previous);
+        }
+
+        Assert.Equal(77u, Assert.Single(
+            (await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([steam])).Games).AppId);
+    }
+
+    [Fact]
+    public async Task DuplicateNativeAndFlatpakReferencesDeduplicateCanonicalRoots()
+    {
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("steam");
+        AddGame(temp, "steam", 42, "Shared", "Shared", "Shared.exe");
+        var link = temp.Combine("flatpak-link");
+        Directory.CreateSymbolicLink(link, steam);
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([steam, link]);
+
+        Assert.Single(result.SteamRoots);
+        Assert.Single(result.Games);
+        Assert.Contains(result.RootDiagnostics!, diagnostic => diagnostic.Deduplicated);
+    }
+
+    [Fact]
+    public async Task InaccessibleExternalLibraryReportsDiagnosticWithoutHanging()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("steam");
+        var locked = temp.Directory("locked-library");
+        temp.Directory("locked-library", "steamapps");
+        temp.File("steam/steamapps/libraryfolders.vdf",
+            $"\"libraryfolders\" {{ \"0\" {{ \"path\" \"{Escape(steam)}\" }} \"1\" {{ \"path\" \"{Escape(locked)}\" }} }}");
+        AddGame(temp, "steam", 42, "Readable", "Readable", "Readable.exe");
+        var steamApps = temp.Combine("locked-library", "steamapps");
+        try
+        {
+            SetUnixMode(steamApps, UnixFileMode.None);
+            var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([steam]);
+            Assert.Equal(42u, Assert.Single(result.Games).AppId);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("not readable", StringComparison.OrdinalIgnoreCase) ||
+                warning.Contains("permission", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(result.RootDiagnostics!, diagnostic =>
+                diagnostic.CanonicalPath == Path.GetFullPath(locked) &&
+                diagnostic is { Exists: true, Readable: false });
+        }
+        finally
+        {
+            SetUnixMode(steamApps, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
+    public async Task MissingRemovableLibraryAppearsWhenMountedLater()
+    {
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("steam");
+        var removable = temp.Combine("removable");
+        temp.Directory("steam", "steamapps");
+        temp.File("steam/steamapps/libraryfolders.vdf",
+            $"\"libraryfolders\" {{ \"0\" {{ \"path\" \"{Escape(steam)}\" }} \"1\" {{ \"path\" \"{Escape(removable)}\" }} }}");
+        var service = new SteamDiscoveryService(new ExecutableDetector());
+
+        var missing = await service.ScanAsync([steam]);
+        Assert.Empty(missing.Games);
+        Assert.Contains(missing.Warnings, warning => warning.Contains("unavailable", StringComparison.OrdinalIgnoreCase));
+
+        Directory.CreateDirectory(removable);
+        AddGame(temp, "removable", 99, "Removable Game", "Removable", "Removable.exe");
+        Assert.Equal(99u, Assert.Single((await service.ScanAsync([steam])).Games).AppId);
+    }
+
+    [Fact]
+    public async Task MalformedFallbackRootDoesNotAffectValidRoot()
+    {
+        using var temp = new TestDirectory();
+        var valid = temp.Directory("valid");
+        var malformed = temp.Directory("malformed", "steamapps");
+        AddGame(temp, "valid", 42, "Valid", "Valid", "Valid.exe");
+        temp.File("malformed/steamapps/libraryfolders.vdf", "\"libraryfolders\" {");
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([valid, Path.GetDirectoryName(malformed)!]);
+
+        Assert.Equal(42u, Assert.Single(result.Games).AppId);
+        Assert.Contains(result.Warnings, warning => warning.Contains("libraryfolders.vdf", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PathsWithSpacesAndUnicodeAreSupported()
+    {
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("Steam Root 游戏");
+        var library = temp.Directory("External Library 日本語");
+        temp.Directory(Path.GetRelativePath(temp.Path, steam), "steamapps");
+        temp.File(Path.Combine(Path.GetRelativePath(temp.Path, steam), "steamapps", "libraryfolders.vdf"),
+            $"\"libraryfolders\" {{ \"0\" {{ \"path\" \"{Escape(steam)}\" }} \"1\" {{ \"path\" \"{Escape(library)}\" }} }}");
+        AddGame(temp, Path.GetRelativePath(temp.Path, library), 123, "Unicode Game", "Unicode Game", "Game.exe");
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([steam]);
+
+        Assert.Equal(123u, Assert.Single(result.Games).AppId);
+        Assert.Contains("Unicode Game", result.Games[0].GameRoot, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LegacyLibraryFoldersFormatIsParsed()
+    {
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("steam");
+        var legacyLibrary = temp.Directory("legacy", "SteamLibrary");
+        temp.Directory("steam", "steamapps");
+        temp.File("steam/steamapps/libraryfolders.vdf",
+            $"\"LibraryFolders\" {{\n\"TimeNextStatsReport\" \"0\"\n\"ContentStatsID\" \"0\"\n\"1\" \"{Escape(legacyLibrary)}\"\n}}");
+        AddGame(temp, Path.GetRelativePath(temp.Path, legacyLibrary), 66, "Legacy Lib", "Legacy", "Legacy.exe");
+
+        Assert.Equal(66u, Assert.Single((await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([steam])).Games).AppId);
+    }
+
+    [Fact]
+    public async Task NonSteamDirectoryIsNotScannedForGames()
+    {
+        using var temp = new TestDirectory();
+        var decoy = temp.Directory("not-steam");
+        temp.Pe("not-steam/RandomGame.exe");
+        temp.File("not-steam/game.acf", "\"AppState\" { \"appid\" \"1\" \"name\" \"Nope\" \"installdir\" \"Nope\" }");
+
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([decoy]);
+
+        Assert.Empty(result.Games);
+        Assert.Empty(result.SteamRoots);
+        Assert.Contains(result.RootDiagnostics!, diagnostic => !diagnostic.Exists);
+    }
+
+    [Fact]
+    public async Task DiscoveryStaysFastWithManyNonexistentFallbackCandidates()
+    {
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("steam");
+        AddGame(temp, "steam", 42, "Fast", "Fast", "Fast.exe");
+        var missing = Enumerable.Range(0, 200)
+            .Select(index => temp.Combine($"missing-root-{index}"))
+            .ToArray();
+
+        var started = DateTime.UtcNow;
+        var result = await new SteamDiscoveryService(new ExecutableDetector()).ScanAsync([steam, .. missing]);
+        var elapsed = DateTime.UtcNow - started;
+
+        Assert.Equal(42u, Assert.Single(result.Games).AppId);
+        Assert.True(elapsed < TimeSpan.FromSeconds(2), $"Discovery took {elapsed.TotalMilliseconds}ms");
+    }
+
+    [Fact]
+    public void DefaultRootCandidatesIncludeFlatpakAndSnapSources()
+    {
+        var candidates = SteamDiscoveryService.DiscoverRootCandidates(includeDefaultRoots: true);
+        Assert.Contains(candidates, candidate => candidate.Source == SteamRootSource.Flatpak);
+        Assert.Contains(candidates, candidate => candidate.Source == SteamRootSource.Snap);
+        Assert.Contains(candidates, candidate => candidate.Source == SteamRootSource.Native);
+        Assert.Contains(candidates, candidate => candidate.Source == SteamRootSource.Xdg);
+    }
+
+    [Fact]
     public async Task EveryEnumeratedManifestHasDiagnosticDisposition()
     {
         using var temp = new TestDirectory();
@@ -276,4 +511,7 @@ public sealed class SteamDiscoveryTests
             $"\"AppState\" {{ \"appid\" \"{id}\" \"name\" \"{name}\" \"installdir\" \"{install}\"{flags} }}");
     }
     private static string Escape(string path) => path.Replace("\\", "\\\\", StringComparison.Ordinal);
+
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    private static void SetUnixMode(string path, UnixFileMode mode) => File.SetUnixFileMode(path, mode);
 }

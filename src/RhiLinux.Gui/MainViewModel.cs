@@ -23,6 +23,8 @@ public enum UiState
 
 public enum UpdateCheckState { Checking, UpToDate, UpdateAvailable, Offline, UnableToCheck }
 
+public enum SelectionPhase { Idle, DetectingGame, CheckingCompatibility, CheckingUpdates }
+
 public enum PrimaryActionKind { None, Install, Update, Repair, Remove }
 
 public sealed class ComponentCardViewModel : INotifyPropertyChanged
@@ -45,10 +47,14 @@ public sealed class ComponentCardViewModel : INotifyPropertyChanged
         Health = status.Health;
         State = status.Health switch
         {
+            ComponentHealth.Installed when status.Verification == InstallationVerification.MetadataUnverified =>
+                "Installed, metadata incomplete",
             ComponentHealth.Installed => "Installed",
             ComponentHealth.Outdated => "Update available",
-            ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or ComponentHealth.IncorrectlyConfigured or
-                ComponentHealth.RepairAvailable => "Repair needed",
+            ComponentHealth.Broken or ComponentHealth.PartiallyInstalled => "Repair needed",
+            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable when
+                status.Verification == InstallationVerification.RepairNeeded => "Repair needed",
+            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable => "Needs attention",
             ComponentHealth.Experimental => "Experimental",
             ComponentHealth.Unsupported or ComponentHealth.Unavailable => "Unsupported",
             ComponentHealth.Conflicting or ComponentHealth.MissingDependency => "Blocked",
@@ -59,10 +65,17 @@ public sealed class ComponentCardViewModel : INotifyPropertyChanged
         TechnicalExplanation = status.Diagnostic ?? status.Explanation;
         Explanation = status.Health switch
         {
+            ComponentHealth.Installed when status.Verification == InstallationVerification.MetadataUnverified =>
+                "Installed files are ready. Ownership metadata differs from disk and does not require repair.",
             ComponentHealth.Installed => "Installed files are ready to use.",
             ComponentHealth.Outdated => "A newer compatible version is available.",
-            ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or ComponentHealth.IncorrectlyConfigured or
-                ComponentHealth.RepairAvailable => "Some files from an earlier installation need repair.",
+            ComponentHealth.Broken or ComponentHealth.PartiallyInstalled =>
+                "Required runtime files from an earlier installation need repair.",
+            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable when
+                status.Verification == InstallationVerification.RepairNeeded =>
+                "Some files from an earlier installation need repair.",
+            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable =>
+                "Installed files are present, but configuration differs from the recommended layout.",
             ComponentHealth.Unsupported or ComponentHealth.Unavailable => "Automatic setup is not available for this component.",
             ComponentHealth.ForeignInstallation or ComponentHealth.ManifestUnavailable => "Existing files will be left unchanged.",
             ComponentHealth.Conflicting or ComponentHealth.MissingDependency => "No safe automatic method is currently available.",
@@ -88,8 +101,10 @@ public sealed class ComponentCardViewModel : INotifyPropertyChanged
                 ComponentHealth.Cached or ComponentHealth.Experimental);
         CanUpdate = !foreign && status.Health == ComponentHealth.Outdated;
         CanRemove = !foreign && status.Health == ComponentHealth.Installed;
-        CanRepair = !foreign && status.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
-            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable;
+        CanRepair = !foreign && (
+            status.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled ||
+            (status.Health is ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable &&
+             status.Verification == InstallationVerification.RepairNeeded));
         DisabledReason = foreign ? "Detected files are not owned by RHI Linux and cannot be changed safely." : status.Health switch
         {
             ComponentHealth.Conflicting => status.Explanation,
@@ -158,18 +173,24 @@ public sealed record GameSelectionSnapshot(
     OptiScalerCompatibilityLevel? OptiScalerLevel,
     PrimaryActionKind PrimaryAction,
     string Progress,
-    ExecutionResult? PreviousOperationResult)
+    ExecutionResult? PreviousOperationResult,
+    string RequiredLaunchOption = "",
+    LaunchOptionStatus LaunchOptionStatus = LaunchOptionStatus.NotDetected,
+    string LaunchOptionExplanation = "",
+    string? DetectedLaunchOption = null,
+    SelectionPhase Phase = SelectionPhase.Idle,
+    string TimingDiagnostics = "")
 {
     public static GameSelectionSnapshot Loading(SteamGame game, long generation, bool canCheckUpdates) => new(
         game,
         generation,
         true,
         [],
-        "Loading compatibility…",
-        "Checking safe options…",
-        "Loading component state…",
-        "Loading game status",
-        "Checking installed files, ownership records, cached downloads, and safe compatibility options.",
+        "Detecting game…",
+        "Looking for a safe compatibility filename…",
+        "Reading installed component state…",
+        "Detecting game",
+        "Reading local game files and compatibility options.",
         false,
         canCheckUpdates ? UpdateCheckState.Checking : UpdateCheckState.UnableToCheck,
         false,
@@ -177,7 +198,13 @@ public sealed record GameSelectionSnapshot(
         null,
         PrimaryActionKind.None,
         string.Empty,
-        null);
+        null,
+        string.Empty,
+        LaunchOptionStatus.NotDetected,
+        "Checking the required Steam launch option…",
+        null,
+        SelectionPhase.DetectingGame,
+        string.Empty);
 }
 
 public sealed class MainViewModel : INotifyPropertyChanged
@@ -215,9 +242,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         paths = new XdgPaths();
         discovery = new GameDiscoveryAdapter(new SteamDiscoveryService(new ExecutableDetector()), steamRoots);
-        var stackStatusService = new StackStatusService(new HttpClient(), paths);
+        var httpClient = MetadataHttp.CreateClient();
+        var stackStatusService = new StackStatusService(httpClient, paths);
         stackStatusProvider = new StackReportProviderAdapter(stackStatusService);
-        statusProvider = new StackStatusProviderAdapter(stackStatusService);
+        var catalog = new GameProfileCatalog(paths);
+        statusProvider = new ComponentStatusProviderAdapter(new ComponentDetector(catalog));
         stateStore = new JsonStateStore(paths.StateFile);
         preferencesStore = new JsonUiPreferencesStore(Path.Combine(paths.AppConfigDirectory, "ui.json"));
         planner = new DeploymentPlanner();
@@ -284,14 +313,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public bool CanCheckForUpdates => !IsBusy && !IsCheckingUpdates && HasSelection;
     public bool IsCheckingUpdates => activeSnapshot?.IsCheckingUpdates == true;
     public UpdateCheckState UpdateState => activeSnapshot?.UpdateState ?? UpdateCheckState.UnableToCheck;
-    public string UpdateStatusText => UpdateState switch
+    public string UpdateStatusText
     {
-        UpdateCheckState.UpToDate => "Up to date",
-        UpdateCheckState.UpdateAvailable => "Update available",
-        UpdateCheckState.Checking => "Checking",
-        UpdateCheckState.Offline => "Offline",
-        _ => "Unable to check"
-    };
+        get
+        {
+            if (UpdateState == UpdateCheckState.UpdateAvailable)
+            {
+                var names = ComponentCards.Where(x => x.Health == ComponentHealth.Outdated).Select(x => x.Name).ToArray();
+                return names.Length == 0 ? "Component update available" :
+                    names.Length == 1 ? $"{names[0]} update available" :
+                    "Component updates available";
+            }
+
+            var hasInstalled = ComponentCards.Any(x => x.Health is ComponentHealth.Installed or ComponentHealth.Outdated);
+            return UpdateState switch
+            {
+                UpdateCheckState.UpToDate when hasInstalled => "Installed sources are current",
+                UpdateCheckState.UpToDate => "Official sources checked",
+                UpdateCheckState.Checking => "Checking for component updates…",
+                UpdateCheckState.Offline => "Could not reach update sources",
+                _ => "Unable to check for updates"
+            };
+        }
+    }
+    public bool ShowUpdateStatusChip => HasSelection && !IsSelectionLoading &&
+        UpdateState is not UpdateCheckState.UnableToCheck;
     public bool HasUpdates => activeSnapshot?.HasUpdates == true;
     public PrimaryActionKind PrimaryAction => activeSnapshot?.PrimaryAction ?? PrimaryActionKind.None;
     public string PrimaryActionText => PrimaryAction switch
@@ -300,7 +346,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         PrimaryActionKind.Update => "Update",
         PrimaryActionKind.Repair => "Repair and continue",
         PrimaryActionKind.Remove => "Remove",
-        _ when IsSelectionLoading || IsCheckingUpdates || UpdateState == UpdateCheckState.Checking => "Checking…",
+        _ when IsSelectionLoading => "Detecting…",
         _ when ComponentCards.Any(x => x.Health == ComponentHealth.Installed) => "Installed",
         _ => "Unavailable"
     };
@@ -309,6 +355,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string ProfileSummary => activeSnapshot?.ProfileSummary ?? "Not resolved";
     public string SelectedProxy => activeSnapshot?.SelectedProxy ?? "Not resolved";
     public string DependencySummary => activeSnapshot?.DependencySummary ?? "Not resolved";
+    public string TimingDiagnostics => activeSnapshot?.TimingDiagnostics ?? string.Empty;
+    public bool HasTimingDiagnostics => TimingDiagnostics.Length > 0;
+    public SelectionPhase SelectionPhase => activeSnapshot?.Phase ?? SelectionPhase.Idle;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasGames => Games.Count > 0;
     public bool HasFilteredGames => FilteredGames.Count > 0;
@@ -326,6 +375,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Preferences.ReduceMotion = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(UseMotion));
+            _ = SavePreferencesAsync();
+        }
+    }
+    public bool CheckForUpdatesAutomatically
+    {
+        get => Preferences.CheckForUpdatesAutomatically;
+        set
+        {
+            if (Preferences.CheckForUpdatesAutomatically == value) return;
+            Preferences.CheckForUpdatesAutomatically = value;
+            OnPropertyChanged();
+            _ = SavePreferencesAsync();
+        }
+    }
+    public string AdditionalSteamLibrary
+    {
+        get => Preferences.AdditionalSteamLibrary;
+        set
+        {
+            var normalized = value ?? string.Empty;
+            if (Preferences.AdditionalSteamLibrary == normalized) return;
+            Preferences.AdditionalSteamLibrary = normalized;
+            OnPropertyChanged();
+            _ = SavePreferencesAsync();
         }
     }
     public string SelectionProgress => activeSnapshot?.Progress ?? string.Empty;
@@ -351,11 +424,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SelectedGame.HasProtonPrefix ? ShortenPath(SelectedGame.ProtonPrefix) : "Proton prefix not created yet";
     public string ProtonPrefixPath => SelectedGame?.ProtonPrefix ?? string.Empty;
     public string ConfidenceText => SelectedGame is null ? string.Empty : $"{SelectedGame.Confidence} confidence";
+    public string ArchitectureDisplay => SelectedGame?.Candidates.FirstOrDefault(x =>
+            SelectedGame.Executable is not null &&
+            Path.GetFullPath(x.Path).Equals(Path.GetFullPath(SelectedGame.Executable), StringComparison.Ordinal))?.Architecture
+            .ToString() ?? SelectedGame?.Candidates.FirstOrDefault()?.Architecture.ToString() ?? "Unknown";
+    public string EngineDisplay => SelectedGame?.Engine.ToString() ?? "Unknown";
     public string SelectionReason => SelectedGame?.SelectionReason ?? string.Empty;
     public IReadOnlyList<ExecutableCandidateDisplay> Candidates => SelectedGame?.Candidates.Select(x =>
         new ExecutableCandidateDisplay(x.Score, x.Confidence.ToString(), x.Path, string.Join(" · ", x.Reasons))).ToArray() ?? [];
-    public string LaunchOption => SelectedProxy.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
-        ? DeploymentPlanner.GenerateLaunchOption(SelectedProxy) : string.Empty;
+    public string LaunchOption => activeSnapshot?.RequiredLaunchOption ?? string.Empty;
+    public LaunchOptionStatus LaunchOptionStatus => activeSnapshot?.LaunchOptionStatus ?? LaunchOptionStatus.NotDetected;
+    public string LaunchOptionStatusText => LaunchOptionStatus switch
+    {
+        LaunchOptionStatus.Correct => "Correct",
+        LaunchOptionStatus.Missing => "Missing",
+        LaunchOptionStatus.NeedsUpdate => "Needs update",
+        LaunchOptionStatus.NotRequired => "Not required",
+        _ => "Not detected"
+    };
+    public string LaunchOptionExplanation => activeSnapshot?.LaunchOptionExplanation ?? string.Empty;
+    public bool HasLaunchOption => LaunchOption.Length > 0;
     public string CacheSizeText { get => cacheSizeText; private set => Set(ref cacheSizeText, value); }
     public string CacheCleanupText { get => cacheCleanupText; private set => Set(ref cacheCleanupText, value); }
     public bool IsCacheBusy { get => isCacheBusy; private set { if (Set(ref isCacheBusy, value)) OnPropertyChanged(nameof(CanManageCache)); } }
@@ -366,10 +454,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set
         {
             var mib = (int)Math.Round(value * 1024m, MidpointRounding.AwayFromZero);
+            mib = Math.Clamp(mib, 1, 2_097_151);
             if (Preferences.CacheLimitMiB == mib) return;
-            Preferences.CacheLimitMiB = Math.Max(mib, 1);
+            Preferences.CacheLimitMiB = mib;
             OnPropertyChanged();
+            _ = SavePreferencesAsync();
         }
+    }
+
+    public void ResetSettingsToDefaults()
+    {
+        Preferences.CacheLimitMiB = 5 * 1024;
+        Preferences.ReduceMotion = false;
+        Preferences.CheckForUpdatesAutomatically = true;
+        Preferences.AdditionalSteamLibrary = string.Empty;
+        Preferences.Theme = "System";
+        OnPropertyChanged(nameof(CacheLimitGiB));
+        OnPropertyChanged(nameof(ReduceMotion));
+        OnPropertyChanged(nameof(UseMotion));
+        OnPropertyChanged(nameof(CheckForUpdatesAutomatically));
+        OnPropertyChanged(nameof(AdditionalSteamLibrary));
+        _ = SavePreferencesAsync();
     }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -387,6 +492,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(ReduceMotion));
             OnPropertyChanged(nameof(UseMotion));
             OnPropertyChanged(nameof(CacheLimitGiB));
+            OnPropertyChanged(nameof(CheckForUpdatesAutomatically));
+            OnPropertyChanged(nameof(AdditionalSteamLibrary));
             applicationState = await stateStore.LoadAsync(cancellationToken);
             CurrentState = UiState.Empty;
             await RefreshAsync(cancellationToken);
@@ -440,6 +547,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
+        if (discovery is GameDiscoveryAdapter adapter)
+        {
+            adapter.ExtraSteamRoots = string.IsNullOrWhiteSpace(Preferences.AdditionalSteamLibrary)
+                ? null
+                : [Preferences.AdditionalSteamLibrary];
+        }
         var previousGames = games.Select(GameIdentity).ToHashSet();
         var selectedAppId = SelectedGame?.AppId ?? Preferences.SelectedAppId;
         var refreshSelectionGeneration = Volatile.Read(ref selectionGeneration);
@@ -544,8 +657,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var gameChanged = previousSnapshot?.Game.AppId != game.AppId;
         Preferences.SelectedAppId = game.AppId;
         ApplySnapshot(GameSelectionSnapshot.Loading(game, generation, stackStatusProvider is not null), UiState.Loading);
-        SetSelectionStatus($"Checking {game.Name}…", game.AppId, generation, selectionToken);
+        SetSelectionStatus($"Detecting {game.Name}…", game.AppId, generation, selectionToken);
         SetSelectionError(null, game.AppId, generation);
+        var timing = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var catalog = new GameProfileCatalog(paths);
@@ -554,44 +668,58 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var proxyTask = new ProxyDiagnosticsService(catalog).DiagnoseAsync(game, selectionToken);
             await Task.WhenAll(statusTask, profileTask, proxyTask);
             if (!IsCurrentSelection(game.AppId, generation, selectionToken)) return;
+            var localMs = timing.ElapsedMilliseconds;
             var statuses = await statusTask;
             var profile = await profileTask;
             var proxy = await proxyTask;
             var eligibility = OptiScalerEligibilityService.Evaluate(game, profile, proxy);
             var cards = CreateComponentCards(statuses, null, gameChanged ? null : previousSnapshot);
             var support = BuildSupportSummary(profile, proxy, null, eligibility, false);
+            var proposedAction = DeterminePrimaryAction(statuses, false);
+            if (proposedAction == PrimaryActionKind.None && support.CanInstall)
+                proposedAction = PrimaryActionKind.Install;
+            var launch = await ResolveLaunchOptionAsync(game, statuses, proxy, selectionToken);
+            var autoUpdates = stackStatusProvider is not null && Preferences.CheckForUpdatesAutomatically;
             var snapshot = new GameSelectionSnapshot(
                 game,
                 generation,
                 false,
                 cards,
                 $"{profile.Profile.Id} · {profile.MatchReason}",
-                proxy.SelectedProxy ?? "No safe proxy",
+                ResolveActiveProxyDisplay(statuses, proxy),
                 profile.Profile.RenoDx is null
                 ? $"OptiScaler: {eligibility.Level} · RenoDX unavailable"
                 : $"Full-addon ReShade → {profile.Profile.RenoDx.FileName} · OptiScaler: {eligibility.Level}",
                 support.Title,
                 support.Message,
-                support.CanInstall,
-                stackStatusProvider is null ? UpdateCheckState.UnableToCheck : UpdateCheckState.Checking,
+                support.CanInstall && proposedAction != PrimaryActionKind.None,
+                autoUpdates ? UpdateCheckState.Checking : stackStatusProvider is null
+                    ? UpdateCheckState.UnableToCheck : UpdateCheckState.UpToDate,
                 false,
                 false,
                 eligibility.Level,
-                PrimaryActionKind.None,
+                proposedAction,
                 string.Empty,
-                null);
+                null,
+                launch.RequiredOption,
+                launch.Status,
+                launch.Explanation,
+                launch.DetectedOption,
+                autoUpdates ? SelectionPhase.CheckingUpdates : SelectionPhase.Idle,
+                $"Local detect {localMs} ms · compatibility from catalog/proxy · updates {(autoUpdates ? "background" : "skipped")}");
             if (!IsCurrentSelection(game.AppId, generation, selectionToken)) return;
             var state = cards.Any(x => x.Health == ComponentHealth.Conflicting) ? UiState.Conflict :
                 game.RequiresConfirmation ? UiState.Unsupported : UiState.Ready;
             ApplySnapshot(snapshot, state, selectionToken);
+            SetSelectionStatus(support.Title, game.AppId, generation, selectionToken);
         }
         catch (OperationCanceledException) when (selectionToken.IsCancellationRequested) { return; }
         catch (Exception exception)
         {
-            SetSelectionError($"Component scan failed: {exception.Message}", game.AppId, generation, selectionToken, UiState.Error);
+            SetSelectionError($"Could not read this game: {exception.Message}", game.AppId, generation, selectionToken, UiState.Error);
         }
         if (!IsCurrentSelection(game.AppId, generation, selectionToken)) return;
-        if (stackStatusProvider is not null)
+        if (stackStatusProvider is not null && Preferences.CheckForUpdatesAutomatically)
             _ = CheckForUpdatesAsync(true, selectionToken);
     }
 
@@ -603,10 +731,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CancellationToken selectionToken;
         lock (selectionLock) selectionToken = selectionCancellation?.Token ?? CancellationToken.None;
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, selectionToken);
+        linkedCancellation.CancelAfter(MetadataHttp.UpdateCheckBudget);
         var updateToken = linkedCancellation.Token;
         if (!IsCurrentSelection(game.AppId, generation, updateToken)) return;
-        ApplySnapshot(startingSnapshot with { IsCheckingUpdates = true, UpdateState = UpdateCheckState.Checking }, CurrentState, updateToken);
-        if (!automatic) SetSelectionStatus("Checking for updates…", game.AppId, generation, updateToken);
+        var updateStarted = System.Diagnostics.Stopwatch.StartNew();
+        ApplySnapshot(startingSnapshot with
+        {
+            IsCheckingUpdates = true,
+            UpdateState = UpdateCheckState.Checking,
+            Phase = SelectionPhase.CheckingUpdates
+        }, CurrentState, updateToken);
+        if (!automatic) SetSelectionStatus("Checking for component updates…", game.AppId, generation, updateToken);
         try
         {
             var report = await stackStatusProvider.GetAsync(game, true, updateToken, forceRefresh: !automatic);
@@ -625,9 +760,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var cards = CreateComponentCards(report.Components, report.ArtifactResolution.Components, activeSnapshot);
             var support = BuildSupportSummary(report.Profile, report.Proxy, report, report.OptiScalerEligibility, hasUpdates);
             var proposedAction = DeterminePrimaryAction(report.Components, hasUpdates);
-            var primaryAction = proposedAction == PrimaryActionKind.Remove || CanPrepareAutomaticPlan(report, proposedAction)
+            var primaryAction = proposedAction == PrimaryActionKind.Remove || CanPrepareAutomaticPlan(report, proposedAction) ||
+                (proposedAction == PrimaryActionKind.Install && support.CanInstall)
                 ? proposedAction
                 : PrimaryActionKind.None;
+            var launch = await ResolveLaunchOptionAsync(game, report.Components, report.Proxy, updateToken);
+            var timing = AppendTiming(startingSnapshot.TimingDiagnostics,
+                $"update check {updateStarted.ElapsedMilliseconds} ms · metadata {report.ArtifactResolution.MetadataState}");
             var completed = new GameSelectionSnapshot(
                 game,
                 generation,
@@ -635,7 +774,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 cards,
                 $"{report.Profile.Profile.Id} · {report.Profile.MatchReason}" +
                     (report.ArtifactResolution.RemoteManifest?.Version is { } manifestVersion ? $" · remote manifest v{manifestVersion}" : string.Empty),
-                report.Proxy.SelectedProxy ?? "No safe option",
+                ResolveActiveProxyDisplay(report.Components, report.Proxy),
                 report.Profile.Profile.RenoDx is null
                     ? $"OptiScaler: {report.OptiScalerEligibility.Level} · RenoDX unavailable"
                     : $"Full-addon ReShade → {report.Profile.Profile.RenoDx.FileName} · OptiScaler: {report.OptiScalerEligibility.Level}",
@@ -648,37 +787,88 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 report.OptiScalerEligibility.Level,
                 primaryAction,
                 string.Empty,
-                null);
+                null,
+                launch.RequiredOption,
+                launch.Status,
+                launch.Explanation,
+                launch.DetectedOption,
+                SelectionPhase.Idle,
+                timing);
             if (!IsCurrentSelection(game.AppId, generation, updateToken)) return;
             if (!ApplySnapshot(completed, cards.Any(x => x.Health == ComponentHealth.Conflicting) ? UiState.Conflict :
                     game.RequiresConfirmation ? UiState.Unsupported : UiState.Ready, updateToken,
                     preserveOperationStatus: automatic)) return;
             if (!automatic || !HasActiveOperationStatus(game.AppId, generation, updateToken))
-                SetSelectionStatus(UpdateStatusText, game.AppId, generation, updateToken);
+                SetSelectionStatus(automatic ? SupportTitle : UpdateStatusText, game.AppId, generation, updateToken);
         }
-        catch (OperationCanceledException) when (updateToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            return;
+            // User cancel, selection switch, or request budget — never leave Checking stuck.
+            if (activeSnapshot is { } current &&
+                current.Game.AppId == game.AppId &&
+                current.Generation == generation)
+            {
+                ApplySnapshot(current with
+                {
+                    IsCheckingUpdates = false,
+                    UpdateState = selectionToken.IsCancellationRequested
+                        ? current.UpdateState == UpdateCheckState.Checking
+                            ? UpdateCheckState.UnableToCheck : current.UpdateState
+                        : UpdateCheckState.Offline,
+                    Phase = SelectionPhase.Idle,
+                    TimingDiagnostics = AppendTiming(current.TimingDiagnostics,
+                        selectionToken.IsCancellationRequested
+                            ? $"update check cancelled after {updateStarted.ElapsedMilliseconds} ms"
+                            : $"update check timed out after {updateStarted.ElapsedMilliseconds} ms")
+                }, CurrentState);
+                if (!automatic && !selectionToken.IsCancellationRequested)
+                    SetSelectionStatus("Could not reach update sources", game.AppId, generation);
+            }
         }
         catch (HttpRequestException)
         {
-            if (IsCurrentSelection(game.AppId, generation, updateToken) && activeSnapshot is { } current)
-                ApplySnapshot(current with { IsCheckingUpdates = false, UpdateState = UpdateCheckState.Offline }, CurrentState, updateToken);
+            if (activeSnapshot is { } current &&
+                current.Game.AppId == game.AppId &&
+                current.Generation == generation)
+                ApplySnapshot(current with
+                {
+                    IsCheckingUpdates = false,
+                    UpdateState = UpdateCheckState.Offline,
+                    Phase = SelectionPhase.Idle
+                }, CurrentState);
         }
         catch (Exception exception)
         {
-            if (IsCurrentSelection(game.AppId, generation, updateToken) && activeSnapshot is { } current)
+            if (activeSnapshot is { } current &&
+                current.Game.AppId == game.AppId &&
+                current.Generation == generation)
             {
-                ApplySnapshot(current with { IsCheckingUpdates = false, UpdateState = UpdateCheckState.UnableToCheck }, CurrentState, updateToken);
-                if (!automatic) SetSelectionError($"Update check failed: {exception.Message}", game.AppId, generation, updateToken);
+                ApplySnapshot(current with
+                {
+                    IsCheckingUpdates = false,
+                    UpdateState = UpdateCheckState.UnableToCheck,
+                    Phase = SelectionPhase.Idle
+                }, CurrentState);
+                if (!automatic) SetSelectionError($"Update check failed: {exception.Message}", game.AppId, generation);
             }
         }
         finally
         {
-            if (IsCurrentSelection(game.AppId, generation, updateToken) && activeSnapshot is { IsCheckingUpdates: true } current)
-                ApplySnapshot(current with { IsCheckingUpdates = false }, CurrentState, updateToken);
+            if (activeSnapshot is { IsCheckingUpdates: true } current &&
+                current.Game.AppId == game.AppId &&
+                current.Generation == generation)
+                ApplySnapshot(current with
+                {
+                    IsCheckingUpdates = false,
+                    Phase = SelectionPhase.Idle,
+                    UpdateState = current.UpdateState == UpdateCheckState.Checking
+                        ? UpdateCheckState.UnableToCheck : current.UpdateState
+                }, CurrentState);
         }
     }
+
+    private static string AppendTiming(string existing, string next) =>
+        string.IsNullOrWhiteSpace(existing) ? next : $"{existing} · {next}";
 
     public async Task SaveOverridesAsync(string? executable, string? deploymentDirectory, CancellationToken cancellationToken = default)
     {
@@ -708,7 +898,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             EnsureCurrentSelection(snapshot, token);
             if (!SetSelectionStatus("Deployment plan ready for review", snapshot.Game.AppId, snapshot.Generation, token, UiState.Ready))
                 throw new OperationCanceledException("The selected game changed while the plan was being prepared.", token);
-            return result;
+            return StampPlan(result, snapshot);
         }
         catch (OperationCanceledException)
         {
@@ -750,7 +940,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 ? await BuildRecommendedStackPlanCoreAsync(planningSnapshot, token)
                 : await recommendedPlanBuilder(snapshot.Game, token);
             EnsureCurrentSelection(snapshot, token);
-            var result = ClonePlanWithAction(plan, planningSnapshot.PrimaryAction);
+            var result = StampPlan(ClonePlanWithAction(plan, planningSnapshot.PrimaryAction), snapshot);
             if (!SetSelectionStatus("Recommended stack ready for review", snapshot.Game.AppId, snapshot.Generation, token, UiState.Ready))
                 throw new OperationCanceledException("The selected game changed while the plan was being prepared.", token);
             return result;
@@ -782,8 +972,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var componentAction = card.Health switch
         {
             ComponentHealth.Outdated => PrimaryActionKind.Update,
-            ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
-                ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable => PrimaryActionKind.Repair,
+            ComponentHealth.Broken or ComponentHealth.PartiallyInstalled => PrimaryActionKind.Repair,
+            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable when card.CanRepair => PrimaryActionKind.Repair,
             _ => PrimaryActionKind.Install
         };
         var planningSnapshot = snapshot with { PrimaryAction = componentAction };
@@ -798,7 +988,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 ? await BuildRecommendedStackPlanCoreAsync(planningSnapshot, token, component)
                 : await recommendedPlanBuilder(snapshot.Game, token);
             EnsureCurrentSelection(snapshot, token);
-            var result = ClonePlanWithAction(plan, componentAction);
+            var result = StampPlan(ClonePlanWithAction(plan, componentAction), snapshot);
             if (!SetSelectionStatus($"{card.Name} plan ready for review", snapshot.Game.AppId,
                     snapshot.Generation, token, UiState.Ready))
                 throw new OperationCanceledException(
@@ -837,7 +1027,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         GlobalStatus = "Building removal plan…";
         try
         {
-            var result = await planner.BuildRemoveStackPlanAsync(snapshot.Game, linkedCancellation.Token);
+            var result = StampPlan(await planner.BuildRemoveStackPlanAsync(snapshot.Game, linkedCancellation.Token), snapshot);
             EnsureCurrentSelection(snapshot, linkedCancellation.Token);
             if (!SetSelectionStatus("Removal plan ready for review", snapshot.Game.AppId, snapshot.Generation,
                     linkedCancellation.Token, UiState.Ready))
@@ -866,12 +1056,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         var snapshot = activeSnapshot ?? throw new InvalidOperationException("Select a game first.");
         using var linkedCancellation = CreateSelectionLinkedCancellation(snapshot, cancellationToken);
-        var result = await planner.BuildRemovePlanAsync(snapshot.Game, component, cancellationToken: linkedCancellation.Token);
+        var result = StampPlan(
+            await planner.BuildRemovePlanAsync(snapshot.Game, component, cancellationToken: linkedCancellation.Token),
+            snapshot);
         EnsureCurrentSelection(snapshot, linkedCancellation.Token);
         return result;
     }
-    public Task<DeploymentPlan> BuildRestorePlanAsync(CancellationToken cancellationToken = default) =>
-        planner.BuildRestorePlanAsync(RequireGame(), cancellationToken);
+
+    public async Task<DeploymentPlan> BuildRestorePlanAsync(CancellationToken cancellationToken = default)
+    {
+        var snapshot = activeSnapshot ?? throw new InvalidOperationException("Select a game first.");
+        using var linkedCancellation = CreateSelectionLinkedCancellation(snapshot, cancellationToken);
+        var result = StampPlan(await planner.BuildRestorePlanAsync(snapshot.Game, linkedCancellation.Token), snapshot);
+        EnsureCurrentSelection(snapshot, linkedCancellation.Token);
+        return result;
+    }
 
     private async Task<DeploymentPlan> BuildRecommendedStackPlanCoreAsync(
         GameSelectionSnapshot snapshot,
@@ -936,8 +1135,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return new ExecutionResult(false, dryRun, false, [],
                 "The selected game changed before the operation began. No files were changed.");
 
-        var operationAppId = operationSnapshot.Game.AppId;
-        var operationGeneration = operationSnapshot.Generation;
+        var operationContext = OperationContext.From(operationSnapshot.Game, operationSnapshot.Generation);
+        var operationAppId = operationContext.AppId;
+        var operationGeneration = operationContext.SelectionGeneration;
         var busy = BeginBusy();
         var operationStatus = dryRun ? "Validating operation…" : "Applying changes…";
         if (!ApplySnapshot(operationSnapshot with { Progress = operationStatus, PreviousOperationResult = null }, UiState.Deploying))
@@ -949,6 +1149,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SetSelectionStatus(operationStatus, operationAppId, operationGeneration);
         var attempted = false;
         var cancelled = false;
+        var rescannedCurrentGame = false;
         ExecutionResult result;
         try
         {
@@ -970,6 +1171,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (attempted && !dryRun && IsCurrentSelection(operationAppId, operationGeneration) && SelectedGame is { } selected)
             {
                 await SelectAsync(selected);
+                rescannedCurrentGame = activeSnapshot is { } afterScan &&
+                    PlanMatchesSnapshot(plan, afterScan);
                 if (result.Succeeded && !await PostOperationStateMatchesAsync(plan, activeSnapshot))
                     result = result with
                     {
@@ -978,13 +1181,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     };
             }
 
-            if (activeSnapshot is { } completedSnapshot && PlanMatchesSnapshot(plan, completedSnapshot))
+            if (activeSnapshot is { } completedSnapshot &&
+                PlanMatchesSnapshot(plan, completedSnapshot) &&
+                (rescannedCurrentGame || completedSnapshot.Generation == operationGeneration))
             {
                 var completedState = cancelled ? UiState.Ready : result.Succeeded ? UiState.Success : UiState.Error;
                 ApplySnapshot(completedSnapshot with { Progress = string.Empty, PreviousOperationResult = result }, completedState);
                 SetSelectionError(cancelled ? null : result.Error, completedSnapshot.Game.AppId, completedSnapshot.Generation);
                 SetSelectionStatus(cancelled ? "Operation cancelled" : result.DryRun ? "Validation complete" :
-                    result.Succeeded ? "Changes completed" : "Operation failed",
+                    result.Succeeded
+                        ? (plan.Action.Contains("restore", StringComparison.OrdinalIgnoreCase)
+                            ? "The game files were restored."
+                            : "Changes completed")
+                        : "Operation failed",
                     completedSnapshot.Game.AppId, completedSnapshot.Generation);
             }
             return result;
@@ -992,13 +1201,36 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally
         {
             EndBusy(busy);
-            if (activeSnapshot is { } current && current.Game.AppId == operationAppId)
+            if (activeSnapshot is { } current &&
+                current.Game.AppId == operationAppId &&
+                (current.Generation == operationGeneration || rescannedCurrentGame))
                 ApplySnapshot(current with { Progress = string.Empty }, CurrentState);
         }
     }
 
     public bool IsPlanForCurrentSelection(DeploymentPlan plan) =>
         activeSnapshot is { } snapshot && PlanMatchesSnapshot(plan, snapshot);
+
+    public void CancelBackgroundWork()
+    {
+        lock (selectionLock)
+        {
+            selectionCancellation?.Cancel();
+            selectionCancellation?.Dispose();
+            selectionCancellation = null;
+            var generation = Interlocked.Increment(ref selectionGeneration);
+            if (activeSnapshot is { } snapshot)
+                activeSnapshot = snapshot with
+                {
+                    Generation = generation,
+                    IsLoading = false,
+                    Progress = string.Empty,
+                    PreviousOperationResult = null
+                };
+        }
+    }
+
+    public void CollapseComponentDetails() => CollapseAllDetails();
 
     public Task SavePreferencesAsync(CancellationToken cancellationToken = default) => preferencesStore.SaveAsync(Preferences, cancellationToken);
 
@@ -1010,10 +1242,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void ApplyFilter()
     {
-        FilteredGames = string.IsNullOrWhiteSpace(SearchText) ? games.ToArray() : games.Where(x =>
-            x.Name.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
-            x.AppId.ToString().Contains(SearchText, StringComparison.Ordinal) ||
-            x.Engine.ToString().Contains(SearchText, StringComparison.OrdinalIgnoreCase)).ToArray();
+        FilteredGames = GameSearch.Rank(games, SearchText);
         OnPropertyChanged(nameof(FilteredGameCount));
         RaiseStateProperties();
     }
@@ -1051,43 +1280,112 @@ public sealed class MainViewModel : INotifyPropertyChanged
         bool hasUpdates)
     {
         if (!proxy.HasSafeProxy)
-            return new("Installation blocked", "An existing unknown game file occupies every safe compatibility filename. Remove or identify that file, then refresh.", false);
+            return new("Installation blocked",
+                "Another file already uses every safe compatibility filename. Remove or identify it, then refresh.", false);
         if (profile.Profile.RenoDxSupport == GameProfileSupport.Unsupported && !eligibility.CanInstall)
-            return new(GameSummary(eligibility.Explanation), eligibility.Explanation, false);
+            return new(GameSummary(eligibility.Explanation),
+                HumanizeSupportDetail(eligibility.Explanation) ?? eligibility.Explanation, false);
         if (report is null)
-            return new("Checking compatibility", "The correct official files and available versions are being checked in the background.", false);
+            return BuildLocalSupportSummary(profile, eligibility);
         if (!report.ArtifactResolution.IsFullyAutomatic)
+        {
+            var local = BuildLocalSupportSummary(profile, eligibility);
+            if (local.CanInstall)
+                return local;
             return new(
-                report.ArtifactResolution.MetadataState == MetadataCheckState.UnableToCheck ? "Unable to check required files" : "Required files unavailable",
-                report.ArtifactResolution.Warnings.FirstOrDefault() ?? "The complete setup cannot be resolved automatically.",
+                report.ArtifactResolution.MetadataState == MetadataCheckState.UnableToCheck
+                    ? "Could not check required files"
+                    : "Required files unavailable",
+                HumanizeSupportDetail(report.ArtifactResolution.Warnings.FirstOrDefault()) ??
+                    "The required files could not be prepared automatically.",
                 false);
-        if (report.Components.Any(x => x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
-            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable))
-            return new("Repair recommended", "Some files from an earlier installation need to be repaired before continuing.", report.CanInstallRecommendedStack);
+        }
+        if (report.Components.Any(x => x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled ||
+            x.Health is ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable &&
+            x.Verification == InstallationVerification.RepairNeeded))
+            return new("Repair recommended",
+                "Some files from an earlier installation need to be repaired before continuing.",
+                report.CanInstallRecommendedStack);
         if (hasUpdates)
-            return new("Update available", "New official files are available for installed components. Review the update plan before applying it.", report.CanInstallRecommendedStack);
-        else if (report.Components.Any(x => x.Health == ComponentHealth.Installed))
-            return new("Already installed", "The managed compatibility setup is installed and its files are consistent.", report.CanInstallRecommendedStack);
+            return new("Update available",
+                "Newer official files are available. Review the update plan before applying it.",
+                report.CanInstallRecommendedStack);
+        if (report.Components.Any(x => x.Health == ComponentHealth.Installed))
+            return new("Already installed",
+                "The managed setup is installed and its files look consistent.",
+                report.CanInstallRecommendedStack);
         var alternative = proxy.Candidates.Any(x => !x.SafeForNewInstallation && File.Exists(x.Path));
         return new(
             eligibility.Level == OptiScalerCompatibilityLevel.Experimental &&
                 profile.Profile.RenoDxSupport == GameProfileSupport.Unsupported ? "Experimental setup" :
-                alternative ? "Compatible method found" : "Ready to install",
-            alternative ? "A compatible installation method was found. Existing game files will not be changed." :
-                profile.Profile.RenoDxSupport == GameProfileSupport.Unsupported
-                ? eligibility.Explanation
-                : profile.Profile.RenoDxSupport == GameProfileSupport.EngineFallback
-                ? $"RHI Linux found a supported {profile.Profile.Engine} fallback. ReShade and the required game files will be downloaded and configured automatically."
-                : "RHI Linux found the correct RenoDX setup for this game. ReShade and required compatibility files will be downloaded and configured automatically.",
+                alternative ? "Ready to install" : "Ready to install",
+            alternative
+                ? "A safe compatibility filename is available without changing existing game files."
+                : LocalReadyMessage(profile, eligibility),
             report.CanInstallRecommendedStack);
+    }
+
+    private static SupportSummary BuildLocalSupportSummary(
+        GameProfileMatch profile,
+        OptiScalerEligibility eligibility)
+    {
+        if (profile.Profile.RenoDxSupport == GameProfileSupport.Unsupported && eligibility.CanInstall)
+            return new(
+                eligibility.Level == OptiScalerCompatibilityLevel.Experimental ? "Experimental setup" : "Ready to install",
+                HumanizeSupportDetail(eligibility.Explanation) ??
+                    "No RenoDX addon was found for this game. ReShade and OptiScaler are still available.",
+                true);
+        if (profile.Profile.RenoDxSupport == GameProfileSupport.Unsupported)
+            return new("Unsupported",
+                "No RenoDX addon was found for this game. ReShade and OptiScaler are still available when supported.",
+                false);
+
+        return new(
+            "Ready to install",
+            LocalReadyMessage(profile, eligibility),
+            true);
+    }
+
+    private static string LocalReadyMessage(GameProfileMatch profile, OptiScalerEligibility eligibility) =>
+        profile.Profile.RenoDxSupport switch
+        {
+            GameProfileSupport.EngineFallback when profile.Profile.Engine == GameEngine.Unreal =>
+                "This game can use the generic Unreal RenoDX addon.",
+            GameProfileSupport.EngineFallback when profile.Profile.Engine == GameEngine.Unity =>
+                "This game can use the generic Unity RenoDX addon.",
+            GameProfileSupport.EngineFallback =>
+                $"This game can use the generic {profile.Profile.Engine} RenoDX addon.",
+            GameProfileSupport.Unsupported =>
+                HumanizeSupportDetail(eligibility.Explanation) ??
+                    "No RenoDX addon was found for this game. ReShade and OptiScaler are still available.",
+            _ => "An exact RenoDX setup is available for this game."
+        };
+
+    private static string? HumanizeSupportDetail(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        if (text.Contains("Legacy Unreal", StringComparison.OrdinalIgnoreCase))
+            return "This Unreal version is too old for the generic RenoDX addon.";
+        if (text.Contains("anti-cheat", StringComparison.OrdinalIgnoreCase))
+            return "Anti-cheat files were detected. Confirm carefully before installing anything.";
+        if (text.Contains("No exact AppID", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("no approved engine", StringComparison.OrdinalIgnoreCase))
+            return "No RenoDX addon was found for this game. ReShade and OptiScaler are still available.";
+        if (text.Contains("dependency-aware", StringComparison.OrdinalIgnoreCase))
+            return "An update is available for installed components.";
+        if (text.Contains("A compatible installation method was found", StringComparison.OrdinalIgnoreCase))
+            return "A safe compatibility filename is available without changing existing game files.";
+        return text;
     }
 
     private static PrimaryActionKind DeterminePrimaryAction(
         IReadOnlyList<ComponentStatus> components,
         bool hasUpdates)
     {
-        var needsRepair = components.Any(x => x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
-            ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable);
+        var needsRepair = components.Any(x =>
+            x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled ||
+            (x.Health is ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable &&
+             x.Verification == InstallationVerification.RepairNeeded));
         if (needsRepair) return PrimaryActionKind.Repair;
         if (hasUpdates) return PrimaryActionKind.Update;
         if (components.Any(x => x.Health is ComponentHealth.Available or ComponentHealth.Supported or
@@ -1101,12 +1399,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         if (action is not (PrimaryActionKind.Install or PrimaryActionKind.Update or PrimaryActionKind.Repair)) return false;
         var components = report.Components;
-        var reno = report.ArtifactResolution.CanAcquireRenoSetup &&
+        var reno = (report.ArtifactResolution.CanAcquireRenoSetup ||
+                report.Profile.Profile.RenoDxSupport is GameProfileSupport.Supported or GameProfileSupport.EngineFallback) &&
             ShouldTargetComponent(components, ComponentKind.RenoDx, action) && HasSafeRenoDependency(components);
         var reshade = action is PrimaryActionKind.Update or PrimaryActionKind.Repair &&
             ShouldTargetComponent(components, ComponentKind.ReShade, action) &&
             report.ArtifactResolution.Artifacts.Any(x => x.Component == ComponentKind.ReShade);
-        var opti = report.OptiScalerEligibility.CanInstall && report.ArtifactResolution.CanAcquireOptiScaler &&
+        var opti = report.OptiScalerEligibility.CanInstall &&
+            (report.ArtifactResolution.CanAcquireOptiScaler || report.OptiScalerEligibility.CanInstall) &&
             ShouldTargetComponent(components, ComponentKind.OptiScaler, action);
         return reno || reshade || opti;
     }
@@ -1339,8 +1639,57 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private static bool PlanMatchesSnapshot(DeploymentPlan plan, GameSelectionSnapshot snapshot) =>
         plan.AppId == snapshot.Game.AppId &&
+        (plan.SelectionGeneration == 0 || plan.SelectionGeneration == snapshot.Generation) &&
         PathsEqual(plan.GameRoot, snapshot.Game.GameRoot) &&
         PathsEqual(plan.DeploymentDirectory, snapshot.Game.DeploymentDirectory);
+
+    private static DeploymentPlan StampPlan(DeploymentPlan plan, GameSelectionSnapshot snapshot)
+    {
+        plan.SelectionGeneration = snapshot.Generation;
+        return plan;
+    }
+
+    private static async Task<LaunchOptionObservation> ResolveLaunchOptionAsync(
+        SteamGame game,
+        IReadOnlyList<ComponentStatus> statuses,
+        ProxySelectionResult proxy,
+        CancellationToken cancellationToken)
+    {
+        var requiredProxy = ResolveManagedProxyName(statuses) ??
+            (statuses.Any(x =>
+                (x.Component is ComponentKind.ReShade or ComponentKind.OptiScaler) &&
+                (x.Health is ComponentHealth.Installed or ComponentHealth.Outdated or
+                    ComponentHealth.PartiallyInstalled or ComponentHealth.Broken))
+                ? proxy.SelectedProxy
+                : null);
+        var required = requiredProxy is not null && requiredProxy.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            ? DeploymentPlanner.GenerateLaunchOption(requiredProxy)
+            : string.Empty;
+        string? detected = null;
+        try { detected = await SteamLaunchOptionService.TryReadLaunchOptionsAsync(game, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception) { detected = null; }
+        return SteamLaunchOptionService.Observe(game, required, detected);
+    }
+
+    private static string ResolveActiveProxyDisplay(
+        IReadOnlyList<ComponentStatus> statuses,
+        ProxySelectionResult proxy) =>
+        ResolveManagedProxyName(statuses) ?? proxy.SelectedProxy ?? "No safe proxy";
+
+    private static string? ResolveManagedProxyName(IReadOnlyList<ComponentStatus> statuses)
+    {
+        foreach (var component in new[] { ComponentKind.OptiScaler, ComponentKind.ReShade })
+        {
+            var status = statuses.FirstOrDefault(x => x.Component == component);
+            if (status?.Health is not (ComponentHealth.Installed or ComponentHealth.Outdated or
+                ComponentHealth.PartiallyInstalled or ComponentHealth.Broken)) continue;
+            var proxy = status.Files.FirstOrDefault(file =>
+                DeploymentPlanner.SupportedProxyNames.Contains(file, StringComparer.OrdinalIgnoreCase));
+            if (proxy is not null) return proxy;
+        }
+        return null;
+    }
 
     private static bool PathsEqual(string left, string right) =>
         Path.GetFullPath(left).Equals(Path.GetFullPath(right), StringComparison.Ordinal);
@@ -1351,6 +1700,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         AppId = plan.AppId,
         GameRoot = plan.GameRoot,
         DeploymentDirectory = plan.DeploymentDirectory,
+        SelectionGeneration = plan.SelectionGeneration,
         Action = action switch
         {
             PrimaryActionKind.Update => "update installed components",
@@ -1378,7 +1728,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private SteamGame RequireGame() => SelectedGame ?? throw new InvalidOperationException("Select a game first.");
     private void RaiseSelectionProperties()
     {
-        foreach (var property in new[] { nameof(SelectedGame), nameof(ComponentCards), nameof(HasSelection), nameof(ShowGame), nameof(IsSelectionLoading), nameof(ShowGameLoading), nameof(HasWarnings), nameof(WarningText), nameof(SelectedGameTitle), nameof(SelectedGameSubtitle), nameof(ExecutableDisplay), nameof(ExecutablePath), nameof(DeploymentDisplay), nameof(DeploymentPath), nameof(ProtonPrefixDisplay), nameof(ProtonPrefixPath), nameof(ConfidenceText), nameof(SelectionReason), nameof(Candidates), nameof(LaunchOption), nameof(ProfileSummary), nameof(SelectedProxy), nameof(DependencySummary), nameof(SupportTitle), nameof(SupportMessage), nameof(CanInstallRecommendedStack), nameof(CanCheckForUpdates), nameof(IsCheckingUpdates), nameof(UpdateState), nameof(UpdateStatusText), nameof(HasUpdates), nameof(PrimaryAction), nameof(PrimaryActionText), nameof(SelectionProgress), nameof(PreviousOperationResult) }) OnPropertyChanged(property);
+        foreach (var property in new[] { nameof(SelectedGame), nameof(ComponentCards), nameof(HasSelection), nameof(ShowGame), nameof(IsSelectionLoading), nameof(ShowGameLoading), nameof(HasWarnings), nameof(WarningText), nameof(SelectedGameTitle), nameof(SelectedGameSubtitle), nameof(ExecutableDisplay), nameof(ExecutablePath), nameof(DeploymentDisplay), nameof(DeploymentPath), nameof(ProtonPrefixDisplay), nameof(ProtonPrefixPath), nameof(ConfidenceText), nameof(ArchitectureDisplay), nameof(EngineDisplay), nameof(SelectionReason), nameof(Candidates), nameof(LaunchOption), nameof(LaunchOptionStatus), nameof(LaunchOptionStatusText), nameof(LaunchOptionExplanation), nameof(HasLaunchOption), nameof(ProfileSummary), nameof(SelectedProxy), nameof(DependencySummary), nameof(TimingDiagnostics), nameof(HasTimingDiagnostics), nameof(SelectionPhase), nameof(SupportTitle), nameof(SupportMessage), nameof(CanInstallRecommendedStack), nameof(CanCheckForUpdates), nameof(IsCheckingUpdates), nameof(UpdateState), nameof(UpdateStatusText), nameof(ShowUpdateStatusChip), nameof(HasUpdates), nameof(PrimaryAction), nameof(PrimaryActionText), nameof(SelectionProgress), nameof(PreviousOperationResult) }) OnPropertyChanged(property);
     }
     private void RaiseStateProperties()
     {
