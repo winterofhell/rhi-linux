@@ -155,14 +155,7 @@ public sealed class CompatibilityLoadingTests
     [Fact]
     public void StylesDefineThinRoundedScrollbars()
     {
-        var candidates = new[]
-        {
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "src", "RhiLinux.Gui", "Styles.axaml")),
-            Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "src", "RhiLinux.Gui", "Styles.axaml")),
-            "/home/nixwinter/Projects/rhi-linux/src/RhiLinux.Gui/Styles.axaml"
-        };
-        var stylesPath = candidates.First(File.Exists);
-        var styles = File.ReadAllText(stylesPath);
+        var styles = File.ReadAllText(RepositoryPaths.GetRepositoryFile("src", "RhiLinux.Gui", "Styles.axaml"));
         Assert.Contains("ScrollBar:vertical", styles, StringComparison.Ordinal);
         Assert.Contains("Width\" Value=\"8\"", styles, StringComparison.Ordinal);
         Assert.Contains("CornerRadius\" Value=\"8\"", styles, StringComparison.Ordinal);
