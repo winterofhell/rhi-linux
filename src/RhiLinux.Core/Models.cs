@@ -19,13 +19,55 @@ public enum SteamInstallState { Installed, Installing }
 public enum DeploymentFileRequirement
 {
     Required,
+    RequiredForSelectedMode,
     Conditional,
     Optional,
+    Debug,
+    Documentation,
+    InstallerOnly,
+    UninstallerMetadata,
+    Unsupported,
     SuppliedByGame,
     NeverReplace,
     ObsoleteManaged,
     UnrelatedArchiveContent
 }
+
+public enum RemovalPathOwnership
+{
+    ManagedBySelectedComponent,
+    SharedManagedDependency,
+    ManagedByAnotherComponent,
+    UserOwned,
+    GameOwned,
+    Unknown
+}
+
+public enum LaunchOptionFragmentOwnership
+{
+    PreExisting,
+    UserManaged,
+    RhiLinuxManaged
+}
+
+public enum InstallationOwnershipState
+{
+    Managed,
+    Manual,
+    PartiallyManaged,
+    OwnershipUnknown
+}
+
+public sealed record ArtifactFingerprint(
+    ComponentKind Component,
+    PeArchitecture Architecture,
+    string CanonicalPath,
+    string Filename,
+    string? Sha256,
+    string? PeMetadata,
+    string? DetectedVersion,
+    string? SourceIdentity,
+    bool Managed);
 
 public enum DeploymentFileAction
 {
@@ -172,6 +214,154 @@ public sealed record ScanResult(
     IReadOnlyList<SteamManifestDiagnostic>? ManifestDiagnostics = null,
     IReadOnlyList<SteamRootDiagnostic>? RootDiagnostics = null);
 
+public enum ComponentLifecycleState
+{
+    Checking,
+    NotInstalled,
+    InstalledHealthy,
+    InstalledWithWarnings,
+    InstalledUnmanaged,
+    InstalledMetadataIncomplete,
+    UpdateAvailable,
+    RepairRecommended,
+    RepairRequired,
+    Conflict,
+    Unsupported,
+    Unknown
+}
+
+public enum StackLayoutKind
+{
+    Empty,
+    ReShadeOnly,
+    ReShadeRenoDx,
+    OptiScalerOnly,
+    OptiScalerReShade,
+    OptiScalerRenoDx,
+    FullStack,
+    Invalid
+}
+
+public enum RuntimeHealth
+{
+    Unknown,
+    Healthy,
+    Degraded,
+    Broken
+}
+
+public enum FileIntegrityStatus
+{
+    Unknown,
+    Complete,
+    Incomplete,
+    Corrupt,
+    WrongArchitecture
+}
+
+public enum ConfigurationHealth
+{
+    Unknown,
+    Valid,
+    ValidWithUserChanges,
+    RecoverableIssues,
+    Invalid
+}
+
+public enum OwnershipHealth
+{
+    Unknown,
+    Managed,
+    Incomplete,
+    Migrated,
+    Unmanaged,
+    Foreign,
+    Unavailable
+}
+
+public enum UpdateAvailability
+{
+    Unknown,
+    UpToDate,
+    UpdateAvailable,
+    StatusUnavailable,
+    InstalledVersionUnknown,
+    ManualInstallationDetected,
+    NotInstalled
+}
+
+public enum CompatibilityStatus
+{
+    Unknown,
+    Compatible,
+    Experimental,
+    Unsupported,
+    Conflict
+}
+
+public sealed record ComponentStateEvidence(
+    IReadOnlyList<string> DetectedFiles,
+    IReadOnlyList<string> ExpectedFiles,
+    IReadOnlyList<string> OptionalFiles,
+    IReadOnlyList<string> MissingRequiredFiles,
+    string? ActiveProxy,
+    ComponentKind? ProxyOwner,
+    PeArchitecture Architecture,
+    string? InstalledArtifactIdentity,
+    string? AvailableArtifactIdentity,
+    string? RepairReason,
+    string ReasonCode);
+
+public sealed record ComponentStateReport(
+    ComponentKind Component,
+    ComponentLifecycleState State,
+    RuntimeHealth Runtime,
+    FileIntegrityStatus FileIntegrity,
+    ConfigurationHealth Configuration,
+    OwnershipHealth Ownership,
+    UpdateAvailability Update,
+    CompatibilityStatus Compatibility,
+    string? Version,
+    string Explanation,
+    string? Diagnostic,
+    ComponentStateEvidence Evidence);
+
+public sealed record StackSnapshot(
+    uint AppId,
+    string GameRoot,
+    string DeploymentDirectory,
+    string? Executable,
+    long Generation,
+    StackLayoutKind Layout,
+    string? ActiveProxy,
+    ComponentKind? ProxyOwner,
+    string? ReShadeRuntimePath,
+    string? RenoDxAddonPath,
+    string? OptiScalerRuntimePath,
+    bool ChainingConfigured,
+    PeArchitecture Architecture,
+    OwnershipHealth Ownership,
+    IReadOnlyList<ComponentStateReport> Components,
+    string Summary,
+    string? LaunchOptionRequirement = null,
+    string? ChainMode = null,
+    ArtifactFingerprint? ReShadeArtifactFingerprint = null,
+    ArtifactFingerprint? RenoDxArtifactFingerprint = null,
+    ArtifactFingerprint? OptiScalerArtifactFingerprint = null,
+    IReadOnlyList<string>? RequiredConfigurationKeys = null,
+    IReadOnlyList<string>? ConcreteDefects = null,
+    IReadOnlyList<string>? Warnings = null)
+{
+    public bool IsHealthy =>
+        ConcreteDefects is not { Count: > 0 } &&
+        Components.All(component => component.State is not (
+            ComponentLifecycleState.RepairRequired or ComponentLifecycleState.Conflict or
+            ComponentLifecycleState.Unknown));
+
+    public ComponentStateReport? ReportFor(ComponentKind component) =>
+        Components.FirstOrDefault(x => x.Component == component);
+}
+
 public sealed record ComponentStatus(
     ComponentKind Component,
     ComponentHealth Health,
@@ -179,7 +369,13 @@ public sealed record ComponentStatus(
     IReadOnlyList<string> Files,
     string Explanation,
     InstallationVerification Verification = InstallationVerification.None,
-    string? Diagnostic = null);
+    string? Diagnostic = null,
+    ComponentLifecycleState Lifecycle = ComponentLifecycleState.Unknown,
+    string? RepairReason = null,
+    string? ReasonCode = null,
+    RuntimeHealth Runtime = RuntimeHealth.Unknown,
+    OwnershipHealth Ownership = OwnershipHealth.Unknown,
+    UpdateAvailability Update = UpdateAvailability.Unknown);
 
 public sealed class ApplicationState
 {
@@ -206,7 +402,8 @@ public sealed record ManagedFile(
     string? BundleRelativePath = null,
     string? BackupSha256 = null,
     ManagedFileClass FileClass = ManagedFileClass.Unknown,
-    string? Purpose = null);
+    string? Purpose = null,
+    DeploymentFileRequirement Requirement = DeploymentFileRequirement.Required);
 
 public sealed record ConfigurationPatchRecord(
     string RelativePath,
@@ -280,7 +477,8 @@ public sealed record DeploymentOperation(
     string? ConfigurationSchema = null,
     string? ConfigurationVersion = null,
     bool ClearConfigurationPatch = false,
-    string? Purpose = null);
+    string? Purpose = null,
+    DeploymentFileRequirement Requirement = DeploymentFileRequirement.Required);
 
 public sealed record DeploymentFileDecision(
     ComponentKind Component,
@@ -315,4 +513,31 @@ public sealed class DeploymentPlan
     public List<ComponentStateExpectation> ExpectedComponentStates { get; init; } = [];
 }
 
-public sealed record ExecutionResult(bool Succeeded, bool DryRun, bool RolledBack, IReadOnlyList<string> Messages, string? Error = null);
+public enum OperationLifecycleState
+{
+    Preparing,
+    Downloading,
+    Validating,
+    Applying,
+    Verifying,
+    Succeeded,
+    SucceededWithWarning,
+    FailedBeforeChanges,
+    FailedAndRolledBack,
+    FailedRollbackIncomplete,
+    CancelledBeforeChanges,
+    CancelledAndRolledBack
+}
+
+public sealed record ExecutionResult(
+    bool Succeeded,
+    bool DryRun,
+    bool RolledBack,
+    IReadOnlyList<string> Messages,
+    string? Error = null,
+    OperationLifecycleState State = OperationLifecycleState.Succeeded,
+    string? Warning = null)
+{
+    public bool IsSuccessfulOutcome =>
+        Succeeded && State is OperationLifecycleState.Succeeded or OperationLifecycleState.SucceededWithWarning;
+}

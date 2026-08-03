@@ -25,5 +25,14 @@ internal sealed class TestDirectory : IDisposable
         stream.Write(System.Text.Encoding.ASCII.GetBytes(marker));
         return path;
     }
+
+    public string PeWithLateMarker(string relative, string marker, long markerOffset = 3L * 1024 * 1024, ushort machine = 0x8664)
+    {
+        var path = Pe(relative, machine, Math.Max(markerOffset + marker.Length + 64, 4L * 1024 * 1024));
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.Read);
+        stream.Position = markerOffset;
+        stream.Write(System.Text.Encoding.ASCII.GetBytes(marker));
+        return path;
+    }
     public void Dispose() { try { System.IO.Directory.Delete(Path, true); } catch (IOException) { } }
 }

@@ -1,5 +1,5 @@
 pkgname=rhi-linux
-pkgver=0.1.2
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Steam Proton mod deployment manager for AMD GPUs"
 arch=('x86_64')

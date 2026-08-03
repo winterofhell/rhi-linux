@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -7,7 +5,7 @@ using RhiLinux.Core;
 
 namespace RhiLinux.Mods;
 
-public enum ArtifactArchiveKind { None, ReShadeInstaller, SevenZip }
+public enum ArtifactArchiveKind { None, ReShadeInstaller, SevenZip, Zip }
 public enum ArtifactCacheState { DownloadRequired, Cached, Invalid }
 public enum ArtifactSupportKind { General, ExactGameProfile, ExecutableOrAliasProfile, UnityFallback, UnrealFallback, Unavailable }
 public enum ArtifactValidationState { NotValidated, Valid, Invalid }
@@ -71,6 +69,14 @@ public sealed record ArtifactCacheStatistics(long SizeBytes, int BlobCount, int 
 }
 
 public sealed record ArtifactCacheCleanupResult(long BytesRemoved, int BlobsRemoved, int ReleasesRemoved, DateTimeOffset CompletedUtc);
+
+public sealed record ArtifactAcquisitionProgress(
+    ComponentKind Component,
+    string Stage,
+    long BytesTransferred,
+    long? TotalBytes,
+    int Attempt,
+    string? Detail = null);
 
 public sealed class ArtifactCacheService(XdgPaths paths)
 {
@@ -139,14 +145,16 @@ public sealed class ArtifactCacheService(XdgPaths paths)
     public async Task<ArtifactSelection> AcquireAsync(
         ArtifactSelection unresolved,
         HttpClient httpClient,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<ArtifactAcquisitionProgress>? progress = null)
     {
         if (unresolved.Component == ComponentKind.OptiPatcher)
             throw new NotSupportedException("OptiPatcher is legacy-cleanup-only and is not downloaded.");
         if (unresolved.SourceUrl.Scheme != Uri.UriSchemeHttps ||
             !ApprovedHosts.Contains(unresolved.SourceUrl.Host) &&
             !(unresolved.SourceValidatedByOfficialMetadata &&
-              OfficialArtifactSourcePolicy.IsConstrainedRenoDxAddon(unresolved.SourceUrl)))
+              OfficialArtifactSourcePolicy.IsTrustedOfficialWikiAddon(unresolved.SourceUrl)) &&
+            !OfficialArtifactSourcePolicy.IsConstrainedRenoDxAddon(unresolved.SourceUrl))
             throw new InvalidOperationException("Artifact URL is not an approved official upstream source.");
         var refreshRequested = unresolved.CacheState == ArtifactCacheState.DownloadRequired &&
             unresolved.CachedPath is not null && unresolved.Validation == ArtifactValidationState.Valid;
@@ -158,20 +166,12 @@ public sealed class ArtifactCacheService(XdgPaths paths)
         Directory.CreateDirectory(staging);
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, unresolved.SourceUrl);
-            request.Headers.UserAgent.ParseAdd("rhi-linux/0.1");
-            if (unresolved.SourceUrl.Host.Equals("reshade.me", StringComparison.OrdinalIgnoreCase))
-                request.Headers.Referrer = new Uri("https://reshade.me/");
-            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength > ArtifactValidator.MaxDownloadSizeBytes)
-                throw new InvalidDataException("Downloaded artifact exceeds the 2 GiB safety limit.");
-            await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
-            await using (var output = new FileStream(download, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.WriteThrough))
-                await ArtifactValidator.CopyWithLimitAsync(
-                    input, output, ArtifactValidator.MaxDownloadSizeBytes, cancellationToken);
+            progress?.Report(new(unresolved.Component, "Downloading", 0, null, 1));
+            var (etag, lastModified) = await DownloadWithRetryAsync(
+                httpClient, unresolved.Component, unresolved.SourceUrl, download, cancellationToken, progress);
 
-            var archiveHash = await HashAsync(download, cancellationToken);
+            progress?.Report(new(unresolved.Component, "Hashing", 0, null, 1));
+            var archiveHash = await Task.Run(async () => await HashAsync(download, cancellationToken), cancellationToken);
             if (!string.IsNullOrWhiteSpace(unresolved.UpstreamDigest) &&
                 !archiveHash.Equals(NormalizeDigest(unresolved.UpstreamDigest), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Downloaded artifact checksum does not match the upstream digest.");
@@ -184,39 +184,51 @@ public sealed class ArtifactCacheService(XdgPaths paths)
             switch (unresolved.ArchiveKind)
             {
                 case ArtifactArchiveKind.None:
-                    ArtifactValidator.ValidatePe(download, unresolved.Architecture);
+                    progress?.Report(new(unresolved.Component, "Validating", 0, null, 1, unresolved.DeployFileName));
+                    await Task.Run(() => ArtifactValidator.ValidatePe(download, unresolved.Architecture), cancellationToken);
                     _ = await PutBlobAsync(download, archiveHash, cancellationToken);
                     payloadHash = archiveHash;
                     files = [new(unresolved.DeployFileName, archiveHash, new FileInfo(download).Length, true)];
                     break;
                 case ArtifactArchiveKind.ReShadeInstaller:
                     var reshade = Path.Combine(extracted, unresolved.DeployFileName);
-                    await ExtractReShadeAsync(download, unresolved.Architecture, reshade, cancellationToken);
-                    ArtifactValidator.ValidatePe(reshade, unresolved.Architecture);
-                    if (!ContainsAsciiMarker(reshade, "Searching for add-ons"))
-                        throw new InvalidDataException("The extracted ReShade DLL does not expose full add-on loading.");
-                    payloadHash = await HashAsync(reshade, cancellationToken);
+                    progress?.Report(new(unresolved.Component, "Extracting", 0, null, 1, unresolved.DeployFileName));
+                    await ExtractReShadeManagedAsync(download, unresolved.Architecture, reshade, cancellationToken);
+                    await Task.Run(() =>
+                    {
+                        ArtifactValidator.ValidatePe(reshade, unresolved.Architecture);
+                        if (!ContainsAsciiMarker(reshade, "Searching for add-ons"))
+                            throw new InvalidDataException("The extracted ReShade DLL does not expose full add-on loading.");
+                    }, cancellationToken);
+                    payloadHash = await Task.Run(async () => await HashAsync(reshade, cancellationToken), cancellationToken);
                     _ = await PutBlobAsync(download, archiveHash, cancellationToken);
                     _ = await PutBlobAsync(reshade, payloadHash, cancellationToken);
                     files = [new(unresolved.DeployFileName, payloadHash, new FileInfo(reshade).Length, true)];
                     break;
+                case ArtifactArchiveKind.Zip when unresolved.Component == ComponentKind.OptiScaler:
                 case ArtifactArchiveKind.SevenZip when unresolved.Component == ComponentKind.OptiScaler:
-                    await ExtractSevenZipAsync(download, extracted, cancellationToken);
+                    progress?.Report(new(unresolved.Component, "Extracting", 0, null, 1, unresolved.AssetName));
+                    await ExtractOptiScalerManagedAsync(download, unresolved.ArchiveKind, extracted, cancellationToken);
                     var parsed = await OptiScalerBundleParser.ParseAsync(extracted, unresolved.Version, unresolved.ReleaseTag,
                         unresolved.AssetName, archiveHash, cancellationToken);
-                    foreach (var file in parsed.Files)
+                    await Task.Run(() =>
                     {
-                        var source = Path.Combine(extracted, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-                        if (file.RuntimeRequired && Path.GetExtension(file.RelativePath)
-                            .Equals(".dll", StringComparison.OrdinalIgnoreCase))
-                            ArtifactValidator.ValidatePe(source);
-                    }
+                        foreach (var file in parsed.Files)
+                        {
+                            var source = Path.Combine(extracted, file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                            if (file.RuntimeRequired && Path.GetExtension(file.RelativePath)
+                                .Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                                ArtifactValidator.ValidatePe(source);
+                        }
+                        var runtimeCheck = parsed.Files.Single(x =>
+                            x.RelativePath.Equals("OptiScaler.dll", StringComparison.OrdinalIgnoreCase));
+                        var runtimeCheckPath = Path.Combine(extracted,
+                            runtimeCheck.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+                        ArtifactValidator.ValidatePe(runtimeCheckPath, unresolved.Architecture);
+                        if (!ContainsAsciiMarker(runtimeCheckPath, "OptiScaler"))
+                            throw new InvalidDataException("The selected release payload does not identify itself as OptiScaler.");
+                    }, cancellationToken);
                     var runtime = parsed.Files.Single(x => x.RelativePath.Equals("OptiScaler.dll", StringComparison.OrdinalIgnoreCase));
-                    var runtimePath = Path.Combine(extracted,
-                        runtime.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-                    ArtifactValidator.ValidatePe(runtimePath, unresolved.Architecture);
-                    if (!ContainsAsciiMarker(runtimePath, "OptiScaler"))
-                        throw new InvalidDataException("The selected release payload does not identify itself as OptiScaler.");
                     _ = await PutBlobAsync(download, archiveHash, cancellationToken);
                     foreach (var file in parsed.Files)
                     {
@@ -238,8 +250,8 @@ public sealed class ArtifactCacheService(XdgPaths paths)
             var metadata = new ArtifactCacheMetadata(
                 unresolved.Component, unresolved.Version, unresolved.SourceUrl.ToString(), unresolved.ReleaseTag,
                 unresolved.AssetName, unresolved.Architecture, unresolved.GameAppId, DateTimeOffset.UtcNow, payloadHash, true,
-                unresolved.ArchiveKind != ArtifactArchiveKind.None, response.Headers.ETag?.ToString(),
-                response.Content.Headers.LastModified, RelativeToMetadata(metadataPath, BlobPath(payloadHash)),
+                unresolved.ArchiveKind != ArtifactArchiveKind.None, etag, lastModified,
+                RelativeToMetadata(metadataPath, BlobPath(payloadHash)),
                 runtimeFiles.Select(x => RelativeToMetadata(metadataPath, BlobPath(x.BlobSha256))).ToArray(),
                 unresolved.GameProfile, unresolved.Support, archiveHash, payloadHash, files,
                 bundleManifestPath is null ? null : RelativeToMetadata(metadataPath, bundleManifestPath), unresolved.DeployFileName);
@@ -399,8 +411,6 @@ public sealed class ArtifactCacheService(XdgPaths paths)
     {
         var before = (await ListAsync(token)).Count(x => !x.IsValid);
         _ = await VerifyAsync(token);
-        // "Clean invalid" must not perform size-based release pruning because the CLI does not
-        // have a complete inventory of installed game manifests.
         _ = await CleanupAsync(new HashSet<string>(StringComparer.OrdinalIgnoreCase), long.MaxValue, token);
         return before;
     }
@@ -542,86 +552,122 @@ public sealed class ArtifactCacheService(XdgPaths paths)
     private static string SafeSegment(string value) => Regex.Replace(value, "[^A-Za-z0-9._-]", "_");
     private static string NormalizeDigest(string value) => value.Replace("sha256:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim().ToLowerInvariant();
 
-    private static async Task ExtractReShadeAsync(string installer, PeArchitecture architecture, string output, CancellationToken token)
+    private static async Task<(string? ETag, DateTimeOffset? LastModified)> DownloadWithRetryAsync(
+        HttpClient httpClient,
+        ComponentKind component,
+        Uri sourceUrl,
+        string destination,
+        CancellationToken cancellationToken,
+        IProgress<ArtifactAcquisitionProgress>? progress = null)
     {
-        var entryName = architecture == PeArchitecture.X86 ? "ReShade32.dll" : "ReShade64.dll";
-        try
+        const int maximumAttempts = 4;
+        Exception? lastFailure = null;
+        for (var attempt = 1; attempt <= maximumAttempts; attempt++)
         {
-            using var archive = ZipFile.OpenRead(installer);
-            var entry = archive.Entries.SingleOrDefault(x => Path.GetFileName(x.FullName).Equals(entryName, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidDataException($"The full-addon ReShade installer does not contain {entryName}.");
-            await using var input = entry.Open();
-            await using var target = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            await ArtifactValidator.CopyWithLimitAsync(
-                input, target, ArtifactValidator.MaxDownloadSizeBytes, token);
-        }
-        catch (InvalidDataException)
-        {
-            await ExtractWithBsdtarAsync(installer, Path.GetDirectoryName(output)!, [entryName], token);
-            var extracted = Path.Combine(Path.GetDirectoryName(output)!, entryName);
-            if (!File.Exists(extracted)) throw;
-            if (!extracted.Equals(output, StringComparison.Ordinal)) File.Move(extracted, output);
-        }
-    }
-
-    private static Task ExtractSevenZipAsync(string archive, string destination, CancellationToken token) =>
-        ExtractWithBsdtarAsync(archive, destination, null, token);
-
-    private static async Task ExtractWithBsdtarAsync(string archive, string destination, IReadOnlyList<string>? selected, CancellationToken token)
-    {
-        var executable = File.Exists("/usr/bin/bsdtar") ? "/usr/bin/bsdtar" :
-            throw new InvalidOperationException("bsdtar is required to safely inspect official release archives.");
-        var entries = await RunAsync(executable, ["-tf", archive], token);
-        foreach (var entry in entries.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var normalized = entry.Replace('\\', '/');
-            if (normalized.StartsWith('/') || normalized.Split('/').Contains("..", StringComparer.Ordinal))
-                throw new InvalidDataException($"Archive entry escapes the extraction root: {entry}");
-        }
-        var arguments = new List<string> { "-xf", archive, "-C", destination };
-        if (selected is not null) arguments.AddRange(selected);
-        _ = await RunAsync(executable, arguments, token);
-        ValidateExtractedTree(destination);
-    }
-
-    private static void ValidateExtractedTree(string destination)
-    {
-        long totalSize = 0;
-        var count = 0;
-        var directories = new Stack<string>();
-        directories.Push(destination);
-        while (directories.TryPop(out var directory))
-        {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(destination)) File.Delete(destination);
+            try
             {
-                if (++count > 4096) throw new InvalidDataException("Archive contains too many extracted entries.");
-                var attributes = File.GetAttributes(entry);
-                if ((attributes & FileAttributes.ReparsePoint) != 0)
-                    throw new InvalidDataException("Archive contains a symbolic link or reparse point.");
-                if ((attributes & FileAttributes.Directory) != 0)
-                {
-                    directories.Push(entry);
-                    continue;
-                }
-                totalSize += new FileInfo(entry).Length;
-                if (totalSize > ArtifactValidator.MaxDownloadSizeBytes)
-                    throw new InvalidDataException("Archive expands beyond the 2 GiB safety limit.");
+                progress?.Report(new(component, "Downloading", 0, null, attempt));
+                using var request = new HttpRequestMessage(HttpMethod.Get, sourceUrl);
+                request.Headers.UserAgent.ParseAdd("rhi-linux/0.1");
+                if (sourceUrl.Host.Equals("reshade.me", StringComparison.OrdinalIgnoreCase))
+                    request.Headers.Referrer = new Uri("https://reshade.me/");
+                using var response = await httpClient.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if ((int)response.StatusCode is 408 or 429 or >= 500)
+                    throw new HttpRequestException(
+                        $"Transient download failure ({(int)response.StatusCode}) from {sourceUrl.Host}.");
+                response.EnsureSuccessStatusCode();
+                if (response.Content.Headers.ContentLength > ArtifactValidator.MaxDownloadSizeBytes)
+                    throw new InvalidDataException("Downloaded artifact exceeds the 2 GiB safety limit.");
+                var totalBytes = response.Content.Headers.ContentLength;
+                await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await using var output = new FileStream(
+                    destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.WriteThrough);
+                var byteProgress = progress is null
+                    ? null
+                    : new Progress<long>(transferred =>
+                        progress.Report(new(component, "Downloading", transferred, totalBytes, attempt)));
+                await ArtifactValidator.CopyWithLimitAsync(
+                    input, output, ArtifactValidator.MaxDownloadSizeBytes, cancellationToken, byteProgress, totalBytes);
+                return (response.Headers.ETag?.ToString(), response.Content.Headers.LastModified);
+            }
+            catch (Exception exception) when (
+                exception is HttpRequestException or IOException ||
+                exception is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                lastFailure = exception;
+                if (attempt == maximumAttempts) break;
+                var delayMs = Math.Min(8_000, (int)(250 * Math.Pow(2, attempt - 1)));
+                delayMs += Random.Shared.Next(0, 200);
+                await Task.Delay(delayMs, cancellationToken);
+            }
+            catch (InvalidDataException)
+            {
+                if (File.Exists(destination)) File.Delete(destination);
+                throw;
             }
         }
+
+        if (File.Exists(destination)) File.Delete(destination);
+        throw new ArtifactPipelineException(component, ArtifactPipelineStage.Download,
+            "The official download could not be completed after retries. No game files were changed.",
+            technicalDetail: lastFailure?.ToString(), innerException: lastFailure);
     }
 
-    private static async Task<string> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
+    private static async Task ExtractReShadeManagedAsync(
+        string installer,
+        PeArchitecture architecture,
+        string output,
+        CancellationToken token)
     {
-        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
-        using var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {executable}.");
-        var outputTask = process.StandardOutput.ReadToEndAsync(token);
-        var errorTask = process.StandardError.ReadToEndAsync(token);
-        await process.WaitForExitAsync(token);
-        var output = await outputTask;
-        var error = await errorTask;
-        if (process.ExitCode != 0) throw new InvalidDataException($"Archive extraction failed: {error.Trim()}");
-        return output;
+        var entryName = architecture == PeArchitecture.X86 ? "ReShade32.dll" : "ReShade64.dll";
+        var format = ManagedArchiveExtractor.DetectFormat(installer, ArtifactArchiveKind.ReShadeInstaller);
+        if (format is not (ArtifactFormat.ReShadeInstallerZip or ArtifactFormat.ZipContainer))
+            throw new ArtifactPipelineException(ComponentKind.ReShade, ArtifactPipelineStage.DetectFormat,
+                "The downloaded installer was valid, but its runtime payload could not be identified.",
+                technicalDetail: $"Detected format: {format}");
+        try
+        {
+            await ManagedArchiveExtractor.ExtractSingleNamedFileAsync(installer, format, entryName, output, token);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException
+                                               or NotSupportedException or ArtifactPipelineException)
+        {
+            throw new ArtifactPipelineException(ComponentKind.ReShade, ArtifactPipelineStage.Extract,
+                "The downloaded installer was valid, but its runtime payload could not be identified.",
+                technicalDetail: exception.ToString(), innerException: exception);
+        }
+    }
+
+    private static async Task ExtractOptiScalerManagedAsync(
+        string archive,
+        ArtifactArchiveKind kind,
+        string destination,
+        CancellationToken token)
+    {
+        var format = ManagedArchiveExtractor.DetectFormat(archive, kind);
+        if (format is not (ArtifactFormat.SevenZipContainer or ArtifactFormat.ZipContainer))
+            throw new ArtifactPipelineException(ComponentKind.OptiScaler, ArtifactPipelineStage.DetectFormat,
+                "This release uses an archive format that this version of RHI Linux cannot inspect safely.",
+                technicalDetail: $"Detected format: {format}; asset kind: {kind}");
+        try
+        {
+            _ = ManagedArchiveExtractor.Inspect(archive, format);
+            await ManagedArchiveExtractor.ExtractAsync(archive, destination, format, null, token);
+        }
+        catch (ArtifactPipelineException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException
+                                               or NotSupportedException)
+        {
+            throw new ArtifactPipelineException(ComponentKind.OptiScaler, ArtifactPipelineStage.Extract,
+                "This release uses an archive format that this version of RHI Linux cannot inspect safely.",
+                technicalDetail: exception.ToString(), innerException: exception);
+        }
     }
 
     private static async Task<ArtifactCacheMetadata> ReadMetadataAsync(string path, CancellationToken token)
@@ -667,13 +713,8 @@ public sealed class ArtifactCacheService(XdgPaths paths)
         return Convert.ToHexString(await SHA256.HashDataAsync(input, token)).ToLowerInvariant();
     }
 
-    private static bool ContainsAsciiMarker(string path, string marker)
-    {
-        using var input = File.OpenRead(path);
-        var bytes = new byte[Math.Min(input.Length, 32 * 1024 * 1024)];
-        _ = input.Read(bytes);
-        return System.Text.Encoding.ASCII.GetString(bytes).Contains(marker, StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool ContainsAsciiMarker(string path, string marker) =>
+        BinaryMarkerScanner.ContainsAny(path, marker);
 
     private sealed record CacheState(DateTimeOffset LastCleanupUtc);
 }

@@ -9,4 +9,7 @@
     <ProjectReference Include="../../src/RhiLinux.Mods/RhiLinux.Mods.csproj" />
     <ProjectReference Include="../../src/RhiLinux.Gui/RhiLinux.Gui.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/renodx/**/*" CopyToOutputDirectory="PreserveNewest" Link="fixtures/renodx/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

@@ -1,0 +1,76 @@
+{
+  "$schema": "./renodx-metadata-schema.json",
+  "schema_version": "1.0.0",
+  "generated_at": "2026-07-16T05:21:13.201Z",
+  "source": {
+    "repo": "clshortfuse/renodx",
+    "branch": "main",
+    "commit": {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "short_sha": "aaaaaaaa"
+    }
+  },
+  "build": {
+    "tool_version": "generate-release-manifest.mjs",
+    "host": "fixture",
+    "duration_ms": 1
+  },
+  "mods": [
+    {
+      "id": "sampleexact",
+      "title": "Sample Exact Game",
+      "status": "stable",
+      "deploy": {
+        "steam_appid": 900001,
+        "game_exe": "SampleExact.exe"
+      },
+      "artifacts": [
+        {
+          "name": "renodx-sampleexact.addon64",
+          "mod": "sampleexact",
+          "arch": "x64",
+          "size": 2048,
+          "url": "./renodx-sampleexact.addon64",
+          "path": "./renodx-sampleexact.addon64"
+        }
+      ]
+    },
+    {
+      "id": "unrealengine",
+      "title": "Unreal Engine",
+      "status": "stable",
+      "artifacts": [
+        {
+          "name": "renodx-unrealengine.addon64",
+          "mod": "unrealengine",
+          "arch": "x64",
+          "size": 2048,
+          "url": "./renodx-unrealengine.addon64",
+          "path": "./renodx-unrealengine.addon64"
+        }
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "renodx-sampleexact.addon64",
+      "mod": "sampleexact",
+      "arch": "x64",
+      "size": 2048,
+      "url": "./renodx-sampleexact.addon64",
+      "path": "./renodx-sampleexact.addon64"
+    },
+    {
+      "name": "renodx-unrealengine.addon64",
+      "mod": "unrealengine",
+      "arch": "x64",
+      "size": 2048,
+      "url": "./renodx-unrealengine.addon64",
+      "path": "./renodx-unrealengine.addon64"
+    }
+  ],
+  "stats": {
+    "mods": 2,
+    "artifacts": 2
+  }
+}

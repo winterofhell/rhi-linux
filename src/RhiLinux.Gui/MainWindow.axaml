@@ -81,13 +81,13 @@
           <StackPanel Margin="24,20,28,32" Spacing="16" MaxWidth="1400" HorizontalAlignment="Stretch">
             <DockPanel LastChildFill="True">
               <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right"
-                         VerticalAlignment="Top" Margin="16,0,0,8" MaxWidth="420">
-                <Button Classes="compact primary" MinWidth="108" Margin="0,0,8,8" Click="InstallRecommended_Click"
+                         VerticalAlignment="Top" Margin="16,0,0,8" MaxWidth="420" Classes="button-row">
+                <Button Classes="compact primary button-row-item" MinWidth="108" Click="InstallRecommended_Click"
                         IsEnabled="{Binding CanInstallRecommendedStack}" Content="{Binding PrimaryActionText}"
                         ToolTip.Tip="Review and confirm the recommended action for this game" />
-                <Button Classes="compact secondary" Margin="0,0,8,8" Click="CheckForUpdates_Click" IsEnabled="{Binding CanCheckForUpdates}"
+                <Button Classes="compact secondary button-row-item" Click="CheckForUpdates_Click" IsEnabled="{Binding CanCheckForUpdates}"
                         ToolTip.Tip="Check official sources for newer compatible files">Check for updates</Button>
-                <Button Classes="compact secondary" Margin="0,0,0,8" Click="Restore_Click"
+                <Button Classes="compact secondary button-row-item" Click="Restore_Click"
                         ToolTip.Tip="Review recoverable backups for this game">Restore backups</Button>
               </WrapPanel>
               <StackPanel Spacing="4" Margin="0,0,0,8">
@@ -199,14 +199,32 @@
                                  MinHeight="40" />
                       <TextBlock Grid.Row="2" Text="{Binding Version, StringFormat='Version {0}'}"
                                  IsVisible="{Binding HasVersion}" MinHeight="18" />
-                      <Button Grid.Row="3" Content="{Binding ActionText}" IsVisible="{Binding CanAct}"
-                              Classes="compact primary" HorizontalAlignment="Left" MinWidth="96"
-                              Click="ComponentAction_Click"
-                              ToolTip.Tip="Review and confirm this component action" />
+                      <WrapPanel Grid.Row="3" Orientation="Horizontal" Classes="button-row">
+                        <Button Content="{Binding ActionText}" IsVisible="{Binding CanAct}"
+                                Classes="compact primary button-row-item" HorizontalAlignment="Left" MinWidth="96"
+                                Click="ComponentAction_Click"
+                                ToolTip.Tip="Review and confirm this component action" />
+                        <Button Content="{Binding RemoveActionText}" IsVisible="{Binding ShowRemoveAction}"
+                                Classes="compact secondary button-row-item" HorizontalAlignment="Left" MinWidth="96"
+                                Click="ComponentRemove_Click"
+                                ToolTip.Tip="Review and confirm removal of this managed component" />
+                        <Button Content="{Binding SecondaryActionText}" IsVisible="{Binding ShowSecondaryAction}"
+                                Classes="compact secondary button-row-item" HorizontalAlignment="Left" MinWidth="96"
+                                Click="ComponentSecondary_Click"
+                                ToolTip.Tip="Inspect detected files or check again without changing them" />
+                        <Button Content="Open official page" IsVisible="{Binding CanOpenOfficialPage}"
+                                Classes="compact secondary button-row-item" HorizontalAlignment="Left"
+                                Click="OpenOfficialPage_Click"
+                                ToolTip.Tip="Open the official RenoDX page for this game" />
+                        <TextBlock Text="No action needed" IsVisible="{Binding NoActionNeeded}"
+                                   Classes="secondary" VerticalAlignment="Center" Margin="0,0,8,8" />
+                      </WrapPanel>
                       <Expander Grid.Row="4" Classes="compact" Header="Advanced details"
                                 IsExpanded="{Binding IsDetailsExpanded, Mode=TwoWay}">
                         <StackPanel Spacing="8" Margin="0,8,0,0">
                           <TextBlock Text="{Binding SourceProfile}" Classes="secondary" />
+                          <TextBlock Text="{Binding CompatibilityNote}" IsVisible="{Binding HasCompatibilityNote}"
+                                     Classes="secondary" TextWrapping="Wrap" />
                           <TextBlock Text="{Binding TechnicalExplanation}" Classes="secondary" TextWrapping="Wrap" />
                           <TextBlock Text="{Binding Files}" Classes="path secondary" TextWrapping="Wrap" />
                           <TextBlock Text="{Binding Hash, StringFormat='SHA-256: {0}'}" IsVisible="{Binding HasHash}"
@@ -231,6 +249,24 @@
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
+
+            <Border Classes="card" IsVisible="{Binding ShowHdrGuidance}">
+              <StackPanel Spacing="10">
+                <TextBlock Text="Enable HDR through Proton" Classes="sectionTitle" />
+                <TextBlock Text="These environment variables are for the Linux Proton HDR workflow used by RenoDX. They are not applied automatically unless Steam already contains matching launch options."
+                           Classes="secondary" TextWrapping="Wrap" />
+                <Border Classes="statusBadge" HorizontalAlignment="Left">
+                  <TextBlock Text="{Binding HdrLaunchOptionStatusText}" FontWeight="SemiBold" />
+                </Border>
+                <TextBlock Text="{Binding HdrLaunchOptionExplanation}" Classes="secondary" TextWrapping="Wrap" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" IsVisible="{Binding HasHdrLaunchOption}">
+                  <TextBox Grid.Column="0" x:Name="HdrLaunchOptionBox" Text="{Binding HdrLaunchOption}" IsReadOnly="True"
+                           FontFamily="monospace" HorizontalContentAlignment="Left"
+                           AutomationProperties.Name="Proton HDR launch option" />
+                  <Button Grid.Column="1" x:Name="CopyHdrLaunchButton" Classes="primary" Click="CopyHdrLaunch_Click">Copy</Button>
+                </Grid>
+              </StackPanel>
+            </Border>
 
             <Border Classes="card">
               <StackPanel Spacing="10">
@@ -286,19 +322,28 @@
                                    Minimum="0.0009765625" Maximum="2097151" Increment="0.25" FormatString="0.## GiB"
                                    Value="{Binding CacheLimitGiB, Mode=TwoWay}" />
                   </Grid>
-                  <WrapPanel Orientation="Horizontal">
-                    <Button Content="Clear unused files" Classes="compact secondary" Margin="0,0,8,8"
+                  <TextBlock Text="Archive capabilities" Classes="secondary" />
+                  <TextBlock Text="{Binding CapabilityPreflightText}" Classes="help path" TextWrapping="Wrap"
+                             IsVisible="{Binding HasCapabilityPreflight}" />
+                  <WrapPanel Orientation="Horizontal" Classes="button-row">
+                    <Button Content="Clear unused files" Classes="compact secondary button-row-item"
                             IsEnabled="{Binding CanManageCache}" Click="ClearCache_Click"
                             ToolTip.Tip="Remove unused cached downloads while keeping files still referenced by installed games" />
-                    <Button Content="Verify cache" Classes="compact secondary" Margin="0,0,0,8"
+                    <Button Content="Verify cache" Classes="compact secondary button-row-item"
                             IsEnabled="{Binding CanManageCache}" Click="VerifyCache_Click"
                             ToolTip.Tip="Check cached downloads for damage without modifying game files" />
+                    <Button Content="Open cache folder" Classes="compact secondary button-row-item"
+                            IsEnabled="{Binding CanManageCache}" Click="OpenCacheFolder_Click"
+                            ToolTip.Tip="Open the download cache directory in the file manager" />
                   </WrapPanel>
                   <TextBlock Text="Updates and discovery" Classes="sectionTitle" Margin="0,4,0,0" />
                   <CheckBox Content="Check for updates automatically"
                             IsChecked="{Binding CheckForUpdatesAutomatically, Mode=TwoWay}"
                             ToolTip.Tip="Checks official component sources after selecting a game. It does not modify game files." />
                   <TextBlock Classes="help" Text="Checks official component sources after startup selection. It does not modify game files." />
+                  <Button Content="Refresh RenoDX catalog" Classes="compact secondary" HorizontalAlignment="Left"
+                          IsEnabled="{Binding CanManageCache}" Click="RefreshRenoDxCatalog_Click"
+                          ToolTip.Tip="Reload the official RenoDX Mods wiki catalog and refresh the selected game." />
                   <TextBlock Text="Additional Steam library" Classes="secondary" />
                   <TextBox Text="{Binding AdditionalSteamLibrary, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                            Watermark="/path/to/additional/steamapps parent"

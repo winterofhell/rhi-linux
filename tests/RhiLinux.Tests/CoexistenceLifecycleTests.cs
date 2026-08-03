@@ -1,5 +1,7 @@
 using RhiLinux.Core;
+using RhiLinux.Gui;
 using RhiLinux.Mods;
+using RhiLinux.Steam;
 
 namespace RhiLinux.Tests;
 
@@ -295,6 +297,132 @@ public sealed class CoexistenceLifecycleTests
         Assert.False(result.Succeeded);
         Assert.False(result.RolledBack);
         Assert.False(File.Exists(Path.Combine(game.GameRoot, "dxgi.dll")));
+    }
+
+    [Fact]
+    public async Task SequentialReShadeRenoOptiMigrationKeepsRuntimeVersionAndNoFalseUpdate()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp);
+        var planner = new DeploymentPlanner();
+        var executor = new DeploymentExecutor();
+        var reshadeSource = temp.PeWithMarker("stage/ReShade.dll", "reshade.me");
+        var reshadeHash = await ArtifactDownloader.Sha256Async(reshadeSource);
+        var optiIni = temp.File("stage/OptiScaler.ini", "[Plugins]\nLoadReshade=false\nLoadAsiPlugins=false\n");
+        var fidelity = temp.PeWithMarker("stage/amd_fidelityfx_dx12.dll", "FidelityFX");
+
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game,
+            new(ComponentKind.ReShade, reshadeSource, "ReShade.dll", "6.7.3")), false)).Succeeded);
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game,
+            new(ComponentKind.RenoDx, temp.Pe("stage/reno.addon64"), "reno.addon64", "snapshot")), false)).Succeeded);
+        Assert.True((await executor.ExecuteAsync(await planner.BuildRecommendedStackPlanAsync(game, new(
+            null, null,
+            new(ComponentKind.OptiScaler, temp.PeWithMarker("stage/OptiScaler.dll", "OptiScaler"), "OptiScaler.dll", "v0.9.4"),
+            [
+                new(ComponentKind.OptiScaler, optiIni, "OptiScaler.ini", "v0.9.4"),
+                new(ComponentKind.OptiScaler, fidelity, "amd_fidelityfx_dx12.dll", "v0.9.4",
+                    RelativePath: "amd_fidelityfx_dx12.dll")
+            ])), false)).Succeeded);
+
+        var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot);
+        var reshadeFiles = manifest.Files.Where(x => x.Component == ComponentKind.ReShade).ToArray();
+        Assert.Contains(reshadeFiles, x => Path.GetFileName(x.RelativePath).Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase) &&
+            x.Version == "6.7.3");
+        Assert.Contains(reshadeFiles, x =>
+            Path.GetFileName(x.RelativePath).Equals("ReShade.ini", StringComparison.OrdinalIgnoreCase) &&
+            x.Version is null);
+
+        var reports = await new ComponentDetector().DetectStackAsync(game);
+        var reshade = Assert.Single(reports.Components, x => x.Component == ComponentKind.ReShade);
+        Assert.Equal("6.7.3", reshade.Version);
+        Assert.Equal("6.7.3", reshade.Evidence.InstalledArtifactIdentity);
+        Assert.Equal(ComponentLifecycleState.InstalledHealthy, reshade.State);
+        Assert.Equal(StackLayoutKind.FullStack, reports.Layout);
+        Assert.Equal("dxgi.dll", reports.ActiveProxy);
+        Assert.Equal(ComponentKind.OptiScaler, reports.ProxyOwner);
+        Assert.True(reports.ChainingConfigured);
+        Assert.True(reports.IsHealthy);
+        Assert.Empty(reports.ConcreteDefects ?? []);
+
+        var withoutHash = new ResolvedArtifact(
+            ComponentKind.ReShade, "6.7.3", new("https://reshade.me/"), "6.7.3", "ReShade64.dll",
+            PeArchitecture.X64, null, ArtifactSupportKind.General, ArtifactCacheState.DownloadRequired,
+            ArtifactValidationState.Valid, null, null, null);
+        Assert.Equal(UpdateAvailability.UpToDate, UpdateEvaluator.Compare(reshade, withoutHash));
+        Assert.NotEqual(ComponentLifecycleState.UpdateAvailable, UpdateEvaluator.Apply(reshade, withoutHash).State);
+
+        var withMatchingHash = withoutHash with { Sha256 = reshadeHash };
+        Assert.Equal(UpdateAvailability.UpToDate, UpdateEvaluator.Compare(reshade, withMatchingHash));
+
+        var opti = Assert.Single(reports.Components, x => x.Component == ComponentKind.OptiScaler);
+        Assert.Equal(ComponentLifecycleState.InstalledHealthy, opti.State);
+        Assert.False(new ComponentCardViewModel(StackDetector.ToComponentStatus(opti)).CanRepair);
+        Assert.False(new ComponentCardViewModel(StackDetector.ToComponentStatus(reshade)).CanUpdate);
+        Assert.True(File.Exists(Path.Combine(game.DeploymentDirectory, "amd_fidelityfx_dx12.dll")));
+        Assert.Equal(reshadeHash, await ArtifactDownloader.Sha256Async(Path.Combine(game.DeploymentDirectory, "ReShade64.dll")));
+    }
+
+    [Fact]
+    public void RecommendedLaunchOptionsExcludeUnrelatedSteamArguments()
+    {
+        var required = DeploymentPlanner.GenerateLaunchOption("dxgi.dll");
+        Assert.Equal("WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", required);
+        Assert.DoesNotContain("gamemoderun", required, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("LD_PRELOAD", required, StringComparison.OrdinalIgnoreCase);
+
+        var composed = SteamLaunchOptionService.Compose(
+            "dxgi.dll",
+            includeHdr: true,
+            existingLaunchOptions: "gamemoderun LD_PRELOAD=/tmp/x.so MANGOHUD=1 %command%",
+            manageHdr: true);
+
+        Assert.DoesNotContain("gamemoderun", composed.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("LD_PRELOAD", composed.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("MANGOHUD", composed.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("WINEDLLOVERRIDES=\"dxgi=n,b\"", composed.Text, StringComparison.Ordinal);
+        Assert.Contains(SteamLaunchOptionService.ProtonEnableWayland, composed.Text, StringComparison.Ordinal);
+        Assert.Contains(SteamLaunchOptionService.DxvkHdr, composed.Text, StringComparison.Ordinal);
+        Assert.Equal(
+            $"{SteamLaunchOptionService.ProtonEnableWayland} {SteamLaunchOptionService.DxvkHdr} WINEDLLOVERRIDES=\"dxgi=n,b\" %command%",
+            composed.Text);
+
+        var observed = SteamLaunchOptionService.Observe(
+            new(1, "Fixture", "/steam", "/steam", "/game", "/pfx", "/game/Game.exe", "/game",
+                DetectionConfidence.High, "fixture", GameEngine.Unknown, []),
+            required,
+            "gamemoderun WINEDLLOVERRIDES=\"dxgi=n,b\" %command%");
+        Assert.Equal(LaunchOptionStatus.Correct, observed.Status);
+        Assert.Equal(required, observed.RequiredOption);
+    }
+
+    [Fact]
+    public async Task HealthyFullStackRepairPerformsNoWrites()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp);
+        var planner = new DeploymentPlanner();
+        var executor = new DeploymentExecutor();
+        var reshade = temp.PeWithMarker("stage/ReShade.dll", "reshade.me");
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game,
+            new(ComponentKind.ReShade, reshade, "ReShade.dll", "6.7.3")), false)).Succeeded);
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game,
+            new(ComponentKind.RenoDx, temp.Pe("stage/reno.addon64"), "reno.addon64", "snapshot")), false)).Succeeded);
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game,
+            new(ComponentKind.OptiScaler, temp.PeWithMarker("stage/OptiScaler.dll", "OptiScaler"), "OptiScaler.dll", "v0.9.4")),
+            false)).Succeeded);
+
+        var before = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var path in Directory.EnumerateFiles(game.DeploymentDirectory, "*", SearchOption.AllDirectories))
+            before[path] = await ArtifactDownloader.Sha256Async(path);
+        var repair = await planner.BuildRepairPlanAsync(game, ComponentKind.OptiScaler,
+            new(ComponentKind.OptiScaler, temp.PeWithMarker("stage/repair/OptiScaler.dll", "OptiScaler"), "OptiScaler.dll", "v0.9.4"));
+        Assert.False(repair.RequiresRepair);
+        Assert.Empty(repair.Operations);
+        Assert.Contains(repair.Warnings, warning => warning.Contains("No repair needed", StringComparison.OrdinalIgnoreCase));
+        Assert.True((await executor.ExecuteAsync(repair, false)).Succeeded);
+
+        foreach (var (path, hash) in before)
+            Assert.Equal(hash, await ArtifactDownloader.Sha256Async(path));
     }
 
     private static SteamGame Game(TestDirectory temp)

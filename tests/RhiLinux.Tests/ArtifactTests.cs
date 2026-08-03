@@ -184,7 +184,11 @@ public sealed class ArtifactTests
         var selection = new ArtifactSelection(ComponentKind.RenoDx, "snapshot", new("https://clshortfuse.github.io/renodx/interrupted.addon64"),
             "snapshot", "interrupted.addon64", PeArchitecture.X64, 42, "interrupted.addon64", null, ArtifactArchiveKind.None);
 
-        await Assert.ThrowsAsync<IOException>(() => cache.AcquireAsync(selection, new HttpClient(new InterruptedHandler(pe))));
+        var failure = await Assert.ThrowsAsync<ArtifactPipelineException>(() =>
+            cache.AcquireAsync(selection, new HttpClient(new InterruptedHandler(pe))));
+        Assert.IsType<IOException>(failure.InnerException);
+        Assert.Equal(ArtifactPipelineStage.Download, failure.Stage);
+        Assert.False(failure.GameFilesChanged);
 
         Assert.Empty(await cache.ListAsync());
         Assert.Empty(Directory.Exists(Path.Combine(cache.Root, "downloads"))
@@ -396,7 +400,7 @@ public sealed class ArtifactTests
     }
 
     [Fact]
-    public async Task ChangedSnapshotMetadataReportsUpdateAvailable()
+    public async Task EtagOnlySnapshotRefreshDoesNotReportFalseUpdate()
     {
         using var temp = new TestDirectory();
         var game = Game(temp, 3668370, "Night Swarm", GameEngine.Unity);
@@ -420,8 +424,49 @@ public sealed class ArtifactTests
 
         var report = await new StackStatusService(new HttpClient(new SnapshotUpdateHandler()), paths).GetAsync(game, true);
 
-        Assert.Equal(ComponentHealth.Outdated, Assert.Single(report.Components, x => x.Component == ComponentKind.RenoDx).Health);
+        var reno = Assert.Single(report.Components, x => x.Component == ComponentKind.RenoDx);
+        Assert.Equal(ComponentHealth.Installed, reno.Health);
+        Assert.NotEqual(ComponentHealth.Outdated, reno.Health);
         Assert.Equal(MetadataCheckState.Online, report.ArtifactResolution.MetadataState);
+    }
+
+    [Fact]
+    public async Task NewerOfficialVersionReportsUpdateAvailable()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp, 42, "Versioned Fixture", GameEngine.Unknown);
+        var paths = new XdgPaths(temp.Path, new Dictionary<string, string?> { ["XDG_CACHE_HOME"] = temp.Combine("cache") });
+        var planner = new DeploymentPlanner();
+        var executor = new DeploymentExecutor();
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game,
+            new(ComponentKind.ReShade, temp.PeWithMarker("install/ReShade64.dll", "reshade.me"),
+                "ReShade64.dll", "6.7.2")), false)).Succeeded);
+
+        var report = new ComponentStateReport(
+            ComponentKind.ReShade,
+            ComponentLifecycleState.InstalledHealthy,
+            RuntimeHealth.Healthy,
+            FileIntegrityStatus.Complete,
+            ConfigurationHealth.Valid,
+            OwnershipHealth.Managed,
+            UpdateAvailability.Unknown,
+            CompatibilityStatus.Compatible,
+            "6.7.2",
+            "Installed",
+            null,
+            new ComponentStateEvidence(
+                [Path.Combine(game.DeploymentDirectory, "dxgi.dll")],
+                ["dxgi.dll"], [], [], "dxgi.dll", ComponentKind.ReShade, PeArchitecture.X64,
+                "6.7.2", null, null, "reshade.installedhealthy"));
+        var artifact = new ResolvedArtifact(
+            ComponentKind.ReShade, "6.7.3", new("https://reshade.me/"), "6.7.3", "ReShade64.dll",
+            PeArchitecture.X64, null, ArtifactSupportKind.General, ArtifactCacheState.DownloadRequired,
+            ArtifactValidationState.Valid, "abc", null, null);
+
+        var updated = UpdateEvaluator.Apply(report, artifact);
+
+        Assert.Equal(ComponentLifecycleState.UpdateAvailable, updated.State);
+        Assert.Equal(UpdateAvailability.UpdateAvailable, updated.Update);
     }
 
     private static SteamGame Game(

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
-using System.Text;
 using RhiLinux.Core;
 
 namespace RhiLinux.Mods;
@@ -192,30 +191,27 @@ public sealed class TargetFileClassifier(GameProfileCatalog? profiles = null)
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException) { }
 
-        string text;
         try
         {
-            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var bytes = new byte[Math.Min(stream.Length, 4 * 1024 * 1024)];
-            _ = stream.Read(bytes);
-            text = Encoding.ASCII.GetString(bytes) + '\n' + Encoding.Unicode.GetString(bytes);
+            bool HasBinary(params string[] markers) => BinaryMarkerScanner.ContainsAny(path, markers);
+            bool HasMeta(string value) =>
+                company.Contains(value, StringComparison.OrdinalIgnoreCase) ||
+                product.Contains(value, StringComparison.OrdinalIgnoreCase);
+            var reshade = HasBinary("reshade.me", "ReShade Add-on") || HasMeta("reshade.me") || HasMeta("ReShade");
+            var optiScaler = HasBinary("OptiScaler", "OptiFG") || HasMeta("OptiScaler") || HasMeta("OptiFG");
+            var renoDx = HasBinary("RenoDX") || HasMeta("RenoDX");
+            var gameVendor = HasBinary("Advanced Micro Devices", "AMD FidelityFX", "FidelityFX SDK") ||
+                HasMeta("Advanced Micro Devices") || HasMeta("AMD FidelityFX") || HasMeta("FidelityFX SDK");
+            if (reshade) evidence.Add("ReShade binary/product marker");
+            if (optiScaler) evidence.Add("OptiScaler binary/product marker");
+            if (renoDx) evidence.Add("RenoDX binary/product marker");
+            if (gameVendor) evidence.Add("AMD FidelityFX vendor/product metadata");
+            return new(reshade, optiScaler, renoDx, gameVendor, evidence);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return new(false, false, false, false, evidence);
         }
-
-        bool Has(string value) => text.Contains(value, StringComparison.OrdinalIgnoreCase) ||
-            company.Contains(value, StringComparison.OrdinalIgnoreCase) || product.Contains(value, StringComparison.OrdinalIgnoreCase);
-        var reshade = Has("reshade.me") || Has("ReShade Add-on");
-        var optiScaler = Has("OptiScaler") || Has("OptiFG");
-        var renoDx = Has("RenoDX");
-        var gameVendor = Has("Advanced Micro Devices") || Has("AMD FidelityFX") || Has("FidelityFX SDK");
-        if (reshade) evidence.Add("ReShade binary/product marker");
-        if (optiScaler) evidence.Add("OptiScaler binary/product marker");
-        if (renoDx) evidence.Add("RenoDX binary/product marker");
-        if (gameVendor) evidence.Add("AMD FidelityFX vendor/product metadata");
-        return new(reshade, optiScaler, renoDx, gameVendor, evidence);
     }
 
     private static PeArchitecture ReadArchitecture(string path)

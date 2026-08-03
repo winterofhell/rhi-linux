@@ -201,14 +201,14 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         plan.Operations.Add(new(DeploymentOperationType.CreateDirectory, game.DeploymentDirectory));
         var existingOptiProxy = manifest.Files.FirstOrDefault(file =>
             file.Component == ComponentKind.OptiScaler &&
-            SupportedProxyNames.Contains(Path.GetFileName(file.RelativePath), StringComparer.OrdinalIgnoreCase) &&
-            File.Exists(Path.Combine(game.GameRoot, file.RelativePath)) &&
-            HashPath(Path.Combine(game.GameRoot, file.RelativePath)).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase));
-        if (artifact.Component == ComponentKind.RenoDx && existingOptiProxy is not null)
+            SupportedProxyNames.Contains(Path.GetFileName(file.RelativePath), StringComparer.OrdinalIgnoreCase));
+        if (existingOptiProxy is not null &&
+            artifact.Component is ComponentKind.OptiScaler or ComponentKind.RenoDx)
             proxyName = Path.GetFileName(existingOptiProxy.RelativePath);
         var proxy = Path.Combine(game.DeploymentDirectory, proxyName);
         var coexist = Path.Combine(game.DeploymentDirectory, "ReShade64.dll");
-        var optiPresent = existingOptiProxy is not null;
+        var optiPresent = existingOptiProxy is not null &&
+            File.Exists(Path.Combine(game.GameRoot, existingOptiProxy.RelativePath));
 
         switch (artifact.Component)
         {
@@ -260,6 +260,32 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                 await AddReplacementAsync(plan, manifest, game, artifact, proxy, [artifact], false, cancellationToken);
                 ConfigureOptiScaler(plan, manifest, game, artifact.Version, null,
                     reshadePresent || coexistPresent, reshadePresent || coexistPresent);
+                if (reshadePresent || coexistPresent)
+                {
+                    plan.Operations.Add(new(DeploymentOperationType.VerifyFileState, proxy, Value: "exists",
+                        Description: "Verify OptiScaler owns the active proxy after migration"));
+                    plan.Operations.Add(new(DeploymentOperationType.VerifyFileState, coexist, Value: "exists",
+                        Description: "Verify ReShade was migrated to ReShade64.dll"));
+                    plan.Operations.Add(new(DeploymentOperationType.VerifyIniValue,
+                        Path.Combine(game.DeploymentDirectory, "OptiScaler.ini"),
+                        Value: "Plugins:LoadReshade=true",
+                        Component: ComponentKind.OptiScaler,
+                        Description: "Verify OptiScaler chains ReShade"));
+                    plan.Operations.Add(new(DeploymentOperationType.VerifyIniValue,
+                        Path.Combine(game.DeploymentDirectory, "OptiScaler.ini"),
+                        Value: "Plugins:LoadAsiPlugins=true",
+                        Component: ComponentKind.OptiScaler,
+                        Description: "Verify OptiScaler loads ASI plugins"));
+                    if (HasValidManagedFile(manifest, game, ComponentKind.RenoDx))
+                    {
+                        var reno = manifest.Files.First(file =>
+                            file.Component == ComponentKind.RenoDx &&
+                            File.Exists(Path.Combine(game.GameRoot, file.RelativePath)));
+                        plan.Operations.Add(new(DeploymentOperationType.VerifyFileState,
+                            Path.Combine(game.GameRoot, reno.RelativePath), Value: "exists",
+                            Description: "Verify RenoDX addon remains hosted by ReShade"));
+                    }
+                }
                 break;
             case ComponentKind.OptiPatcher:
                 throw new NotSupportedException("OptiPatcher is legacy-cleanup-only and cannot be installed.");
@@ -275,6 +301,15 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         plan.LaunchOption = artifact.Component is ComponentKind.ReShade or ComponentKind.OptiScaler
             ? GenerateLaunchOption(proxyName) : null;
         SetExpectation(plan, artifact.Component, true);
+        if (artifact.Component == ComponentKind.OptiScaler)
+        {
+            var finalReShade = ManagedAt(manifest, game, proxy, ComponentKind.ReShade) && File.Exists(proxy) ||
+                ManagedAt(manifest, game, coexist, ComponentKind.ReShade) && File.Exists(coexist) ||
+                HasValidManagedFile(manifest, game, ComponentKind.ReShade);
+            if (finalReShade) SetExpectation(plan, ComponentKind.ReShade, true);
+            if (HasValidManagedFile(manifest, game, ComponentKind.RenoDx))
+                SetExpectation(plan, ComponentKind.RenoDx, true);
+        }
         AddManifest(plan, game);
         return plan;
     }
@@ -299,12 +334,34 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         var componentsToRemove = component switch
         {
             ComponentKind.OptiScaler => new[] { ComponentKind.OptiScaler, ComponentKind.OptiPatcher },
-            ComponentKind.ReShade => new[] { ComponentKind.ReShade, ComponentKind.RenoDx },
+            ComponentKind.ReShade when manifest.Files.Any(x => x.Component == ComponentKind.RenoDx) =>
+                new[] { ComponentKind.ReShade, ComponentKind.RenoDx },
             _ => new[] { component }
         };
 
+        if (component == ComponentKind.ReShade &&
+            componentsToRemove.Contains(ComponentKind.RenoDx))
+        {
+            plan.Warnings.Add(
+                "RenoDX requires ReShade. Removing ReShade will also remove the managed RenoDX addon. Confirm to continue, or remove RenoDX first if you want a different order.");
+        }
+
         foreach (var file in manifest.Files.Where(x => componentsToRemove.Contains(x.Component)).ToArray())
-            AddManagedRemoval(plan, manifest, game, file);
+        {
+            var ownership = ClassifyRemovalOwnership(file, component, componentsToRemove, manifest);
+            if (ownership is RemovalPathOwnership.ManagedBySelectedComponent ||
+                (ownership == RemovalPathOwnership.SharedManagedDependency &&
+                 !RemainingComponentRequires(file, componentsToRemove, manifest)))
+                AddManagedRemoval(plan, manifest, game, file, ownership);
+            else
+            {
+                plan.FileDecisions.Add(new(file.Component, DeploymentFileRequirement.NeverReplace,
+                    DeploymentFileAction.PreserveExisting,
+                    $"Preserved as {ownership}; removal is limited to files proven to belong to the selected component.",
+                    file.Version, file.RelativePath, Path.Combine(game.GameRoot, file.RelativePath),
+                    false, true, true, []));
+            }
+        }
 
         if (component == ComponentKind.OptiScaler)
             plan.Operations.Add(new(DeploymentOperationType.ClearConfigurationPatches,
@@ -376,7 +433,48 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         string proxyName = "dxgi.dll",
         CancellationToken cancellationToken = default)
     {
-        var plan = await BuildInstallPlanAsync(game, artifact, proxyName, cancellationToken);
+        var snapshot = await new ComponentDetector().DetectStackAsync(game, cancellationToken: cancellationToken);
+        var report = snapshot.ReportFor(component);
+        var healthyStates = report is not null &&
+            report.State is (ComponentLifecycleState.InstalledHealthy or
+                ComponentLifecycleState.InstalledWithWarnings or
+                ComponentLifecycleState.InstalledMetadataIncomplete or
+                ComponentLifecycleState.InstalledUnmanaged or
+                ComponentLifecycleState.UpdateAvailable);
+        if (healthyStates &&
+            report!.Evidence.RepairReason is null &&
+            (snapshot.ConcreteDefects is null || snapshot.ConcreteDefects.Count == 0) &&
+            !ManagedReShadePresetMissing(game, snapshot))
+        {
+            var healthy = NewPlan(game, $"repair {component}");
+            healthy.RequiresRepair = false;
+            healthy.CompatibilityMessage = "No repair needed. The OptiScaler installation is healthy.";
+            if (component != ComponentKind.OptiScaler)
+                healthy.CompatibilityMessage = "No repair needed. The installed stack is healthy.";
+            healthy.Warnings.Add(healthy.CompatibilityMessage);
+            SetExpectation(healthy, component, true);
+            if (snapshot.ReportFor(ComponentKind.ReShade)?.State is ComponentLifecycleState.InstalledHealthy or
+                ComponentLifecycleState.InstalledWithWarnings or ComponentLifecycleState.InstalledMetadataIncomplete or
+                ComponentLifecycleState.UpdateAvailable)
+                SetExpectation(healthy, ComponentKind.ReShade, true);
+            if (snapshot.ReportFor(ComponentKind.RenoDx)?.State is ComponentLifecycleState.InstalledHealthy or
+                ComponentLifecycleState.InstalledWithWarnings or ComponentLifecycleState.InstalledMetadataIncomplete or
+                ComponentLifecycleState.UpdateAvailable)
+                SetExpectation(healthy, ComponentKind.RenoDx, true);
+            if (snapshot.ReportFor(ComponentKind.OptiScaler)?.State is ComponentLifecycleState.InstalledHealthy or
+                ComponentLifecycleState.InstalledWithWarnings or ComponentLifecycleState.InstalledMetadataIncomplete or
+                ComponentLifecycleState.UpdateAvailable)
+                SetExpectation(healthy, ComponentKind.OptiScaler, true);
+            healthy.LaunchOption = snapshot.LaunchOptionRequirement;
+            return healthy;
+        }
+
+        var repairProxy = snapshot.ActiveProxy
+            ?? snapshot.ReportFor(ComponentKind.OptiScaler)?.Evidence.ActiveProxy
+            ?? snapshot.ReportFor(ComponentKind.OptiScaler)?.Evidence.MissingRequiredFiles
+                .FirstOrDefault(name => SupportedProxyNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            ?? proxyName;
+        var plan = await BuildInstallPlanAsync(game, artifact, repairProxy, cancellationToken);
         plan.Action = $"repair {component}";
         plan.RequiresRepair = true;
         plan.CompatibilityMessage = "Some files from an earlier installation need to be repaired before continuing.";
@@ -471,22 +569,70 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             return;
 
         var unownedExistingIni = File.Exists(ini) && !IsOwned(manifest, game, ini);
-        if (unownedExistingIni)
+        IniDocument? existingDocument = null;
+        if (File.Exists(ini))
         {
-            try { _ = IniDocument.Parse(File.ReadAllText(ini)); }
-            catch (InvalidDataException exception)
+            var rawBytes = File.ReadAllBytes(ini);
+            existingDocument = IniDocument.Parse(rawBytes);
+            if (existingDocument.HasFatalIssues)
             {
                 throw new DeploymentConflictException(
-                    $"Required write: OptiScaler must update {ini}. The existing unowned INI is malformed and cannot be " +
-                    $"safely edited or replaced. Alternative tested: preserve and patch in place; rejected because {exception.Message}");
+                    $"Required write: OptiScaler must update {ini}. The existing INI cannot be safely edited because it contains fatal corruption.");
             }
         }
         var schema = OptiScalerConfigurationAdapter.Detect(version, ini, templatePath, enableReShade, enableAsi);
+        if (existingDocument is not null)
+        {
+            var managedKeys = schema.Changes.Select(change => (change.Section, change.Key)).ToArray();
+            if (!existingDocument.CanSafelyEditManagedKeys(managedKeys))
+            {
+                if (templatePath is not null && File.Exists(templatePath) && IsOwned(manifest, game, ini))
+                {
+                    var quarantine = Path.Combine(game.GameRoot, ".rhi-linux", "backups", plan.Id,
+                        Path.GetRelativePath(game.GameRoot, ini) + ".malformed");
+                    plan.Warnings.Add(
+                        "OptiScaler.ini contained malformed data that could not be patched safely. " +
+                        "The original bytes will be preserved as a backup and a managed configuration will be written.");
+                    if (!plan.Operations.Any(operation =>
+                            operation.Type == DeploymentOperationType.Backup &&
+                            operation.Target.Equals(ini, StringComparison.Ordinal)))
+                    {
+                        plan.Operations.Add(new(DeploymentOperationType.Backup, ini, BackupPath: quarantine,
+                            Component: ComponentKind.OptiScaler,
+                            Description: "Preserve the original malformed OptiScaler.ini bytes"));
+                    }
+                    if (!plan.Operations.Any(operation =>
+                            operation.Type == DeploymentOperationType.Copy &&
+                            operation.Target.Equals(ini, StringComparison.Ordinal)))
+                    {
+                        AddCopy(plan, new(ComponentKind.OptiScaler, templatePath, "OptiScaler.ini", version), ini);
+                    }
+                    existingDocument = null;
+                }
+                else
+                {
+                    var issue = existingDocument.Issues.FirstOrDefault()?.Message ??
+                        "The INI contains a malformed section header.";
+                    throw new DeploymentConflictException(
+                        $"Required write: OptiScaler must update {ini}. The existing unowned INI is malformed and cannot be " +
+                        $"safely edited or replaced. Alternative tested: preserve and patch in place; rejected because {issue}");
+                }
+            }
+            else if (existingDocument.HasRecoverableIssues)
+            {
+                plan.Warnings.Add(
+                    "OptiScaler.ini contains recoverable formatting issues. Managed keys will be updated while preserving unrelated lines.");
+            }
+        }
         string? backup = null;
-        if (unownedExistingIni)
+        var alreadyBackedUp = plan.Operations.Any(operation =>
+            operation.Type == DeploymentOperationType.Backup &&
+            operation.Target.Equals(ini, StringComparison.Ordinal));
+        if (!alreadyBackedUp && (unownedExistingIni || existingDocument?.HasRecoverableIssues == true))
         {
             backup = Path.Combine(game.GameRoot, ".rhi-linux", "backups", plan.Id, Path.GetRelativePath(game.GameRoot, ini));
-            plan.Warnings.Add("Existing OptiScaler settings will be preserved; only compatibility values will change.");
+            if (unownedExistingIni)
+                plan.Warnings.Add("Existing OptiScaler settings will be preserved; only compatibility values will change.");
             if (!plan.FileDecisions.Any(decision =>
                     decision.DestinationPath.Equals(ini, StringComparison.Ordinal)))
                 plan.FileDecisions.Add(new(ComponentKind.OptiScaler, DeploymentFileRequirement.Required,
@@ -617,10 +763,15 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         if (!File.Exists(path)) return false;
         try
         {
-            IniDocument.Parse(File.ReadAllText(path));
-            return false;
+            var document = IniDocument.Parse(File.ReadAllBytes(path));
+            if (document.HasFatalIssues) return true;
+            return !document.CanSafelyEditManagedKeys(
+            [
+                ("Plugins", "LoadReshade"),
+                ("Plugins", "LoadAsiPlugins")
+            ]);
         }
-        catch (InvalidDataException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             return true;
         }
@@ -630,8 +781,9 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     {
         if (!IsImmutableRuntimeFile(file)) return false;
         var path = Path.Combine(game.GameRoot, file.RelativePath);
-        return !File.Exists(path) ||
-               !HashPath(path).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase);
+        if (!File.Exists(path)) return true;
+        if (HashPath(path).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase)) return false;
+        return !StackDetector.IsRecognizedRuntime(path, file.Component);
     }
 
     private static bool IsImmutableRuntimeFile(ManagedFile file)
@@ -660,7 +812,6 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             .FirstOrDefault();
         if (remaining is not null) return remaining;
 
-        // After OptiScaler removal, ReShade may be restored to the former proxy path via Move.
         if (removedComponents.Contains(ComponentKind.OptiScaler))
         {
             var reshadeProxy = manifest.Files.FirstOrDefault(file =>
@@ -762,7 +913,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         DeploymentPlan plan,
         GameManifest manifest,
         SteamGame game,
-        ManagedFile file)
+        ManagedFile file,
+        RemovalPathOwnership ownership = RemovalPathOwnership.ManagedBySelectedComponent)
     {
         var target = Path.Combine(game.GameRoot, file.RelativePath);
         var hasTrustedBackup = TryGetTrustedBackup(game, file, out var trustedBackup, out var backupError);
@@ -775,6 +927,10 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                 plan.Operations.Add(new(DeploymentOperationType.RestoreBackup, target, trustedBackup,
                     ExpectedSha256: file.BackupSha256, Component: file.Component,
                     Description: $"Restore original {file.RelativePath}"));
+            plan.FileDecisions.Add(new(file.Component, DeploymentFileRequirement.ObsoleteManaged,
+                DeploymentFileAction.RemoveManaged,
+                $"Classified as {ownership}; ownership metadata for the missing file is cleared.",
+                file.Version, file.BundleRelativePath, target, false, false, false, []));
             return;
         }
         if (!HashPath(target).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
@@ -792,21 +948,54 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             plan.FileDecisions.Add(new(file.Component, DeploymentFileRequirement.ObsoleteManaged,
                 DeploymentFileAction.PreserveExisting,
                 hasTrustedBackup
-                    ? "The changed managed file is preserved in recovery storage, then the hash-verified original backup is restored."
-                    : "The file was previously managed but its current hash changed, so removal moves it to recovery storage instead of deleting it.",
+                    ? $"Classified as {ownership}. The changed managed file is preserved in recovery storage, then the hash-verified original backup is restored."
+                    : $"Classified as {ownership}. The file was previously managed but its current hash changed, so removal moves it to recovery storage instead of deleting it.",
                 file.Version, file.BundleRelativePath, target, false, true, true,
-                [$"Recover the preserved file from {Path.GetRelativePath(game.GameRoot, recovery)}"]));
-            plan.Warnings.Add($"A changed managed file will be preserved in recovery storage before ownership is cleared: {file.RelativePath}");
+                ["Keep the changed file in recovery storage"]));
             return;
         }
-        plan.Operations.Add(new(DeploymentOperationType.DeleteManagedFile, target, Component: file.Component));
-        plan.FileDecisions.Add(new(file.Component, DeploymentFileRequirement.ObsoleteManaged,
-            DeploymentFileAction.RemoveManaged, "The ownership manifest and current hash prove this file is managed and selected for removal.",
-            file.Version, file.BundleRelativePath, target, false, false, false, []));
+
+        plan.Operations.Add(new(DeploymentOperationType.DeleteManagedFile, target,
+            ExpectedSha256: file.Sha256, Component: file.Component,
+            Description: $"Remove managed {file.RelativePath} ({ownership})"));
         if (hasTrustedBackup)
             plan.Operations.Add(new(DeploymentOperationType.RestoreBackup, target, trustedBackup,
                 ExpectedSha256: file.BackupSha256, Component: file.Component,
                 Description: $"Restore original {file.RelativePath}"));
+        plan.FileDecisions.Add(new(file.Component, DeploymentFileRequirement.ObsoleteManaged,
+            DeploymentFileAction.RemoveManaged,
+            $"Classified as {ownership}; delete only after the current hash matches the ownership record.",
+            file.Version, file.BundleRelativePath, target, false, false, hasTrustedBackup,
+            hasTrustedBackup ? ["Restore the original game-owned backup"] : []));
+    }
+
+    public static RemovalPathOwnership ClassifyRemovalOwnership(
+        ManagedFile file,
+        ComponentKind selectedComponent,
+        IReadOnlyList<ComponentKind> componentsToRemove,
+        GameManifest manifest)
+    {
+        if (file.Component == selectedComponent)
+            return RemovalPathOwnership.ManagedBySelectedComponent;
+        if (componentsToRemove.Contains(file.Component))
+            return RemovalPathOwnership.SharedManagedDependency;
+        if (manifest.Files.Any(x => x.Component == file.Component))
+            return RemovalPathOwnership.ManagedByAnotherComponent;
+        return RemovalPathOwnership.Unknown;
+    }
+
+    private static bool RemainingComponentRequires(
+        ManagedFile file,
+        IReadOnlyList<ComponentKind> componentsToRemove,
+        GameManifest manifest)
+    {
+        foreach (var other in manifest.Files)
+        {
+            if (componentsToRemove.Contains(other.Component)) continue;
+            if (other.RelativePath.Equals(file.RelativePath, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private async Task AddReplacementAsync(
@@ -951,7 +1140,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         plan.Operations.Add(new(DeploymentOperationType.Copy, target, artifact.Path, artifact.Version,
             NormalizedHash(artifact), artifact.Component, BackupPath: null, SourceUrl: artifact.SourceUrl,
             SourceBlobSha256: artifact.SourceBlobSha256 ?? artifact.Sha256,
-            SourceBundleSha256: artifact.SourceBundleSha256, BundleRelativePath: artifact.RelativePath));
+            SourceBundleSha256: artifact.SourceBundleSha256, BundleRelativePath: artifact.RelativePath,
+            Purpose: artifact.Feature, Requirement: artifact.Requirement));
         AddFileDecision(plan, artifact, target, action,
             reason ?? artifact.RequirementReason ?? "The selected installation strategy requires this official file.",
             action == DeploymentFileAction.ReplaceManaged, false,
@@ -971,7 +1161,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         plan.Operations.Add(new(DeploymentOperationType.Copy, target, artifact.Path, artifact.Version,
             NormalizedHash(artifact), artifact.Component, BackupPath: null, SourceUrl: artifact.SourceUrl,
             SourceBlobSha256: artifact.SourceBlobSha256 ?? artifact.Sha256,
-            SourceBundleSha256: artifact.SourceBundleSha256, BundleRelativePath: artifact.RelativePath));
+            SourceBundleSha256: artifact.SourceBundleSha256, BundleRelativePath: artifact.RelativePath,
+            Purpose: artifact.Feature, Requirement: artifact.Requirement));
         AddFileDecision(plan, artifact, target, DeploymentFileAction.ReplaceManaged,
             "Update the managed ReShade file after moving it into the coexistence slot.", true, false, false, []);
     }
@@ -1154,6 +1345,22 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
     private static void AddManifest(DeploymentPlan plan, SteamGame game) => plan.Operations.Add(new(
         DeploymentOperationType.WriteManifest, Path.Combine(game.GameRoot, ".rhi-linux", "manifest.json")));
+
+    private static bool ManagedReShadePresetMissing(SteamGame game, StackSnapshot snapshot)
+    {
+        var reshade = snapshot.ReportFor(ComponentKind.ReShade);
+        if (reshade is null) return false;
+        if (reshade.State is not (ComponentLifecycleState.InstalledHealthy or
+            ComponentLifecycleState.InstalledWithWarnings or
+            ComponentLifecycleState.InstalledMetadataIncomplete or
+            ComponentLifecycleState.UpdateAvailable or
+            ComponentLifecycleState.RepairRequired or
+            ComponentLifecycleState.RepairRecommended))
+            return false;
+        if (reshade.Ownership is not (OwnershipHealth.Managed or OwnershipHealth.Incomplete or OwnershipHealth.Migrated))
+            return false;
+        return !File.Exists(ReShadePresetService.CleanPresetPath(game));
+    }
 
     private static DeploymentPlan NewPlan(SteamGame game, string action) => new()
     {

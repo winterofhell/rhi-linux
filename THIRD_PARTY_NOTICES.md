@@ -36,4 +36,17 @@ RHI Linux does not redistribute the software listed below. It can read metadata 
 - License: MIT
 - Role: cross-platform desktop user interface framework
 
+## SharpCompress
+
+- Project: <https://github.com/adamhathcock/sharpcompress>
+- License: MIT
+- Role: managed inspection and extraction of official OptiScaler `.7z` archives and other supported archive containers
+- RHI Linux does not call SharpCompress `WriteToDirectory` helpers; archive paths are validated and extracted entry-by-entry into transaction-owned temporary directories
+
+## HtmlAgilityPack
+
+- Project: <https://github.com/zzzprojects/html-agility-pack>
+- License: MIT
+- Role: structured parsing of public RenoDX GitHub Discussion HTML
+
 The license and copyright notices shipped by each downloaded component remain authoritative. Users are responsible for complying with game terms and component licenses.

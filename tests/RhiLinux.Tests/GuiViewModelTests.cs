@@ -129,12 +129,25 @@ public sealed class GuiViewModelTests
 
         var broken = Card(ComponentHealth.Broken);
         Assert.True(broken.CanRepair);
-        Assert.False(broken.CanRemove);
-        Assert.Equal("Repair and continue", broken.ActionText);
+        Assert.True(broken.CanRemove);
+        Assert.True(broken.ShowRemoveAction);
+        Assert.Equal("Repair", broken.ActionText);
+        Assert.Equal("Remove RenoDX", broken.RemoveActionText);
 
-        var foreign = new ComponentCardViewModel(new ComponentStatus(ComponentKind.ReShade, ComponentHealth.Installed, null, ["dxgi.dll"], "Detected on disk but not owned by RHI Linux; removal is disabled."));
+        var outdated = Card(ComponentHealth.Outdated);
+        Assert.True(outdated.CanUpdate);
+        Assert.True(outdated.CanRemove);
+        Assert.True(outdated.ShowRemoveAction);
+        Assert.Equal("Update", outdated.ActionText);
+
+        var foreign = new ComponentCardViewModel(new ComponentStatus(ComponentKind.ReShade, ComponentHealth.Installed, null, ["dxgi.dll"], "Detected on disk but not owned by RHI Linux; removal is disabled.",
+            InstallationVerification.RecognizedExisting, Lifecycle: ComponentLifecycleState.InstalledUnmanaged,
+            Ownership: OwnershipHealth.Unmanaged, Update: UpdateAvailability.ManualInstallationDetected));
         Assert.False(foreign.CanRemove);
-        Assert.True(foreign.HasDisabledReason);
+        Assert.False(foreign.CanUpdate);
+        Assert.True(foreign.NoActionNeeded);
+        Assert.Equal("Installed manually", foreign.State);
+        Assert.Equal("No action needed", foreign.Explanation);
     }
 
     [Fact]
@@ -563,8 +576,8 @@ public sealed class GuiViewModelTests
         {
             (ComponentHealth.Available, PrimaryActionKind.Install, "Install"),
             (ComponentHealth.Outdated, PrimaryActionKind.Update, "Update"),
-            (ComponentHealth.Broken, PrimaryActionKind.Repair, "Repair and continue"),
-            (ComponentHealth.Installed, PrimaryActionKind.Remove, "Remove")
+            (ComponentHealth.Broken, PrimaryActionKind.Repair, "Repair"),
+            (ComponentHealth.Installed, PrimaryActionKind.Remove, "Remove all managed components")
         };
         foreach (var (health, action, text) in cases)
         {
@@ -612,7 +625,7 @@ public sealed class GuiViewModelTests
         var removePlan = await removeViewModel.BuildPrimaryActionPlanAsync();
 
         Assert.Equal("remove recommended setup", removePlan.Action);
-        Assert.Equal("Remove", new DeploymentPlanDialogViewModel(removePlan).ActionButtonText);
+        Assert.Equal("Remove all managed components", new DeploymentPlanDialogViewModel(removePlan).ActionButtonText);
         Assert.All(removePlan.ExpectedComponentStates, expectation => Assert.False(expectation.Installed));
     }
 
@@ -717,7 +730,7 @@ public sealed class GuiViewModelTests
         Assert.Equal("Installed", Card(ComponentHealth.Installed).State);
         Assert.Equal("Update available", Card(ComponentHealth.Outdated).State);
         Assert.Equal("Unsupported", Card(ComponentHealth.Unsupported).State);
-        Assert.Equal("Not installed", Card(ComponentHealth.DownloadRequired, Resolved(ComponentKind.RenoDx)).State);
+        Assert.Equal("Exact addon available", Card(ComponentHealth.DownloadRequired, Resolved(ComponentKind.RenoDx)).State);
         Assert.Equal("Not installed", Card(ComponentHealth.DownloadRequired,
             Resolved(ComponentKind.RenoDx, ArtifactSupportKind.UnityFallback)).State);
         Assert.Equal("Repair needed", Card(ComponentHealth.Broken).State);
@@ -734,9 +747,10 @@ public sealed class GuiViewModelTests
         Assert.All(Enum.GetValues<ComponentHealth>(), health => Assert.Contains(Card(health).State,
             new[]
             {
-                "Installed", "Installed, metadata incomplete", "Not installed", "Update available",
+                "Installed", "Installed, metadata incomplete", "Installed manually", "Not installed", "Update available",
                 "Repair needed", "Needs attention", "Experimental", "Unsupported", "Blocked",
-                "Unknown existing installation"
+                "Unknown existing installation", "Not listed", "Unavailable", "Catalog unavailable",
+                "Manual download required", "Addon available for another executable", "Exact addon available"
             }));
     }
 
@@ -786,7 +800,7 @@ public sealed class GuiViewModelTests
             CompatibilityMessage = "Some files from an earlier installation need to be repaired before continuing."
         };
         var repairViewModel = new DeploymentPlanDialogViewModel(repairPlan);
-        Assert.Equal("Repair and continue", repairViewModel.ActionButtonText);
+        Assert.Equal("Repair", repairViewModel.ActionButtonText);
         Assert.True(repairViewModel.HasCompatibilityMessage);
     }
 

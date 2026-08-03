@@ -24,21 +24,29 @@ public static class OptiScalerConfigurationAdapter
         bool enableAsiPlugins)
     {
         var schemaPath = Existing(templateIniPath) ?? Existing(installedIniPath);
-        IniDocument? schemaSource = schemaPath is null ? null : IniDocument.Parse(File.ReadAllText(schemaPath));
+        IniDocument? schemaSource = schemaPath is null ? null : IniDocument.Parse(File.ReadAllBytes(schemaPath));
         var valuePath = Existing(installedIniPath) ?? schemaPath;
         IniDocument? values = null;
         if (valuePath is not null)
         {
-            try { values = IniDocument.Parse(File.ReadAllText(valuePath)); }
-            catch (InvalidDataException) when (schemaPath is not null && !schemaPath.Equals(valuePath, StringComparison.Ordinal))
-            {
-                // A validated release template supplies the values after the planner replaces a
-                // malformed managed INI; an unrelated malformed INI remains a blocking collision.
+            values = IniDocument.Parse(File.ReadAllBytes(valuePath));
+            if ((values.HasFatalIssues || values.HasRecoverableIssues &&
+                 (values.FindSectionContaining("LoadReshade") is null or { Length: 0 } ||
+                  values.FindSectionContaining("LoadAsiPlugins") is null or { Length: 0 })) &&
+                schemaPath is not null &&
+                !schemaPath.Equals(valuePath, StringComparison.Ordinal))
                 values = schemaSource;
-            }
         }
+        if (schemaSource is not null &&
+            (schemaSource.FindSectionContaining("LoadReshade") is null or { Length: 0 } ||
+             schemaSource.FindSectionContaining("LoadAsiPlugins") is null or { Length: 0 }) &&
+            Existing(templateIniPath) is { } templatePath &&
+            !templatePath.Equals(schemaPath, StringComparison.Ordinal))
+            schemaSource = IniDocument.Parse(File.ReadAllBytes(templatePath));
         var reshadeSection = schemaSource?.FindSectionContaining("LoadReshade");
         var asiSection = schemaSource?.FindSectionContaining("LoadAsiPlugins");
+        if (reshadeSection is { Length: 0 }) reshadeSection = null;
+        if (asiSection is { Length: 0 }) asiSection = null;
 
         if (reshadeSection is null || asiSection is null)
         {

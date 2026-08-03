@@ -27,7 +27,7 @@ public sealed class BundleAndCacheTests
             Assert.Single(manifest.Files, x => x.RelativePath == "amd_fidelityfx_dx12.dll").Requirement);
         Assert.Equal("fidelityfx-dx12",
             Assert.Single(manifest.Files, x => x.RelativePath == "amd_fidelityfx_dx12.dll").Feature);
-        Assert.Equal(DeploymentFileRequirement.Conditional,
+        Assert.Equal(DeploymentFileRequirement.RequiredForSelectedMode,
             Assert.Single(manifest.Files, x => x.RelativePath == "D3D12_Optiscaler/D3D12Core.dll").Requirement);
         Assert.Equal(DeploymentFileRequirement.UnrelatedArchiveContent,
             Assert.Single(manifest.Files, x => x.RelativePath == "plugins/future-runtime.dll").Requirement);
@@ -80,7 +80,7 @@ public sealed class BundleAndCacheTests
         Assert.Equal(DeploymentFileRequirement.Conditional, fidelityFx.Requirement);
         Assert.Equal("fidelityfx-dx12", fidelityFx.Feature);
         Assert.True(fidelityFx.CanOmitOnCollision);
-        Assert.Equal(DeploymentFileRequirement.UnrelatedArchiveContent,
+        Assert.Equal(DeploymentFileRequirement.Documentation,
             manifest.Files.Single(file => file.RelativePath == "readme.txt").Requirement);
     }
 

@@ -1,3 +1,4 @@
+using System.Text;
 using RhiLinux.Core;
 
 namespace RhiLinux.Tests;
@@ -36,7 +37,32 @@ public sealed class StateAndIniTests
         Assert.Equal("true", ini.Get("Plugins", "LoadReshade"));
         Assert.Contains("Keep=one", ini.ToString(), StringComparison.Ordinal);
         Assert.Contains("KeepTwo=two", ini.ToString(), StringComparison.Ordinal);
-        Assert.Throws<InvalidDataException>(() => IniDocument.Parse("[Plugins\nLoadReshade=true\n"));
+        Assert.Throws<InvalidDataException>(() => IniDocument.ParseStrict("[Plugins\nLoadReshade=true\n"));
+    }
+
+    [Fact]
+    public void TolerantIniPreservesMalformedUnrelatedLinesAndEditsManagedKeys()
+    {
+        var original = "\uFEFF[Plugins]\nLoadReshade=false\n; user comment\n[Broken\nLegacy=1\nUnknown=keep\n";
+        var bytes = Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(original.TrimStart('\uFEFF'))).ToArray();
+        var ini = IniDocument.Parse(bytes);
+        Assert.True(ini.HadUtf8Bom);
+        Assert.True(ini.HasRecoverableIssues);
+        Assert.True(ini.CanSafelyEditManagedKeys([("Plugins", "LoadReshade"), ("Plugins", "LoadAsiPlugins")]));
+        ini.Set("Plugins", "LoadReshade", "true");
+        ini.Set("Plugins", "LoadAsiPlugins", "true");
+        Assert.Equal("true", ini.Get("Plugins", "LoadReshade"));
+        Assert.Equal("true", ini.Get("Plugins", "LoadAsiPlugins"));
+        Assert.Contains("Broken", ini.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Unknown=keep", ini.ToString(), StringComparison.Ordinal);
+        Assert.Contains("; user comment", ini.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MalformedManagedSectionIsNotConsideredSafelyEditable()
+    {
+        var ini = IniDocument.Parse("[Plugins\nLoadReshade=false\n");
+        Assert.False(ini.CanSafelyEditManagedKeys([("Plugins", "LoadReshade")]));
     }
 
     [Fact]

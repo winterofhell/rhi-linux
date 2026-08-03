@@ -60,9 +60,11 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
     public DeploymentPlanDialogViewModel(DeploymentPlan plan)
     {
         var action = plan.Action.ToLowerInvariant();
-        ActionButtonText = plan.RequiresRepair ? "Repair and continue" :
+        ActionButtonText = action.Contains("remove", StringComparison.Ordinal) &&
+            action.Contains("recommended", StringComparison.Ordinal)
+            ? "Remove all managed components"
+            : plan.RequiresRepair || action.Contains("repair", StringComparison.Ordinal) ? "Repair" :
             action.Contains("remove", StringComparison.Ordinal) ? "Remove" :
-            action.Contains("repair", StringComparison.Ordinal) ? "Repair" :
             action.Contains("update", StringComparison.Ordinal) ? "Update" :
             action.Contains("restore", StringComparison.Ordinal) ? "Restore" : "Install";
         Title = $"Ready to {ActionButtonText.ToLowerInvariant()}";
@@ -113,8 +115,17 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
     {
         IsRunning = false;
         HasResult = true;
-        ResultTitle = result.Succeeded ? "Changes completed" : "Operation failed";
-        ResultMessage = result.Succeeded ? "The files, settings, and installed state were verified successfully." : result.Error ?? "The operation did not complete.";
+        var succeeded = result.IsSuccessfulOutcome;
+        ResultTitle = succeeded
+            ? result.State == OperationLifecycleState.SucceededWithWarning
+                ? "Installed successfully"
+                : "Changes completed"
+            : "Operation failed";
+        ResultMessage = succeeded
+            ? result.State == OperationLifecycleState.SucceededWithWarning
+                ? result.Warning ?? "The files were verified. Component status is refreshing."
+                : "The files, settings, and installed state were verified successfully."
+            : result.Error ?? "The operation did not complete.";
         RollbackMessage = result.RolledBack ? "Completed operations were rolled back in reverse order. Review the error before trying again." : string.Empty;
     }
     public void Fail(string message) => Complete(new ExecutionResult(false, false, false, [], message));

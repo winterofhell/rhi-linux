@@ -34,7 +34,19 @@ public sealed class RenoDxWikiClientTests
         Assert.Null(inProgress.Addon64Url);
         Assert.Equal(RenoDxWikiStatus.Unknown,
             Assert.Single(records, record => record.Name == "Unknown Status").Status);
-        Assert.DoesNotContain(records, record => record.Name == "External Only");
+
+        var catalog = RenoDxWikiClient.ParseCatalog("""
+            # List
+            | Status | Links | Name | Maintainer |
+            | :---: | :--- | :--- | :--- |
+            | :white_check_mark: | [![Snapshot](https://img.shields.io/badge/Snapshot-blue)](https://author.github.io/renodx/renodx-fixture.addon64) | [Fixture Adventure](https://example.invalid/instructions) | Author |
+            | :construction: | [Snapshot](https://github.com/author/renodx/releases/download/snapshot/renodx-legacy.addon32) | Legacy Adventure | Author |
+            | unknown | [Snapshot](https://author.github.io/renodx/renodx-unknown.addon64) | Unknown Status | Author |
+            | :white_check_mark: | [Nexus](https://nexusmods.com/game/mods/1) [Discord](https://discord.gg/example) | External Only | Author |
+            """);
+        Assert.Contains(catalog, entry => entry.CanonicalName == "External Only" &&
+            entry.SourceSection == RenoDxCatalogSection.ManualOnly &&
+            !entry.DirectAutomaticDownloadAvailable);
     }
 
     [Fact]

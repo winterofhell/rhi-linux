@@ -231,6 +231,16 @@
     <Setter Property="MinHeight" Value="32" />
   </Style>
 
+  <Style Selector="WrapPanel.button-row">
+    <Setter Property="Orientation" Value="Horizontal" />
+  </Style>
+  <Style Selector="WrapPanel.button-row > Button.button-row-item">
+    <Setter Property="Margin" Value="0,0,8,8" />
+  </Style>
+  <Style Selector="Button.danger.button-row-item">
+    <Setter Property="Margin" Value="0,0,8,8" />
+  </Style>
+
   <!-- Expander headers (Advanced buttons): theme charcoal via Fluent resource overrides + ToggleButton#ExpanderHeader -->
   <Style Selector="Expander">
     <Setter Property="Background" Value="Transparent" />

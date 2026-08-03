@@ -188,6 +188,32 @@ public static partial class OptiScalerBundleParser
         }
     }
 
+    public static bool RequiresRepairWhenMissing(string relativePath)
+    {
+        var name = Path.GetFileName(relativePath);
+        if (IsSupportedProxyName(name) || name.Equals("OptiScaler.dll", StringComparison.OrdinalIgnoreCase))
+            return true;
+        var classification = Classify(relativePath.Replace('\\', '/'));
+        return classification.Requirement == DeploymentFileRequirement.Required;
+    }
+
+    public static DeploymentFileRequirement RequirementFor(string relativePath)
+    {
+        var name = Path.GetFileName(relativePath);
+        if (IsSupportedProxyName(name))
+            return DeploymentFileRequirement.Required;
+        return Classify(relativePath.Replace('\\', '/')).Requirement;
+    }
+
+    public static bool IsSupportedProxyName(string name) =>
+        name.Equals("dxgi.dll", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("winmm.dll", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("d3d12.dll", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("dbghelp.dll", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("version.dll", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("wininet.dll", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("winhttp.dll", StringComparison.OrdinalIgnoreCase);
+
     private static BundleFileClassification Classify(string relativePath)
     {
         if (relativePath.Equals("OptiScaler.dll", StringComparison.OrdinalIgnoreCase))
@@ -221,14 +247,26 @@ public static partial class OptiScalerBundleParser
                 "Provides optional XeSS upscaling, frame generation, or latency features.", "xess", true);
         if (relativePath.StartsWith("D3D12_Optiscaler/", StringComparison.OrdinalIgnoreCase) &&
             relativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            return new(true, "Bundled D3D12 runtime", DeploymentFileRequirement.Conditional,
+            return new(true, "Bundled D3D12 runtime", DeploymentFileRequirement.RequiredForSelectedMode,
                 "Required only when the FsrAgilitySDKUpgrade feature is enabled.", "d3d12-agility-upgrade", true);
-        if (relativePath.StartsWith("Licenses/", StringComparison.OrdinalIgnoreCase))
-            return Unrelated(relativePath, "License material is retained in the cache and is not deployed into a game.");
-        if (relativePath.Equals("setup_linux.sh", StringComparison.OrdinalIgnoreCase) ||
-            relativePath.Equals("setup_windows.bat", StringComparison.OrdinalIgnoreCase) ||
+        if (relativePath.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase))
+            return new(false, "Debug symbols", DeploymentFileRequirement.Debug,
+                "Debug symbols are never required for OptiScaler runtime loading.", "debug", true);
+        if (relativePath.StartsWith("Licenses/", StringComparison.OrdinalIgnoreCase) ||
+            relativePath.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ||
             relativePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
-            return Unrelated(relativePath, "Setup scripts, uninstallers, and documentation are inspected but never copied or executed.");
+            return new(false, "Documentation", DeploymentFileRequirement.Documentation,
+                "Documentation is retained in the cache and is not required in the game directory.", null, true);
+        if (relativePath.Equals("setup_linux.sh", StringComparison.OrdinalIgnoreCase) ||
+            relativePath.Equals("setup_windows.bat", StringComparison.OrdinalIgnoreCase))
+            return new(false, "Installer helper", DeploymentFileRequirement.InstallerOnly,
+                "Setup scripts are inspected but never copied or executed.", null, true);
+        if (relativePath.Contains("remove", StringComparison.OrdinalIgnoreCase) &&
+            (relativePath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
+             relativePath.EndsWith(".sh", StringComparison.OrdinalIgnoreCase) ||
+             relativePath.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase)))
+            return new(false, "Uninstaller metadata", DeploymentFileRequirement.UninstallerMetadata,
+                "Uninstall helpers are parsed for cleanup targets and are never copied or executed.", null, true);
         return Unrelated(relativePath, "The file is not part of a recognized stable runtime layout and is excluded from deployment.");
     }
 

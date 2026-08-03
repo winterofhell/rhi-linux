@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using RhiLinux.Core;
 
 namespace RhiLinux.Mods;
@@ -245,16 +244,11 @@ public sealed class ProxyDiagnosticsService(GameProfileCatalog? profiles = null)
     {
         try
         {
-            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            var bytes = new byte[Math.Min(stream.Length, 4 * 1024 * 1024)];
-            _ = stream.Read(bytes);
-            var ascii = Encoding.ASCII.GetString(bytes);
-            var unicode = Encoding.Unicode.GetString(bytes);
-            bool Has(string value) => ascii.Contains(value, StringComparison.OrdinalIgnoreCase) || unicode.Contains(value, StringComparison.OrdinalIgnoreCase);
-            var reshade = Has("reshade.me") || Has("ReShade Add-on");
-            var optiScaler = Has("OptiScaler") || Has("OptiFG");
-            var injector = Has("Special K") || Has("Ultimate ASI Loader") || Has("DXVK");
-            var microsoft = Has("Microsoft Corporation") && (Has("Debugging Tools for Windows") || Has("Windows Debugger"));
+            var reshade = BinaryMarkerScanner.ContainsAny(path, "reshade.me", "ReShade Add-on");
+            var optiScaler = BinaryMarkerScanner.ContainsAny(path, "OptiScaler", "OptiFG");
+            var injector = BinaryMarkerScanner.ContainsAny(path, "Special K", "Ultimate ASI Loader", "DXVK");
+            var microsoft = BinaryMarkerScanner.ContainsAny(path, "Microsoft Corporation") &&
+                BinaryMarkerScanner.ContainsAny(path, "Debugging Tools for Windows", "Windows Debugger");
             var evidence = new List<string>();
             if (reshade) evidence.Add("ReShade-specific binary marker");
             if (optiScaler) evidence.Add("OptiScaler-specific binary marker");

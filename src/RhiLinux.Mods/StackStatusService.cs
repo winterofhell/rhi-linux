@@ -9,7 +9,8 @@ public sealed record StackStatusReport(
     IReadOnlyList<ComponentStatus> Components,
     OptiScalerEligibility OptiScalerEligibility,
     bool CanInstallRecommendedStack,
-    string Summary);
+    string Summary,
+    StackSnapshot? Snapshot = null);
 
 public sealed class StackStatusService(HttpClient httpClient, XdgPaths paths)
 {
@@ -33,54 +34,91 @@ public sealed class StackStatusService(HttpClient httpClient, XdgPaths paths)
         var eligibility = OptiScalerEligibilityService.Evaluate(game, profile, proxy);
 
         var artifactsTask = resolver.ResolveAsync(game, allowNetwork, cancellationToken, forceRefresh);
-        var detectedTask = detector.DetectAsync(game, cancellationToken);
+        var detectedTask = detector.DetectStackAsync(game, cancellationToken: cancellationToken);
         await Task.WhenAll(artifactsTask, detectedTask);
         var artifacts = await artifactsTask;
         profile = artifacts.Profile;
-        var adjusted = (await detectedTask).Select(status => ApplyArtifactState(status, artifacts)).ToArray();
+        var snapshot = await detectedTask;
+        var adjustedReports = snapshot.Components
+            .Select(report =>
+            {
+                var artifact = artifacts.Components.SingleOrDefault(x => x.Component == report.Component);
+                return UpdateEvaluator.Apply(report, artifact, artifacts, profile);
+            })
+            .ToArray();
+        var adjusted = adjustedReports.Select(StackDetector.ToComponentStatus).Select(status =>
+        {
+            if (status.Component != ComponentKind.RenoDx) return status;
+            if (status.Health is ComponentHealth.DownloadRequired or ComponentHealth.Cached) return status;
+            var artifact = artifacts.Components.SingleOrDefault(x => x.Component == ComponentKind.RenoDx);
+            if (artifact is not null &&
+                status.Lifecycle == ComponentLifecycleState.NotInstalled &&
+                status.Health is ComponentHealth.Available or ComponentHealth.Unsupported &&
+                !IsManualOnlyRenoExplanation(status.Explanation))
+            {
+                return status with
+                {
+                    Health = artifact.CacheState == ArtifactCacheState.Cached
+                        ? ComponentHealth.Cached
+                        : ComponentHealth.DownloadRequired,
+                    Version = artifact.Version
+                };
+            }
+            return status;
+        }).ToArray();
         var ownershipUnavailable = adjusted.Any(x => x.Health == ComponentHealth.ManifestUnavailable);
         bool IsUsable(ComponentKind component) => adjusted.Single(x => x.Component == component).Health is
             not ComponentHealth.Conflicting and not ComponentHealth.ForeignInstallation and
             not ComponentHealth.ManifestUnavailable;
-        var canInstallRenoSetup = artifacts.CanAcquireRenoSetup &&
-            IsUsable(ComponentKind.ReShade) && IsUsable(ComponentKind.RenoDx);
+        var canInstallRenoSetup = (artifacts.CanAcquireRenoSetup || artifacts.CanAcquireRenoDx) &&
+            IsUsable(ComponentKind.ReShade) && IsUsable(ComponentKind.RenoDx) &&
+            artifacts.Artifacts.Any(x => x.Component == ComponentKind.RenoDx);
         var canInstallOptiScaler = eligibility.CanInstall && artifacts.CanAcquireOptiScaler &&
             IsUsable(ComponentKind.OptiScaler);
         var canInstall = proxy.HasSafeProxy && !ownershipUnavailable &&
             (canInstallRenoSetup || canInstallOptiScaler);
-        var summary = !proxy.HasSafeProxy ? proxy.Reason : !artifacts.IsFullyAutomatic
+        var summary = !proxy.HasSafeProxy ? proxy.Reason : !artifacts.IsFullyAutomatic && !artifacts.CanAcquireRenoDx
             ? "One or more required official files could not be found."
             : ownershipUnavailable ? "Ownership metadata could not be verified, so changes are blocked."
             : !canInstallRenoSetup && !canInstallOptiScaler
                 ? "No safe automatic setup is available right now."
-            : adjusted.Any(x => x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
+            : adjusted.Any(x => x.Lifecycle == ComponentLifecycleState.RepairRequired ||
+                x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or
                 ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable) ? "Repair the managed installation."
-            : adjusted.Any(x => x.Health == ComponentHealth.Outdated) ? "An update is available for installed components."
-            : adjusted.Any(x => x.Health == ComponentHealth.Installed) ? "The managed setup is installed and consistent."
+            : adjusted.Any(x => x.Health == ComponentHealth.Outdated ||
+                x.Lifecycle == ComponentLifecycleState.UpdateAvailable) ? "An update is available for installed components."
+            : adjusted.Any(x => x.Health == ComponentHealth.Installed ||
+                x.Lifecycle is ComponentLifecycleState.InstalledHealthy or
+                    ComponentLifecycleState.InstalledWithWarnings or
+                    ComponentLifecycleState.InstalledMetadataIncomplete) ? "The managed setup is installed and consistent."
             : "The recommended setup can be installed.";
-        return new(profile, proxy, artifacts, adjusted, eligibility, canInstall, summary);
+        var defects = adjustedReports
+            .Where(x => x.State == ComponentLifecycleState.RepairRequired)
+            .Select(x => x.Evidence.RepairReason ?? x.Explanation)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var finalSnapshot = snapshot with
+        {
+            Components = adjustedReports,
+            Summary = summary,
+            Generation = forceRefresh ? snapshot.Generation + 1 : snapshot.Generation,
+            ConcreteDefects = defects,
+            ReShadeArtifactFingerprint = UpdateEvaluator.BuildFingerprint(
+                adjustedReports.Single(x => x.Component == ComponentKind.ReShade)),
+            RenoDxArtifactFingerprint = UpdateEvaluator.BuildFingerprint(
+                adjustedReports.Single(x => x.Component == ComponentKind.RenoDx)),
+            OptiScalerArtifactFingerprint = UpdateEvaluator.BuildFingerprint(
+                adjustedReports.Single(x => x.Component == ComponentKind.OptiScaler))
+        };
+        return new(profile, proxy, artifacts, adjusted, eligibility, canInstall, summary, finalSnapshot);
     }
 
-    private static ComponentStatus ApplyArtifactState(ComponentStatus status, GameArtifactResolution resolution)
-    {
-        var artifact = resolution.Artifacts.SingleOrDefault(x => x.Component == status.Component);
-        if (artifact is null) return status;
-        if (status.Health == ComponentHealth.Installed && artifact.CacheState == ArtifactCacheState.DownloadRequired &&
-            artifact.Validation == ArtifactValidationState.Valid)
-            return status with { Health = ComponentHealth.Outdated, Explanation = "A newer official build is available." };
-        if (status.Health == ComponentHealth.Installed && status.Version is not null &&
-            artifact.Version is not "snapshot" and not "rolling" && !status.Version.Equals(artifact.Version, StringComparison.OrdinalIgnoreCase))
-            return status with { Health = ComponentHealth.Outdated, Explanation = $"Installed {status.Version}; official release {artifact.Version} is available ({artifact.CacheState})." };
-        if (status.Health is ComponentHealth.Available or ComponentHealth.DownloadRequired or ComponentHealth.Supported or ComponentHealth.Experimental)
-            return status with
-            {
-                Health = status.Health == ComponentHealth.Experimental ? ComponentHealth.Experimental :
-                    artifact.CacheState == ArtifactCacheState.Cached ? ComponentHealth.Cached : ComponentHealth.DownloadRequired,
-                Version = artifact.Version,
-                Explanation = artifact.CacheState == ArtifactCacheState.Cached
-                    ? $"Official version {artifact.Version} is ready for offline use."
-                    : $"Official version {artifact.Version} will be downloaded automatically."
-            };
-        return status;
-    }
+    private static bool IsManualOnlyRenoExplanation(string explanation) =>
+        explanation.Contains("manual download", StringComparison.OrdinalIgnoreCase) ||
+        explanation.Contains("No direct addon download", StringComparison.OrdinalIgnoreCase) ||
+        explanation.Contains("No RenoDX addon found", StringComparison.OrdinalIgnoreCase) ||
+        explanation.Contains("catalog unavailable", StringComparison.OrdinalIgnoreCase) ||
+        explanation.Contains("require confirmation", StringComparison.OrdinalIgnoreCase) ||
+        explanation.Contains("another executable", StringComparison.OrdinalIgnoreCase);
 }

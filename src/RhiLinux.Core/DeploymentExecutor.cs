@@ -27,6 +27,9 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             return new ExecutionResult(true, true, false, messages);
         }
 
+        if (plan.Operations.Count == 0)
+            return new ExecutionResult(true, false, false, ["No filesystem changes required."]);
+
         ValidatePlan(plan);
         FileStream transactionLock;
         try { transactionLock = AcquireTransactionLock(plan); }
@@ -552,12 +555,19 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
                 OperationTemporaryPath(plan, operationIndex, "ini-backup"));
         }
         var (section, key, value) = ParseIniValue(operation.Value);
-        var document = original is null ? new IniDocument() : IniDocument.Parse(System.Text.Encoding.UTF8.GetString(original));
+        var document = original is null ? new IniDocument() : IniDocument.Parse(original);
+        if (document.HasFatalIssues)
+            throw new InvalidDataException(
+                $"OptiScaler configuration could not be updated. The INI contains fatal corruption at {operation.Target}.");
+        if (!document.CanSafelyEditManagedKeys([(section, key)]))
+            throw new InvalidDataException(
+                "OptiScaler configuration could not be updated. The existing INI contains a malformed section header. " +
+                "The original file was restored and no OptiScaler files remain installed.");
         var previous = document.Get(section, key);
         if (value == "<remove>") document.Remove(section, key);
         else document.Set(section, key, value);
         Directory.CreateDirectory(Path.GetDirectoryName(operation.Target)!);
-        var result = System.Text.Encoding.UTF8.GetBytes(document.ToString());
+        var result = document.ToUtf8Bytes();
         var resultHash = Convert.ToHexString(SHA256.HashData(result)).ToLowerInvariant();
         if (transactionExpectedHash is not null &&
             !resultHash.Equals(transactionExpectedHash, StringComparison.OrdinalIgnoreCase))
@@ -682,7 +692,10 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             operation.BundleRelativePath ?? prior?.BundleRelativePath,
             backup.Sha256,
             prior?.FileClass ?? ClassifyPath(relative),
-            operation.Purpose ?? prior?.Purpose));
+            operation.Purpose ?? prior?.Purpose,
+            operation.Requirement != DeploymentFileRequirement.Required
+                ? operation.Requirement
+                : prior?.Requirement ?? DeploymentFileRequirement.Required));
     }
 
     private static async Task TrackAsync(DeploymentPlan plan, GameManifest manifest, DeploymentOperation operation, CancellationToken token)
@@ -698,7 +711,7 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             relative,
             operation.Component.Value,
             hash,
-            operation.Type == DeploymentOperationType.WriteIniValue ? previous?.Version ?? operation.ConfigurationVersion : operation.Value,
+            operation.Type == DeploymentOperationType.WriteIniValue ? previous?.Version : operation.Value,
             operation.SourceUrl ?? previous?.SourceUrl,
             backup.RelativePath,
             operation.SourceBlobSha256 ?? previous?.SourceBlobSha256,
@@ -706,7 +719,10 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             operation.BundleRelativePath ?? previous?.BundleRelativePath,
             backup.Sha256,
             previous?.FileClass ?? ClassifyPath(relative),
-            operation.Purpose ?? previous?.Purpose));
+            operation.Purpose ?? previous?.Purpose,
+            operation.Requirement != DeploymentFileRequirement.Required
+                ? operation.Requirement
+                : previous?.Requirement ?? DeploymentFileRequirement.Required));
     }
 
     private static ManagedFileClass ClassifyPath(string relativePath) =>
@@ -1613,7 +1629,6 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
                                            InvalidDataException or InvalidOperationException)
         {
-            // Recovery snapshots are harmless if cleanup cannot prove they are still transaction-owned.
         }
     }
 
@@ -1624,7 +1639,6 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         foreach (var temporary in EnumerateTransactionTemporaryPaths(gameRoot, journal)
                      .Distinct(StringComparer.Ordinal))
         {
-            // Each name is reproducible from a validated journal and confined to its hashed transaction work directory.
             EnsureSafeContainedPath(gameRoot, temporary);
             if (File.Exists(temporary)) File.Delete(temporary);
         }

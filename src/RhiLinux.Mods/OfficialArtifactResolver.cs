@@ -33,7 +33,18 @@ public sealed record GameArtifactResolution(
     public IReadOnlyList<ResolvedArtifact> Components { get; init; } = [];
     public RemoteManifestCheck? RemoteManifest { get; init; }
     public bool CanAcquireRenoSetup { get; init; }
+    public bool CanAcquireRenoDx { get; init; }
     public bool CanAcquireOptiScaler { get; init; }
+    public RenoDxMatchResult? RenoDxMatch { get; init; }
+    public RenoDxCompatibilityState RenoDxCompatibility { get; init; } = RenoDxCompatibilityState.CheckingCatalog;
+    public TimeSpan? RenoDxCatalogAge { get; init; }
+    public string? SuggestedExecutable { get; init; }
+    public Uri? OfficialPageUrl { get; init; }
+    public bool CanOpenOfficialPage { get; init; }
+    public string? ExpectedAddonFileName { get; init; }
+    public string? RecommendedDeploymentRelativeDirectory { get; init; }
+    public IReadOnlyList<string> CompatibilityNotes { get; init; } = [];
+    public RenoDxSnapshotResolution? SnapshotResolution { get; init; }
 }
 
 public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths paths, GameProfileCatalog? catalog = null)
@@ -46,6 +57,9 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     private readonly GitHubReleaseClient releases = new(httpClient, paths);
     private readonly RemoteManifestClient manifest = new(httpClient, paths);
     private readonly RenoDxWikiClient wiki = new(httpClient, paths);
+    private readonly RenoDxGameMatcher renoMatcher = new();
+    private readonly RenoDxDiscussionArtifactResolver discussions = new(httpClient, paths);
+    private readonly RenoDxSnapshotReleaseResolver snapshots = new(httpClient, paths);
 
     public async Task<GameArtifactResolution> ResolveAsync(
         SteamGame game,
@@ -54,12 +68,14 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         bool forceRefresh = false)
     {
         var profile = await catalog.MatchAsync(game, cancellationToken);
-        var warnings = profile.Profile.Warnings.ToList();
+        var warnings = profile.Profile.Warnings
+            .Where(item => !item.Contains("No supported game profile", StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var selections = new List<ArtifactSelection>();
 
         var metadataChecked = allowNetwork;
         var manifestTask = manifest.CheckAsync(allowNetwork, cancellationToken);
-        var wikiTask = wiki.GetAsync(allowNetwork, cancellationToken);
+        var wikiTask = wiki.GetAsync(allowNetwork, cancellationToken, forceRefresh);
         Task<(ArtifactSelection? Selection, bool Checked)> reshadeTask = allowNetwork
             ? TryResolveReShadeAsync(game, cancellationToken)
             : Task.FromResult<(ArtifactSelection? Selection, bool Checked)>((null, false));
@@ -79,9 +95,16 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         if (reshade is not null) selections.Add(await cache.InspectAsync(reshade, cancellationToken));
         else warnings.Add("The official full-addon ReShade release could not be resolved and no valid cached build is available.");
 
-        var renoResolution = ResolveRenoDx(game, profile, manifestCatalog, wikiCatalog.Records);
+        var renoResolution = ResolveRenoDx(game, profile, manifestCatalog, wikiCatalog);
+        renoResolution = await EnrichWithSnapshotAsync(game, renoResolution, allowNetwork, forceRefresh, cancellationToken);
+        if (renoResolution.Selection is null ||
+            renoResolution.Match.Compatibility is RenoDxCompatibilityState.ListedManualDownloadRequired)
+            renoResolution = await EnrichWithDiscussionAsync(game, renoResolution, allowNetwork, forceRefresh, cancellationToken);
         profile = renoResolution.Profile;
         if (renoResolution.Warning is not null) warnings.Add(renoResolution.Warning);
+        foreach (var note in renoResolution.CompatibilityNotes)
+            if (!warnings.Contains(note, StringComparer.OrdinalIgnoreCase))
+                warnings.Add(note);
         if (renoResolution.Selection is { } renoSelection)
         {
             var inspected = await cache.InspectAsync(renoSelection, cancellationToken);
@@ -93,7 +116,11 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             }
             selections.Add(inspected);
         }
-        else warnings.Add("No compatible RenoDX addon mapping exists for this game.");
+        else if (renoResolution.Match.Compatibility is RenoDxCompatibilityState.NotListed
+                 or RenoDxCompatibilityState.NoAddonFound)
+            warnings.Add("No RenoDX addon found for this game.");
+        else if (renoResolution.Match.RejectedReason is { } rejected)
+            warnings.Add(rejected);
 
         var optiTechnicallyEligible = IsTechnicallyEligibleForOptiScaler(game);
         if (optiTechnicallyEligible)
@@ -107,18 +134,37 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             if (opti is not null) selections.Add(await cache.InspectAsync(opti, cancellationToken));
             else warnings.Add("The official OptiScaler release could not be resolved and no valid cached release is available.");
         }
-        var canAcquireReno = selections.Any(x => x.Component == ComponentKind.ReShade) &&
-            selections.Any(x => x.Component == ComponentKind.RenoDx && x.Support != ArtifactSupportKind.Unavailable);
+        var canAcquireRenoDx = selections.Any(x => x.Component == ComponentKind.RenoDx &&
+            x.Support != ArtifactSupportKind.Unavailable);
+        var canAcquireReno = canAcquireRenoDx && selections.Any(x => x.Component == ComponentKind.ReShade);
         var canAcquireOpti = optiTechnicallyEligible && selections.Any(x => x.Component == ComponentKind.OptiScaler);
-        var automatic = canAcquireReno || canAcquireOpti;
+        var canAcquireReshade = selections.Any(x => x.Component == ComponentKind.ReShade &&
+            x.Support != ArtifactSupportKind.Unavailable);
+        var automatic = canAcquireReno || canAcquireOpti || canAcquireRenoDx || canAcquireReshade;
         var metadataState = !allowNetwork ? MetadataCheckState.Offline : metadataChecked ? MetadataCheckState.Online : MetadataCheckState.UnableToCheck;
+        var officialPage = renoResolution.OfficialPageUrl ?? renoResolution.Match.Entry?.OfficialPageUrl ??
+            renoResolution.Match.Entry?.DiscussionUrl;
         var result = new GameArtifactResolution(profile, selections, warnings, automatic, metadataState);
         return result with
         {
-            Components = BuildComponents(profile, selections, warnings),
+            Components = BuildComponents(profile, selections, warnings, renoResolution.Match),
             RemoteManifest = manifestCheck,
             CanAcquireRenoSetup = canAcquireReno,
-            CanAcquireOptiScaler = canAcquireOpti
+            CanAcquireRenoDx = canAcquireRenoDx,
+            CanAcquireOptiScaler = canAcquireOpti,
+            RenoDxMatch = renoResolution.Match,
+            RenoDxCompatibility = renoResolution.Match.Compatibility,
+            RenoDxCatalogAge = wikiCatalog.CacheAge,
+            SuggestedExecutable = renoResolution.Match.SuggestedExecutable,
+            OfficialPageUrl = officialPage,
+            CanOpenOfficialPage = officialPage is not null,
+            ExpectedAddonFileName = renoResolution.ExpectedAddonFileName ??
+                renoResolution.Match.Entry?.ExpectedAddonFileName ??
+                renoResolution.Match.Entry?.ArtifactFileName,
+            RecommendedDeploymentRelativeDirectory = renoResolution.DeploymentRelativeDirectory ??
+                renoResolution.Match.Entry?.DeploymentRelativeDirectory,
+            CompatibilityNotes = renoResolution.CompatibilityNotes,
+            SnapshotResolution = renoResolution.Snapshot
         };
     }
 
@@ -128,136 +174,6 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(game.ProtonPrefix)) return false;
         return SelectedArchitecture(game) == PeArchitecture.X64;
-    }
-
-    private static RenoDxResolution ResolveRenoDx(
-        SteamGame game,
-        GameProfileMatch profile,
-        RemoteManifestCatalog? remote,
-        IReadOnlyList<RenoDxWikiRecord> wikiRecords)
-    {
-        var architecture = SelectedArchitecture(game);
-        if (architecture is not PeArchitecture.X86 and not PeArchitecture.X64)
-            return new(null, profile, "The selected game architecture is not safe for RenoDX resolution.");
-
-        ArtifactSelection BuiltIn(RenoDxSource source) => new(
-            ComponentKind.RenoDx, source.Version, source.Url, source.Version,
-            Path.GetFileName(source.Url.LocalPath), source.Architecture,
-            profile.IsExact ? game.AppId : null, source.FileName, null, ArtifactArchiveKind.None,
-            GameProfile: profile.Profile.Id, Support: SupportFor(profile));
-
-        if (profile.ExactAppId && profile.Profile.RenoDx is { } exactAppIdSource)
-            return new(BuiltIn(exactAppIdSource), profile, null);
-
-        RenoDxResolution? Dynamic(string canonicalName, bool exactAppId, string matchReason)
-        {
-            var record = wikiRecords.SingleOrDefault(item =>
-                item.Name.Equals(canonicalName, StringComparison.OrdinalIgnoreCase));
-            var source = record?.GetAddonUri(architecture);
-            if (remote?.AddonOverrides.TryGetValue(canonicalName, out var manifestOverride) == true)
-                source = manifestOverride;
-            if (source is null) return null;
-            if (!OfficialArtifactSourcePolicy.IsConstrainedRenoDxAddon(source))
-                return new(null, profile,
-                    $"The exact RenoDX mapping for '{canonicalName}' has an unsupported source URL.");
-            var extension = Path.GetExtension(source.AbsolutePath);
-            var sourceArchitecture = extension.Equals(".addon32", StringComparison.OrdinalIgnoreCase)
-                ? PeArchitecture.X86 : PeArchitecture.X64;
-            if (sourceArchitecture != architecture)
-                return new(null, profile,
-                    $"The exact RenoDX mapping for '{canonicalName}' is {sourceArchitecture}, but the selected game is {architecture}.");
-
-            var fileName = Path.GetFileName(Uri.UnescapeDataString(source.AbsolutePath));
-            var genericEngine = GenericEngineFor(fileName);
-            if (genericEngine is { } requiredEngine && requiredEngine != game.Engine)
-                return new(null, profile,
-                    $"The manifest maps '{canonicalName}' to a generic {requiredEngine} addon, but the detected engine is {game.Engine}.");
-            var gameSpecific = genericEngine is null;
-            var support = gameSpecific
-                ? exactAppId ? ArtifactSupportKind.ExactGameProfile : ArtifactSupportKind.ExecutableOrAliasProfile
-                : genericEngine == GameEngine.Unity
-                    ? ArtifactSupportKind.UnityFallback
-                    : ArtifactSupportKind.UnrealFallback;
-            var sourceModel = new RenoDxSource(source, fileName, "snapshot", architecture, gameSpecific);
-            var dynamicProfile = profile.Profile with
-            {
-                CanonicalName = canonicalName,
-                RenoDx = sourceModel,
-                RenoDxSupport = gameSpecific ? GameProfileSupport.Supported : GameProfileSupport.EngineFallback
-            };
-            var matchedProfile = new GameProfileMatch(dynamicProfile, matchReason, exactAppId);
-            var selection = new ArtifactSelection(ComponentKind.RenoDx, "snapshot", source, "snapshot",
-                fileName, architecture, gameSpecific ? game.AppId : null, fileName, null,
-                ArtifactArchiveKind.None, GameProfile: dynamicProfile.Id, Support: support,
-                SourceValidatedByOfficialMetadata: true);
-            var warning = record?.Status switch
-            {
-                RenoDxWikiStatus.InProgress =>
-                    $"The official RenoDX wiki marks '{record.Name}' as under construction.",
-                RenoDxWikiStatus.Unknown =>
-                    $"The official RenoDX wiki does not publish a working-status marker for '{record.Name}'.",
-                _ => null
-            };
-            return new(selection, matchedProfile, warning);
-        }
-
-        if (remote is not null)
-        {
-            var appIdMatches = remote.SteamAppIds.Where(entry => entry.Value == game.AppId)
-                .Select(entry => entry.Key).ToArray();
-            if (appIdMatches.Length == 1 && Dynamic(appIdMatches[0], true,
-                    $"Remote manifest Steam AppID {game.AppId}") is { } appIdResolution)
-                return appIdResolution;
-            if (appIdMatches.Length > 1)
-                return new(null, profile, "The remote manifest has ambiguous identities for this Steam AppID.");
-        }
-
-        if (profile.IsExact && profile.Profile.RenoDx is { } builtInExactSource)
-            return new(BuiltIn(builtInExactSource), profile, null);
-
-        if (remote is not null && game.Executable is not null)
-        {
-            var executableName = Path.GetFileName(game.Executable);
-            var executableMatches = remote.LaunchExecutables.Where(entry =>
-                entry.Value.Equals(executableName, StringComparison.OrdinalIgnoreCase)).Select(entry => entry.Key).ToArray();
-            if (executableMatches.Length == 1 && Dynamic(executableMatches[0], false,
-                    $"Remote manifest executable '{executableName}'") is { } executableResolution)
-                return executableResolution;
-            if (executableMatches.Length > 1)
-                return new(null, profile, "Multiple remote game identities use the selected executable filename.");
-        }
-
-        var directNames = new[]
-        {
-            game.Name,
-            game.Executable is null ? null : Path.GetFileNameWithoutExtension(game.Executable)
-        }.Where(value => !string.IsNullOrWhiteSpace(value)).Cast<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        foreach (var name in directNames)
-            if (Dynamic(name, false, $"Exact official wiki name '{name}'") is { } directResolution)
-                return directResolution;
-
-        if (remote is not null)
-        {
-            var aliasMatches = directNames.Where(remote.Aliases.ContainsKey)
-                .Select(name => remote.Aliases[name]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (aliasMatches.Length == 1 && Dynamic(aliasMatches[0], false,
-                    $"Unambiguous remote alias for '{game.Name}'") is { } aliasResolution)
-                return aliasResolution;
-            if (aliasMatches.Length > 1)
-                return new(null, profile, "The game name and executable resolve to different remote aliases.");
-
-            var overrideMatches = directNames.Where(remote.AddonOverrides.ContainsKey)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (overrideMatches.Length == 1 && Dynamic(overrideMatches[0], false,
-                    $"Exact remote snapshot override for '{overrideMatches[0]}'") is { } overrideResolution)
-                return overrideResolution;
-            if (overrideMatches.Length > 1)
-                return new(null, profile, "Multiple remote snapshot overrides match the selected game.");
-        }
-
-        return profile.Profile.RenoDx is { } fallbackSource
-            ? new(BuiltIn(fallbackSource), profile, null)
-            : new(null, profile, null);
     }
 
     private static PeArchitecture SelectedArchitecture(SteamGame game)
@@ -274,18 +190,342 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         }
     }
 
-    private static GameEngine? GenericEngineFor(string fileName)
+    private async Task<RenoDxResolution> EnrichWithSnapshotAsync(
+        SteamGame game,
+        RenoDxResolution current,
+        bool allowNetwork,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
     {
-        if (fileName.Contains("unityengine", StringComparison.OrdinalIgnoreCase)) return GameEngine.Unity;
-        if (fileName.Contains("unrealengine", StringComparison.OrdinalIgnoreCase) ||
-            fileName.Contains("ue-extended", StringComparison.OrdinalIgnoreCase)) return GameEngine.Unreal;
-        return null;
+        if (current.Selection is not null &&
+            !current.Match.UsedEngineFallback &&
+            current.Match.Compatibility is RenoDxCompatibilityState.ExactAddonAvailable or
+                RenoDxCompatibilityState.ExactAddonAvailableFromOfficialSnapshotRelease or
+                RenoDxCompatibilityState.ExactAddonAvailableFromOfficialDiscussion or
+                RenoDxCompatibilityState.InProgress)
+            return current;
+
+        var entry = current.Match.Entry;
+        var architecture = current.Match.SelectedArchitecture is PeArchitecture.X86 or PeArchitecture.X64
+            ? current.Match.SelectedArchitecture
+            : SelectedArchitecture(game);
+        var snapshot = await snapshots.ResolveAsync(
+            game,
+            entry,
+            current.ExpectedAddonFileName ?? entry?.ExpectedAddonFileName ?? entry?.ArtifactFileName,
+            entry?.ArtifactSlug,
+            architecture,
+            allowNetwork,
+            cancellationToken,
+            forceRefresh);
+
+        if (snapshot.Selection is null)
+        {
+            var notes = current.CompatibilityNotes.ToList();
+            if (snapshot.AmbiguousCandidates.Count > 0)
+                notes.Add("Ambiguous snapshot assets: " + string.Join(", ", snapshot.AmbiguousCandidates));
+            return current with
+            {
+                Snapshot = snapshot,
+                Notes = notes,
+                Warning = current.Warning ?? snapshot.Warning
+            };
+        }
+
+        var updatedEntry = entry is null ? null : entry with
+        {
+            ExpectedAddonFileName = snapshot.Selection.DeployFileName,
+            ArtifactFileName = snapshot.Selection.DeployFileName,
+            ArtifactSlug = RenoDxIdentity.ArtifactSlug(snapshot.Selection.DeployFileName),
+            ArchitectureAvailability = snapshot.Selection.Architecture,
+            DirectAutomaticDownloadAvailable = true,
+            SourceType = RenoDxSourceType.Snapshot
+        };
+        var match = current.Match with
+        {
+            Entry = updatedEntry ?? current.Match.Entry,
+            Selection = snapshot.Selection,
+            Compatibility = RenoDxCompatibilityState.ExactAddonAvailableFromOfficialSnapshotRelease,
+            SelectedArchitecture = snapshot.Selection.Architecture,
+            AddonArchitecture = snapshot.Selection.Architecture,
+            RejectedReason = null,
+            ReasonCode = "snapshot-release:" + snapshot.SelectionReason,
+            UsedEngineFallback = false
+        };
+        var resolved = ApplySelection(game, current.Profile, match, snapshot.Selection, updatedEntry ?? entry);
+        var diagnosticNotes = current.CompatibilityNotes.ToList();
+        diagnosticNotes.Add($"Snapshot release: {snapshot.Index?.ReleaseTag ?? snapshot.Selection.ReleaseTag}");
+        if (snapshot.ReleaseCommit is not null) diagnosticNotes.Add($"Release commit: {snapshot.ReleaseCommit}");
+        if (snapshot.Asset is not null) diagnosticNotes.Add($"Asset ID: {snapshot.Asset.Id}");
+        diagnosticNotes.Add($"Asset filename: {snapshot.Selection.AssetName}");
+        if (snapshot.PublishedDigest is not null) diagnosticNotes.Add($"Published digest: {snapshot.PublishedDigest}");
+        diagnosticNotes.Add($"Selection reason: {snapshot.SelectionReason}");
+        diagnosticNotes.Add(snapshot.UsedStructuredMetadata
+            ? "Structured snapshot metadata mapped this game."
+            : "Structured snapshot metadata did not map this game; release assets were indexed instead.");
+        diagnosticNotes.Add("Generic engine fallback was not used.");
+        return resolved with
+        {
+            Snapshot = snapshot,
+            OfficialPageUrl = snapshot.Index?.PageUrl ?? current.OfficialPageUrl ?? entry?.OfficialPageUrl ?? entry?.DiscussionUrl,
+            ExpectedAddonFileName = snapshot.Selection.DeployFileName,
+            DeploymentRelativeDirectory = current.DeploymentRelativeDirectory ?? entry?.DeploymentRelativeDirectory,
+            Notes = diagnosticNotes,
+            Warning = snapshot.Warning ?? resolved.Warning
+        };
     }
+
+    private async Task<RenoDxResolution> EnrichWithDiscussionAsync(
+        SteamGame game,
+        RenoDxResolution current,
+        bool allowNetwork,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        if (current.Selection is not null &&
+            current.Match.Compatibility is RenoDxCompatibilityState.ExactAddonAvailableFromOfficialSnapshotRelease)
+            return current;
+
+        var entry = current.Match.Entry;
+        if (entry?.DiscussionUrl is null || !entry.OfficialCatalogOrigin)
+            return current with
+            {
+                OfficialPageUrl = entry?.OfficialPageUrl ?? entry?.DiscussionUrl,
+                ExpectedAddonFileName = entry?.ExpectedAddonFileName ?? entry?.ArtifactFileName,
+                DeploymentRelativeDirectory = entry?.DeploymentRelativeDirectory,
+                Notes = entry?.CompatibilityWarnings ?? []
+            };
+        if (current.Selection is not null &&
+            current.Match.Compatibility is not RenoDxCompatibilityState.ListedManualDownloadRequired)
+            return current with
+            {
+                OfficialPageUrl = entry.OfficialPageUrl ?? entry.DiscussionUrl,
+                ExpectedAddonFileName = entry.ExpectedAddonFileName ?? entry.ArtifactFileName,
+                DeploymentRelativeDirectory = entry.DeploymentRelativeDirectory,
+                Notes = entry.CompatibilityWarnings
+            };
+
+        var architecture = current.Match.SelectedArchitecture is PeArchitecture.X86 or PeArchitecture.X64
+            ? current.Match.SelectedArchitecture
+            : SelectedArchitecture(game);
+        var discussion = await discussions.ResolveAsync(
+            entry.DiscussionUrl, entry, architecture, allowNetwork, cancellationToken, forceRefresh);
+        var updatedEntry = entry with
+        {
+            OfficialPageUrl = discussion.OfficialPageUrl,
+            DiscussionUrl = entry.DiscussionUrl,
+            ExpectedAddonFileName = discussion.ExpectedFileName ?? entry.ExpectedAddonFileName,
+            DeploymentRelativeDirectory = discussion.DeploymentRelativeDirectory ?? entry.DeploymentRelativeDirectory,
+            CompatibilityWarnings = discussion.CompatibilityWarnings.Count > 0
+                ? discussion.CompatibilityWarnings
+                : entry.CompatibilityWarnings,
+            MinimumReshadeVersion = discussion.MinimumReshadeVersion ?? entry.MinimumReshadeVersion,
+            ArtifactFileName = discussion.ExpectedFileName ?? entry.ArtifactFileName,
+            ArtifactSlug = RenoDxIdentity.ArtifactSlug(discussion.ExpectedFileName ?? entry.ArtifactFileName ?? entry.CanonicalName),
+            ArchitectureAvailability = discussion.Selection?.Architecture ??
+                (discussion.ExpectedFileName?.EndsWith(".addon32", StringComparison.OrdinalIgnoreCase) == true
+                    ? PeArchitecture.X86
+                    : discussion.ExpectedFileName?.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase) == true
+                        ? PeArchitecture.X64
+                        : entry.ArchitectureAvailability)
+        };
+
+        if (discussion.Selection is { } selection)
+        {
+            var match = current.Match with
+            {
+                Entry = updatedEntry,
+                Selection = selection,
+                Compatibility = RenoDxCompatibilityState.ExactAddonAvailableFromOfficialDiscussion,
+                SelectedArchitecture = selection.Architecture,
+                AddonArchitecture = selection.Architecture,
+                RejectedReason = null,
+                ReasonCode = "discussion-direct-addon"
+            };
+            var resolved = ApplySelection(game, current.Profile, match, selection, updatedEntry);
+            return resolved with
+            {
+                OfficialPageUrl = discussion.OfficialPageUrl,
+                ExpectedAddonFileName = discussion.ExpectedFileName,
+                DeploymentRelativeDirectory = discussion.DeploymentRelativeDirectory,
+                Notes = discussion.CompatibilityWarnings,
+                Warning = discussion.Warning ?? resolved.Warning
+            };
+        }
+
+        var compatibility = MapDiscussionCompatibility(discussion.State, current.Match.Compatibility);
+        return current with
+        {
+            Match = current.Match with
+            {
+                Entry = updatedEntry,
+                Compatibility = compatibility,
+                RejectedReason = discussion.Warning ?? DescribeCompatibility(compatibility),
+                ReasonCode = discussion.State.ToString()
+            },
+            Warning = discussion.Warning ?? DescribeCompatibility(compatibility),
+            OfficialPageUrl = discussion.OfficialPageUrl,
+            ExpectedAddonFileName = discussion.ExpectedFileName,
+            DeploymentRelativeDirectory = discussion.DeploymentRelativeDirectory,
+            Notes = discussion.CompatibilityWarnings
+        };
+    }
+
+    private static RenoDxCompatibilityState MapDiscussionCompatibility(
+        RenoDxDiscussionResolveState state,
+        RenoDxCompatibilityState fallback) => state switch
+        {
+            RenoDxDiscussionResolveState.ExactAddonAvailableFromOfficialDiscussion =>
+                RenoDxCompatibilityState.ExactAddonAvailableFromOfficialDiscussion,
+            RenoDxDiscussionResolveState.DirectAddonFoundNotYetValidated =>
+                RenoDxCompatibilityState.DirectAddonFoundNotYetValidated,
+            RenoDxDiscussionResolveState.OfficialPageAvailableNoDirectAddon =>
+                RenoDxCompatibilityState.OfficialPageAvailableNoDirectAddon,
+            RenoDxDiscussionResolveState.MultipleOfficialFilesRequireConfirmation =>
+                RenoDxCompatibilityState.MultipleOfficialFilesRequireConfirmation,
+            RenoDxDiscussionResolveState.AddonArchitectureMismatch =>
+                RenoDxCompatibilityState.AddonArchitectureMismatch,
+            RenoDxDiscussionResolveState.OfficialSourceTemporarilyUnavailable =>
+                RenoDxCompatibilityState.OfficialSourceTemporarilyUnavailable,
+            RenoDxDiscussionResolveState.OfficialSourceChanged =>
+                RenoDxCompatibilityState.OfficialSourceChanged,
+            RenoDxDiscussionResolveState.UnsafeArtifactRejected =>
+                RenoDxCompatibilityState.UnsafeArtifactRejected,
+            RenoDxDiscussionResolveState.ManualDownloadRequired =>
+                RenoDxCompatibilityState.ListedManualDownloadRequired,
+            _ => fallback
+        };
+
+    private RenoDxResolution ResolveRenoDx(
+        SteamGame game,
+        GameProfileMatch profile,
+        RemoteManifestCatalog? remote,
+        RenoDxWikiCatalog wikiCatalog)
+    {
+        var index = wikiCatalog.Index ?? new RenoDxCatalogIndex(
+            wikiCatalog.Entries.Count > 0
+                ? wikiCatalog.Entries
+                : wikiCatalog.Records.Select(record => new RenoDxCatalogEntry(
+                    record.Name, RenoDxIdentity.NormalizeKey(record.Name), [], null, record.Addon32Url,
+                    record.Addon64Url,
+                    Path.GetFileName((record.Addon64Url ?? record.Addon32Url)?.AbsolutePath),
+                    RenoDxIdentity.ArtifactSlug(Path.GetFileName((record.Addon64Url ?? record.Addon32Url)?.AbsolutePath)),
+                    record.Addon64Url is not null ? PeArchitecture.X64 :
+                        record.Addon32Url is not null ? PeArchitecture.X86 : PeArchitecture.Unknown,
+                    record.Status, RenoDxCatalogSection.ExactGame, RenoDxSourceType.Snapshot,
+                    record.Addon32Url is not null || record.Addon64Url is not null, null, null, true, null)).ToArray(),
+            wikiCatalog.SourceTimestamp, wikiCatalog.ETag, wikiCatalog.State, wikiCatalog.IsCached, wikiCatalog.CacheAge);
+
+        var match = renoMatcher.Resolve(game, profile, index, remote);
+        if (match.Compatibility == RenoDxCompatibilityState.OfflineCatalogInUse && match.Entry is null &&
+            match.Selection is null && profile.Profile.RenoDx is null)
+            match = match with { Compatibility = RenoDxCompatibilityState.NotListed };
+
+        if (match.Selection is null && match.Entry is null && profile.Profile.RenoDx is { } fallbackSource &&
+            match.MatchType is RenoDxMatchType.NoMatch or RenoDxMatchType.Superseded)
+        {
+            var builtIn = new ArtifactSelection(ComponentKind.RenoDx, fallbackSource.Version, fallbackSource.Url,
+                fallbackSource.Version, Path.GetFileName(fallbackSource.Url.LocalPath), fallbackSource.Architecture,
+                profile.IsExact ? game.AppId : null, fallbackSource.FileName, null, ArtifactArchiveKind.None,
+                GameProfile: profile.Profile.Id, Support: SupportFor(profile), SourceValidatedByOfficialMetadata: true);
+            var compatibility = profile.IsFallback
+                ? profile.Profile.Engine == GameEngine.Unity
+                    ? RenoDxCompatibilityState.GenericUnityAddonAvailable
+                    : RenoDxCompatibilityState.GenericUnrealAddonAvailable
+                : RenoDxCompatibilityState.ExactAddonAvailable;
+            match = new(profile.IsFallback ? RenoDxMatchType.EngineFallback : RenoDxMatchType.BuiltInProfile,
+                0.8, match.Entry, builtIn, compatibility, match.Evidence, match.AmbiguousCandidates,
+                match.SuggestedExecutable, fallbackSource.Architecture, fallbackSource.Architecture,
+                profile.IsFallback ? "engine-fallback" : "built-in", profile.IsFallback, null);
+        }
+
+        if (match.Selection is null)
+            return new(null, profile, match.RejectedReason ?? DescribeCompatibility(match.Compatibility), match,
+                match.Entry?.OfficialPageUrl ?? match.Entry?.DiscussionUrl,
+                match.Entry?.ExpectedAddonFileName ?? match.Entry?.ArtifactFileName,
+                match.Entry?.DeploymentRelativeDirectory, match.Entry?.CompatibilityWarnings ?? []);
+
+        return ApplySelection(game, profile, match, match.Selection, match.Entry);
+    }
+
+    private static RenoDxResolution ApplySelection(
+        SteamGame game,
+        GameProfileMatch profile,
+        RenoDxMatchResult match,
+        ArtifactSelection selection,
+        RenoDxCatalogEntry? entry)
+    {
+        var canonicalName = entry?.CanonicalName ?? profile.Profile.CanonicalName;
+        var gameSpecific = !match.UsedEngineFallback &&
+            selection.Support is ArtifactSupportKind.ExactGameProfile or ArtifactSupportKind.ExecutableOrAliasProfile;
+        var sourceModel = new RenoDxSource(selection.SourceUrl, selection.DeployFileName, selection.Version,
+            selection.Architecture, gameSpecific);
+        var dynamicProfile = profile.Profile with
+        {
+            Id = gameSpecific ? $"wiki-{RenoDxIdentity.NormalizeKey(canonicalName).Replace(' ', '-')}" : profile.Profile.Id,
+            CanonicalName = canonicalName,
+            RenoDx = sourceModel,
+            RenoDxSupport = gameSpecific ? GameProfileSupport.Supported : GameProfileSupport.EngineFallback,
+            Warnings = profile.Profile.Warnings.Where(item =>
+                !item.Contains("No supported game profile", StringComparison.OrdinalIgnoreCase)).ToArray()
+        };
+        var matchReason = match.Evidence.FirstOrDefault()?.Detail ?? match.MatchType.ToString();
+        var exactAppId = match.MatchType == RenoDxMatchType.ExactAppId ||
+            match.MatchType == RenoDxMatchType.BuiltInProfile && profile.ExactAppId;
+        var matchedProfile = new GameProfileMatch(dynamicProfile, matchReason, exactAppId);
+        var warning = entry?.Status switch
+        {
+            RenoDxWikiStatus.InProgress =>
+                $"The official RenoDX wiki marks '{entry.CanonicalName}' as under construction.",
+            RenoDxWikiStatus.Unknown when entry.SourceSection == RenoDxCatalogSection.ExactGame =>
+                $"The official RenoDX wiki does not publish a working-status marker for '{entry.CanonicalName}'.",
+            _ => match.Compatibility == RenoDxCompatibilityState.ExactAddonAvailableForAnotherExecutable
+                ? "Exact RenoDX addon available for another executable."
+                : null
+        };
+        return new(selection, matchedProfile, warning, match,
+            entry?.OfficialPageUrl ?? entry?.DiscussionUrl,
+            entry?.ExpectedAddonFileName ?? entry?.ArtifactFileName ?? selection.DeployFileName,
+            entry?.DeploymentRelativeDirectory, entry?.CompatibilityWarnings ?? []);
+    }
+
+    private static string? DescribeCompatibility(RenoDxCompatibilityState state) => state switch
+    {
+        RenoDxCompatibilityState.ListedManualDownloadRequired => "Listed by RenoDX, manual download required",
+        RenoDxCompatibilityState.OfficialPageAvailableNoDirectAddon =>
+            "Official RenoDX page found. No direct addon download is available.",
+        RenoDxCompatibilityState.ExactAddonAvailableFromOfficialSnapshotRelease => "Exact RenoDX addon available",
+        RenoDxCompatibilityState.ExactAddonAvailableFromOfficialDiscussion => "Exact RenoDX addon available",
+        RenoDxCompatibilityState.MultipleOfficialFilesRequireConfirmation =>
+            "Multiple official Discussion addon files require confirmation.",
+        RenoDxCompatibilityState.AddonArchitectureMismatch =>
+            "Addon found, but no compatible executable architecture is available.",
+        RenoDxCompatibilityState.OfficialSourceTemporarilyUnavailable =>
+            "Official RenoDX Discussion source is temporarily unavailable.",
+        RenoDxCompatibilityState.UnsafeArtifactRejected => "Unsafe or invalid Discussion artifact rejected.",
+        RenoDxCompatibilityState.AmbiguousMatch => "Multiple RenoDX catalog candidates require confirmation.",
+        RenoDxCompatibilityState.MetadataUnavailable => "RenoDX catalog unavailable",
+        RenoDxCompatibilityState.NotListed or RenoDxCompatibilityState.NoAddonFound => "No RenoDX addon found",
+        RenoDxCompatibilityState.AddonAvailableExecutableSelectionRequired =>
+            "Addon found, but no compatible executable was selected",
+        RenoDxCompatibilityState.AddonAvailableArchitectureUnconfirmed => "Architecture could not be confirmed",
+        RenoDxCompatibilityState.SupersededByGenericAddon => "Exact profile was superseded by a generic RenoDX addon",
+        _ => null
+    };
 
     private sealed record RenoDxResolution(
         ArtifactSelection? Selection,
         GameProfileMatch Profile,
-        string? Warning);
+        string? Warning,
+        RenoDxMatchResult Match,
+        Uri? OfficialPageUrl = null,
+        string? ExpectedAddonFileName = null,
+        string? DeploymentRelativeDirectory = null,
+        IReadOnlyList<string>? Notes = null,
+        RenoDxSnapshotResolution? Snapshot = null)
+    {
+        public IReadOnlyList<string> CompatibilityNotes => Notes ?? [];
+    }
 
     public async Task<GameArtifactResolution> AcquireAsync(SteamGame game, bool allowNetwork = true, CancellationToken cancellationToken = default)
     {
@@ -309,7 +549,8 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         GameArtifactResolution resolution,
         IReadOnlySet<ComponentKind> requestedComponents,
         bool allowNetwork = true,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<ArtifactAcquisitionProgress>? progress = null)
     {
         var selections = resolution.Artifacts.ToDictionary(x => x.Component);
         var warnings = resolution.Warnings.ToList();
@@ -330,7 +571,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
 
             try
             {
-                selections[component] = await cache.AcquireAsync(selection, httpClient, cancellationToken);
+                selections[component] = await cache.AcquireAsync(selection, httpClient, cancellationToken, progress);
                 return true;
             }
             catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
@@ -346,29 +587,48 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         }
 
         var renoRequested = requestedComponents.Contains(ComponentKind.RenoDx);
-        var reshadeRequested = renoRequested || requestedComponents.Contains(ComponentKind.ReShade);
-        var reshadeReady = !reshadeRequested || await AcquireOneAsync(ComponentKind.ReShade);
-        var renoReady = renoRequested && reshadeReady && await AcquireOneAsync(ComponentKind.RenoDx);
+        var reshadeRequested = requestedComponents.Contains(ComponentKind.ReShade) || renoRequested;
         var optiRequested = requestedComponents.Contains(ComponentKind.OptiScaler);
-        var optiReady = optiRequested && await AcquireOneAsync(ComponentKind.OptiScaler);
+
+        var reshadeReady = !reshadeRequested || await AcquireOneAsync(ComponentKind.ReShade);
+        var renoReady = !renoRequested || await AcquireOneAsync(ComponentKind.RenoDx);
+        if (renoRequested && !reshadeReady)
+            warnings.Add("RenoDX requires a prepared ReShade full-addon host before installation can continue.");
+        var optiReady = !optiRequested || await AcquireOneAsync(ComponentKind.OptiScaler);
         var acquiredSelections = selections.Values.ToArray();
         var canAcquireReno = renoRequested && reshadeReady && renoReady;
+        var canAcquireReshadeOnly = requestedComponents.Contains(ComponentKind.ReShade) && reshadeReady;
         var canAcquireOpti = optiRequested && optiReady;
 
         return resolution with
         {
             Artifacts = acquiredSelections,
-            Warnings = warnings,
-            IsFullyAutomatic = canAcquireReno || canAcquireOpti,
-            Components = BuildComponents(resolution.Profile, acquiredSelections, warnings),
+            Warnings = FilterAcquisitionWarnings(warnings, requestedComponents),
+            IsFullyAutomatic = canAcquireReno || canAcquireReshadeOnly || canAcquireOpti,
+            Components = BuildComponents(resolution.Profile, acquiredSelections, warnings, resolution.RenoDxMatch),
             CanAcquireRenoSetup = canAcquireReno,
+            CanAcquireRenoDx = renoRequested && renoReady && reshadeReady,
             CanAcquireOptiScaler = canAcquireOpti
         };
     }
 
+    private static IReadOnlyList<string> FilterAcquisitionWarnings(
+        IReadOnlyList<string> warnings,
+        IReadOnlySet<ComponentKind> requested)
+    {
+        return warnings.Where(warning =>
+        {
+            if (warning.Contains("No supported game profile", StringComparison.OrdinalIgnoreCase) &&
+                !requested.Contains(ComponentKind.RenoDx))
+                return false;
+            return true;
+        }).ToArray();
+    }
+
     private static bool IsRecoverableAcquisitionFailure(Exception exception) => exception is
         HttpRequestException or IOException or InvalidDataException or UnauthorizedAccessException or
-        InvalidOperationException or NotSupportedException or JsonException or System.ComponentModel.Win32Exception;
+        InvalidOperationException or NotSupportedException or JsonException or ArtifactPipelineException or
+        System.ComponentModel.Win32Exception;
 
     private async Task<(ArtifactSelection? Selection, bool Checked)> TryResolveReShadeAsync(SteamGame game, CancellationToken cancellationToken)
     {
@@ -401,16 +661,22 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             if (release is null) return (null, true);
             ReleaseAsset? asset = component switch
             {
-                ComponentKind.OptiScaler => release.Assets.Where(x => x.Name.EndsWith(".7z", StringComparison.OrdinalIgnoreCase) &&
+                ComponentKind.OptiScaler => release.Assets.Where(x =>
+                    (x.Name.EndsWith(".7z", StringComparison.OrdinalIgnoreCase) ||
+                     x.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) &&
                     x.Name.Contains("OptiScaler", StringComparison.OrdinalIgnoreCase) &&
                     !IsUnstableAssetName(x.Name))
-                    .OrderByDescending(x => x.Name.Equals("OptiScaler.7z", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(x => x.Name.EndsWith(".7z", StringComparison.OrdinalIgnoreCase))
+                    .ThenByDescending(x => x.Name.Equals("OptiScaler.7z", StringComparison.OrdinalIgnoreCase))
                     .ThenBy(x => x.Name.Length).ThenBy(x => x.Name, StringComparer.Ordinal).FirstOrDefault(),
                 _ => null
             };
             if (asset is null) return (null, true);
+            var archiveKind = asset.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                ? ArtifactArchiveKind.Zip
+                : ArtifactArchiveKind.SevenZip;
             return (new(component, release.Version, asset.Url, release.Version, asset.Name, PeArchitecture.X64,
-                null, "OptiScaler.dll", asset.Digest, ArtifactArchiveKind.SevenZip,
+                null, "OptiScaler.dll", asset.Digest, archiveKind,
                 Support: ArtifactSupportKind.General), true);
         }
         catch (HttpRequestException) { return (null, false); }
@@ -460,7 +726,6 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
                   !selection.ETag.Equals(response.Headers.ETag.ToString(), StringComparison.Ordinal)) ||
                  (selection.LastModified is not null && response.Content.Headers.LastModified is not null &&
                   selection.LastModified != response.Content.Headers.LastModified));
-            // Snapshot display versions stay "snapshot"; only treat as outdated when remote identity metadata changes.
             return (changed ? selection with { CacheState = ArtifactCacheState.DownloadRequired } : selection, true);
         }
         catch (HttpRequestException) { return (selection, false); }
@@ -486,7 +751,8 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     private static IReadOnlyList<ResolvedArtifact> BuildComponents(
         GameProfileMatch profile,
         IReadOnlyList<ArtifactSelection> selections,
-        IReadOnlyList<string> warnings)
+        IReadOnlyList<string> warnings,
+        RenoDxMatchResult? renoMatch)
     {
         return new[] { ComponentKind.ReShade, ComponentKind.RenoDx, ComponentKind.OptiScaler }.Select(component =>
         {
@@ -498,12 +764,15 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             var reason = component switch
             {
                 ComponentKind.ReShade => "The official full-addon ReShade release could not be resolved and no valid cached build is available.",
-                ComponentKind.RenoDx => "No safe game-specific or supported engine fallback is available.",
+                ComponentKind.RenoDx => renoMatch?.RejectedReason ??
+                    DescribeCompatibility(renoMatch?.Compatibility ?? RenoDxCompatibilityState.NotListed) ??
+                    "No RenoDX addon found",
                 ComponentKind.OptiScaler => "The official OptiScaler release could not be resolved, is not eligible, or no valid cached release is available.",
                 _ => warnings.LastOrDefault() ?? "Official release metadata is unavailable."
             };
+            var support = ArtifactSupportKind.Unavailable;
             return new ResolvedArtifact(component, null, null, null, null, PeArchitecture.Unknown, profile.Profile.Id,
-                ArtifactSupportKind.Unavailable, ArtifactCacheState.DownloadRequired, ArtifactValidationState.NotValidated, null, reason, null);
+                support, ArtifactCacheState.DownloadRequired, ArtifactValidationState.NotValidated, null, reason, null);
         }).ToArray();
     }
 }

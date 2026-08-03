@@ -431,6 +431,8 @@ internal static class CliApplication
         Console.WriteLine($"Executable override: {match.Profile.ExecutableRelativePath ?? "automatic"}");
         Console.WriteLine($"Deployment override: {match.Profile.DeploymentRelativePath ?? "automatic"}");
         Console.WriteLine($"RenoDX: {match.Profile.RenoDxSupport} — {match.Profile.RenoDx?.FileName ?? "no artifact mapping"}");
+        if (match.Profile.RenoDxSupport == GameProfileSupport.Unsupported)
+            Console.WriteLine("Note: profile-only Unsupported means no built-in profile; wiki resolution may still find an exact addon.");
         Console.WriteLine($"OptiScaler profile evidence: {(match.Profile.OptiScalerCompatible ? "known compatible" : "no game-specific signal")}");
     }
     private static void PrintProxyDiagnostics(SteamGame game, ProxySelectionResult result)
@@ -450,6 +452,12 @@ internal static class CliApplication
         Console.WriteLine($"Official artifacts for {game.Name} ({game.AppId})");
         foreach (var artifact in resolution.Artifacts)
             Console.WriteLine($"{artifact.Component,-12} {artifact.Version,-14} {artifact.CacheState,-16} {artifact.AssetName}\n             {artifact.SourceUrl}");
+        Console.WriteLine($"RenoDX compatibility: {resolution.RenoDxCompatibility}");
+        if (resolution.RenoDxMatch is { } match)
+            Console.WriteLine($"RenoDX match: {match.MatchType} confidence={match.Confidence:0.00} reason={match.ReasonCode}");
+        if (resolution.SuggestedExecutable is { } suggested)
+            Console.WriteLine($"Suggested executable: {suggested}");
+        Console.WriteLine($"Can acquire RenoDX: {resolution.CanAcquireRenoDx}; Reno setup: {resolution.CanAcquireRenoSetup}");
         foreach (var warning in resolution.Warnings) Console.WriteLine($"WARNING: {warning}");
         Console.WriteLine($"Fully automatic: {resolution.IsFullyAutomatic}");
     }

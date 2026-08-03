@@ -20,17 +20,24 @@ public sealed record RemoteManifestCatalog(
 
 public static class OfficialArtifactSourcePolicy
 {
+    public static bool IsTrustedOfficialWikiAddon(Uri uri)
+    {
+        if (!IsSafeAddonTransport(uri)) return false;
+        var extension = Path.GetExtension(Uri.UnescapeDataString(uri.AbsolutePath));
+        return extension.Equals(".addon32", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".addon64", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static bool IsConstrainedRenoDxAddon(Uri uri)
     {
-        if (uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo) ||
-            uri.Port != 443 && !uri.IsDefaultPort || !string.IsNullOrEmpty(uri.Query) ||
-            !string.IsNullOrEmpty(uri.Fragment)) return false;
-        var extension = Path.GetExtension(uri.AbsolutePath);
-        if (!extension.Equals(".addon32", StringComparison.OrdinalIgnoreCase) &&
-            !extension.Equals(".addon64", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!IsTrustedOfficialWikiAddon(uri)) return false;
         if (uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
         {
             var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length >= 4 &&
+                segments[0].Equals("user-attachments", StringComparison.OrdinalIgnoreCase) &&
+                segments[1].Equals("files", StringComparison.OrdinalIgnoreCase))
+                return true;
             return segments.Length >= 6 && segments[1].StartsWith("renodx", StringComparison.OrdinalIgnoreCase) &&
                 segments[2].Equals("releases", StringComparison.OrdinalIgnoreCase) &&
                 segments[3].Equals("download", StringComparison.OrdinalIgnoreCase);
@@ -38,6 +45,40 @@ public static class OfficialArtifactSourcePolicy
         if (!uri.Host.EndsWith(".github.io", StringComparison.OrdinalIgnoreCase)) return false;
         var firstSegment = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
         return firstSegment?.StartsWith("renodx", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static bool IsSafeAddonTransport(Uri uri)
+    {
+        if (!uri.IsAbsoluteUri || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment))
+            return false;
+        if (uri.Port != 443 && !uri.IsDefaultPort) return false;
+        if (string.IsNullOrWhiteSpace(uri.Host)) return false;
+        if (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (IPAddress.TryParse(uri.Host, out var address))
+        {
+            if (IPAddress.IsLoopback(address) || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal)
+                return false;
+            if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                var bytes = address.GetAddressBytes();
+                if (bytes[0] == 10 ||
+                    bytes[0] == 192 && bytes[1] == 168 ||
+                    bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31 ||
+                    bytes[0] == 169 && bytes[1] == 254)
+                    return false;
+            }
+        }
+        var path = Uri.UnescapeDataString(uri.AbsolutePath);
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".addon32", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".addon64", StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -351,18 +392,32 @@ public static class ArtifactValidator
         Stream input,
         Stream output,
         long maximumBytes,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<long>? progress = null,
+        long? totalBytes = null)
     {
         var buffer = new byte[81920];
         long total = 0;
+        var lastReport = DateTimeOffset.MinValue;
         while (true)
         {
             var read = await input.ReadAsync(buffer, cancellationToken);
-            if (read == 0) return;
+            if (read == 0)
+            {
+                progress?.Report(total);
+                return;
+            }
             total += read;
             if (total > maximumBytes)
                 throw new InvalidDataException("Downloaded or extracted artifact exceeds its safety limit.");
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+            if (progress is not null && (now - lastReport >= TimeSpan.FromMilliseconds(100) ||
+                totalBytes is long expected && total >= expected))
+            {
+                progress.Report(total);
+                lastReport = now;
+            }
         }
     }
 

@@ -2,10 +2,6 @@ using RhiLinux.Core;
 
 namespace RhiLinux.Mods;
 
-/// <summary>
-/// Plans managed ReShade host/preset files so ordinary shader techniques start disabled.
-/// RenoDX loads through the add-on path, not Techniques=.
-/// </summary>
 public static class ReShadePresetService
 {
     public const string HostIniFileName = "ReShade.ini";
@@ -14,10 +10,6 @@ public static class ReShadePresetService
     public const string HostConfigPurpose = "reshade-host-config";
     public const string ConfigurationSchema = "reshade-clean-v1";
 
-    /// <summary>
-    /// Effects ReShade has been observed enabling on an unmanaged first-run preset.
-    /// A clean managed preset must leave these (and all other ordinary techniques) off.
-    /// </summary>
     public static readonly string[] PreviouslyObservedDefaultEffects =
     [
         "SMAA",
@@ -45,7 +37,6 @@ public static class ReShadePresetService
         var managedHost = FindManaged(manifest, relativeHost, HostConfigPurpose);
 
         var presetCustomized = IsUserCustomizedPreset(presetPath, managedPreset);
-        // Write only for missing presets, known first-run defaults, or an explicit reset — never on ordinary updates.
         var shouldWritePreset = forceReset ||
             !File.Exists(presetPath) ||
             (!presetCustomized && IsDirtyDefaultPreset(presetPath));
@@ -72,11 +63,7 @@ public static class ReShadePresetService
 
         if (shouldWriteHost && (forceReset || !hostCustomized || !File.Exists(hostPath)))
         {
-            if (hostCustomized && !forceReset && managedHost is null)
-            {
-                // Unmanaged ReShade.ini pointing at another preset — leave PresetPath alone.
-            }
-            else
+            if (!(hostCustomized && !forceReset && managedHost is null))
             {
                 AddIni(plan, hostPath, "GENERAL", "PresetPath", $".\\{CleanPresetFileName}", ComponentKind.ReShade,
                     HostConfigPurpose, "Point ReShade at the managed clean preset");
@@ -86,7 +73,6 @@ public static class ReShadePresetService
         }
         else if (File.Exists(hostPath) && managedHost is null && !hostCustomized)
         {
-            // Existing unmanaged host without a customized preset path: still ensure AddonPath for RenoDX.
             var document = SafeParse(hostPath);
             if (document?.Get("ADDON", "AddonPath") is null)
                 AddIni(plan, hostPath, "ADDON", "AddonPath", ".", ComponentKind.ReShade,
@@ -147,11 +133,8 @@ public static class ReShadePresetService
         if (document is null) return true;
         var techniques = document.Get(string.Empty, "Techniques") ?? document.Get("GENERAL", "Techniques");
         if (IsCleanTechniquesValue(techniques)) return false;
-        // Known ReShade first-run defaults are not treated as user customization.
         if (MatchesObservedDefaultEffects(ParseTechniqueNames(techniques))) return false;
-        // Owned clean preset that gained techniques was customized by the user.
         if (managed?.Purpose == CleanPresetPurpose) return true;
-        // Unmanaged non-empty preset is treated as user-owned.
         return managed is null;
     }
 

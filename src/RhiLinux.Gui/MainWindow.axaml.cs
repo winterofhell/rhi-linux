@@ -53,8 +53,6 @@ public sealed partial class MainWindow : Window
     {
         if (closeRequested) return;
 
-        // Defer close so preference I/O never blocks the Avalonia UI thread.
-        // Sync-over-async (.GetResult) deadlocks under AvaloniaSynchronizationContext.
         eventArgs.Cancel = true;
         closeRequested = true;
 
@@ -227,13 +225,39 @@ public sealed partial class MainWindow : Window
     private async void ComponentAction_Click(object? sender, RoutedEventArgs eventArgs)
     {
         if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
-        if (card.ActionText == "Remove")
+        if (card.ActionText == "Remove" || card.ActionText.StartsWith("Remove ", StringComparison.Ordinal))
         {
             try { await ShowPlanAsync(await viewModel.BuildRemovePlanAsync(card.Component)); }
             catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build removal plan", exception.Message); }
             return;
         }
         await BuildAutomaticComponentPlanAsync(card.Component);
+    }
+
+    private async void ComponentRemove_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
+        try { await ShowPlanAsync(await viewModel.BuildRemovePlanAsync(card.Component)); }
+        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build removal plan", exception.Message); }
+    }
+
+    private async void ComponentSecondary_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
+        if (card.CanShowFiles)
+        {
+            await MessageDialog.ShowAsync(this, $"{card.Name} files",
+                card.Files.Length == 0 ? "No detected files." : card.Files);
+            return;
+        }
+        if (card.CanCheckAgain)
+            await viewModel.CheckForUpdatesAsync(false);
+    }
+
+    private void OpenOfficialPage_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
+        viewModel.OpenOfficialPage(card);
     }
 
     private async Task BuildAutomaticComponentPlanAsync(ComponentKind component)
@@ -251,6 +275,11 @@ public sealed partial class MainWindow : Window
         {
             await MessageDialog.ShowAsync(this, "Installation blocked", exception.Message, exception.TechnicalDetails);
         }
+        catch (ArtifactPipelineException exception)
+        {
+            await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.UserSummary,
+                exception.TechnicalDetail ?? exception.ToString());
+        }
         catch (Exception exception)
         {
             await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.Message);
@@ -267,6 +296,11 @@ public sealed partial class MainWindow : Window
         catch (DeploymentConflictException exception)
         {
             await MessageDialog.ShowAsync(this, "Installation blocked", exception.Message, exception.TechnicalDetails);
+        }
+        catch (ArtifactPipelineException exception)
+        {
+            await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.UserSummary,
+                exception.TechnicalDetail ?? exception.ToString());
         }
         catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.Message); }
     }
@@ -312,14 +346,29 @@ public sealed partial class MainWindow : Window
         {
             await MessageDialog.ShowAsync(this, "Installation blocked", exception.Message, exception.TechnicalDetails);
         }
+        catch (ArtifactPipelineException exception)
+        {
+            await MessageDialog.ShowAsync(this, "Could not build recommended setup", exception.UserSummary,
+                exception.TechnicalDetail ?? exception.ToString());
+        }
         catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build recommended setup", exception.Message); }
     }
 
     private async void CheckForUpdates_Click(object? sender, RoutedEventArgs eventArgs) => await viewModel.CheckForUpdatesAsync();
+    private void OpenCacheFolder_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        try { viewModel.OpenCacheFolder(); }
+        catch (Exception exception) { _ = MessageDialog.ShowAsync(this, "Could not open cache folder", exception.Message); }
+    }
     private async void VerifyCache_Click(object? sender, RoutedEventArgs eventArgs)
     {
         try { await viewModel.VerifyCacheAsync(); }
         catch (Exception exception) { await MessageDialog.ShowAsync(this, "Cache verification failed", exception.Message); }
+    }
+    private async void RefreshRenoDxCatalog_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        try { await viewModel.RefreshRenoDxCatalogAsync(); }
+        catch (Exception exception) { await MessageDialog.ShowAsync(this, "RenoDX catalog refresh failed", exception.Message); }
     }
     private async void ClearCache_Click(object? sender, RoutedEventArgs eventArgs)
     {
@@ -359,6 +408,20 @@ public sealed partial class MainWindow : Window
         if (!IsVisible) return;
         CopyButton.Content = "Copy";
         CopyStatus.IsVisible = false;
+    }
+
+    private async void CopyHdrLaunch_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        var clipboard = GetTopLevel(this)?.Clipboard;
+        if (clipboard is null) return;
+        await clipboard.SetTextAsync(viewModel.HdrLaunchOption);
+        if (this.FindControl<Button>("CopyHdrLaunchButton") is { } button)
+        {
+            button.Content = "Copied";
+            await Task.Delay(1800);
+            if (!IsVisible) return;
+            button.Content = "Copy";
+        }
     }
 
     private void Cancel_Click(object? sender, RoutedEventArgs eventArgs) => operationCancellation?.Cancel();
