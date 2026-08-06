@@ -23,6 +23,12 @@ public static class OptiScalerEligibilityService
     public static OptiScalerEligibility Evaluate(
         SteamGame game,
         GameProfileMatch profile,
+        ProxySelectionResult proxy) =>
+        Evaluate(game.ToDeploymentTarget(), profile, proxy);
+
+    public static OptiScalerEligibility Evaluate(
+        DeploymentTarget game,
+        GameProfileMatch profile,
         ProxySelectionResult proxy)
     {
         if (game.RequiresConfirmation)
@@ -69,7 +75,7 @@ public static class OptiScalerEligibilityService
             "OptiScaler compatibility is unverified for this game. Review the compatibility summary before confirming installation.");
     }
 
-    private static PeArchitecture SelectedArchitecture(SteamGame game)
+    private static PeArchitecture SelectedArchitecture(DeploymentTarget game)
     {
         var candidate = game.Candidates.FirstOrDefault(x => game.Executable is not null &&
             Path.GetFullPath(x.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal))

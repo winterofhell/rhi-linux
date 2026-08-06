@@ -104,10 +104,10 @@ public sealed class FullStackLifecycleRegressionTests
             new(ComponentKind.RenoDx, temp.Pe("stage/renodx-cp2077.addon64"), "renodx-cp2077.addon64", "snapshot")),
             false)).Succeeded);
 
-        var viewModel = new MainViewModel(new FixedDiscovery([game]), new DetectorStatusProvider(), new MemoryStateStore(),
+        var viewModel = new MainViewModel(new FixedDiscovery([InstalledGame.FromSteamGame(game)]), new DetectorStatusProvider(), new MemoryStateStore(),
             new MemoryPreferencesStore(new UiPreferences { CheckForUpdatesAutomatically = false }),
             executor: executor);
-        await viewModel.SelectAsync(game);
+        await viewModel.SelectAsync(InstalledGame.FromSteamGame(game));
         var plan = await planner.BuildInstallPlanAsync(game,
             new(ComponentKind.OptiScaler, temp.PeWithMarker("stage/OptiScaler.dll", "OptiScaler"), "OptiScaler.dll", "v0.9.4"));
         var result = await viewModel.ExecuteAsync(plan, false);
@@ -185,21 +185,21 @@ public sealed class FullStackLifecycleRegressionTests
         var root = temp.Directory("game");
         var deploy = temp.Directory("game/bin/x64");
         var executable = temp.Pe("game/bin/x64/Cyberpunk2077.exe");
-        return new(1091500, "Cyberpunk 2077", temp.Path, temp.Path, root,
+        return new SteamGame(1091500, "Cyberpunk 2077", temp.Path, temp.Path, root,
             temp.Combine("compatdata", "1091500", "pfx"), executable, deploy, DetectionConfidence.High,
             "fixture", GameEngine.Unknown,
             [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, new FileInfo(executable).Length, ["fixture"])]);
     }
 
-    private sealed class FixedDiscovery(IReadOnlyList<SteamGame> games) : IGameDiscovery
+    private sealed class FixedDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
     {
-        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken) =>
+        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken) =>
             Task.FromResult(new ScanResult(games, [], [], []));
     }
 
     private sealed class DetectorStatusProvider : IComponentStatusProvider
     {
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken) =>
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken) =>
             new ComponentDetector().DetectAsync(game, cancellationToken);
     }
 

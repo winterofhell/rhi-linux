@@ -2,14 +2,53 @@ using RhiLinux.Core;
 
 namespace RhiLinux.Steam;
 
-public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
+public sealed record ScanOptions(
+    bool UseLibraryIndex = true,
+    bool ForceFullAnalysis = false,
+    int AnalysisConcurrency = 0,
+    ILibraryIndexStore? LibraryIndexStore = null);
+
+public sealed record IncrementalScanMetrics(
+    int ManifestsSeen,
+    int CacheHits,
+    int Analyzed,
+    int Removed,
+    long ElapsedMilliseconds,
+    long AnalysisMilliseconds,
+    int FilesVisited);
+
+public sealed class SteamDiscoveryService
 {
-    public async Task<ScanResult> ScanAsync(
+    private readonly GameAnalyzer gameAnalyzer;
+    private readonly ILibraryIndexStore? defaultIndexStore;
+
+    public SteamDiscoveryService(
+        ExecutableDetector? executableDetector = null,
+        GameAnalyzer? gameAnalyzer = null,
+        ILibraryIndexStore? libraryIndexStore = null)
+    {
+        _ = executableDetector;
+        this.gameAnalyzer = gameAnalyzer ?? new GameAnalyzer();
+        defaultIndexStore = libraryIndexStore;
+    }
+
+    public IncrementalScanMetrics? LastMetrics { get; private set; }
+
+    public Task<ScanResult> ScanAsync(
         IEnumerable<string>? explicitRoots = null,
         IReadOnlyDictionary<uint, GameOverride>? overrides = null,
         CancellationToken cancellationToken = default,
-        bool includeDefaultRoots = false)
+        bool includeDefaultRoots = false) =>
+        ScanAsync(explicitRoots, overrides, cancellationToken, includeDefaultRoots, new ScanOptions());
+
+    public async Task<ScanResult> ScanAsync(
+        IEnumerable<string>? explicitRoots,
+        IReadOnlyDictionary<uint, GameOverride>? overrides,
+        CancellationToken cancellationToken,
+        bool includeDefaultRoots,
+        ScanOptions options)
     {
+        var started = Environment.TickCount64;
         var warnings = new List<string>();
         var diagnostics = new List<SteamManifestDiagnostic>();
         var rootDiagnostics = new List<SteamRootDiagnostic>();
@@ -92,8 +131,40 @@ public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
             }
         }
 
+        var indexStore = options.LibraryIndexStore ?? defaultIndexStore;
+        LibraryIndexDocument? index = null;
+        Dictionary<string, IndexedGameEntry> indexByKey = new(StringComparer.Ordinal);
+        if (options.UseLibraryIndex && indexStore is not null && !options.ForceFullAnalysis)
+        {
+            index = await indexStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var entry in index.Games)
+            {
+                if (string.IsNullOrWhiteSpace(entry.CanonicalRoot) || string.IsNullOrWhiteSpace(entry.StoreGameId))
+                    continue;
+                indexByKey[$"{entry.Store}:{entry.StoreGameId}:{Normalize(entry.CanonicalRoot)}"] = entry;
+            }
+        }
+
         var discovered = new Dictionary<(uint AppId, string GameRoot),
-            (SteamGame Game, DateTime LastWriteUtc, int DiagnosticIndex)>();
+            (SteamGame Game, DateTime LastWriteUtc, int DiagnosticIndex, IndexedGameEntry? IndexEntry, bool FromCache)>();
+        var cacheHits = 0;
+        var analyzed = 0;
+        var filesVisited = 0;
+        var analysisMs = 0L;
+        var pendingAnalysis = new List<(
+            uint AppId,
+            string Name,
+            string Root,
+            string LibraryKey,
+            string GameRoot,
+            string ManifestPath,
+            long ManifestSize,
+            long ManifestMtimeTicks,
+            bool Installing,
+            string? DiagnosticStateFlags,
+            string? DiagnosticInstallDir,
+            int DiagnosticIndex)>();
+
         foreach (var library in libraries.OrderBy(entry => entry.Key, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -149,47 +220,54 @@ public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
                             library.Key, "Skipped", missingReason));
                         continue;
                     }
-                    var candidates = Directory.Exists(gameRoot) ? executableDetector.Rank(gameRoot, name) : [];
-                    GameOverride? gameOverride = null;
-                    if (overrides is not null) overrides.TryGetValue(appId, out gameOverride);
-                    var selected = SelectCandidate(gameRoot, candidates, gameOverride?.Executable);
-                    var deployment = selected is null
-                        ? ResolveDeploymentWithoutExecutable(gameRoot, gameOverride?.DeploymentDirectory)
-                        : ResolveDeployment(gameRoot, selected.Path, gameOverride?.DeploymentDirectory);
+
+                    var manifestInfo = new FileInfo(manifestPath);
+                    var manifestSize = manifestInfo.Exists ? manifestInfo.Length : 0;
+                    var manifestMtime = manifestInfo.Exists ? manifestInfo.LastWriteTimeUtc.Ticks : 0;
                     var root = roots.FirstOrDefault(r => IsWithin(r, manifestPath)) ?? library.Key;
-                    var nativeLinux = selected is null && Directory.Exists(gameRoot) && HasNativeLinuxExecutable(gameRoot);
-                    var reason = installing ? "Installing: Steam has not completed this app yet." :
-                        nativeLinux ? "Native Linux / unsupported: no Windows executable was detected." :
-                        selected is null ? "No Windows executable found; a Proton prefix or manual executable may become available later." :
-                        gameOverride?.Executable is not null ? "Selected because a persistent manual executable override is configured." :
-                        FormatSelectionReason(selected);
-                    var antiCheat = Directory.Exists(gameRoot) && HasAntiCheat(gameRoot);
-                    var protonPrefix = Path.Combine(steamApps, "compatdata", appId.ToString(), "pfx");
-                    var game = new SteamGame(appId, name, root, library.Key, gameRoot,
-                        protonPrefix, selected?.Path, deployment,
-                        selected?.Confidence ?? DetectionConfidence.None, reason,
-                        Directory.Exists(gameRoot) ? executableDetector.DetectEngine(gameRoot) : GameEngine.Unknown,
-                        candidates, antiCheat, installing ? SteamInstallState.Installing : SteamInstallState.Installed,
-                        nativeLinux, Directory.Exists(protonPrefix));
+                    var key = $"steam:{appId}:{Normalize(gameRoot)}";
+                    var diagnosticIndex = diagnostics.Count;
                     var disposition = installing ? "Installing" : "Included";
                     var diagnosticReason = installing ? "Included while Steam is still downloading or installing it." :
-                        nativeLinux ? "Included as Native Linux / unsupported; no Windows executable was found." :
-                        selected is null ? "Included; no Windows executable was found." : "Included as an installed Steam game.";
-                    var diagnosticIndex = diagnostics.Count;
+                        "Included as an installed Steam game.";
                     diagnostics.Add(Diagnostic(manifestPath, appId, name, installDir, diagnosticStateFlags,
                         library.Key, disposition, diagnosticReason));
-                    var key = (appId, Normalize(gameRoot));
-                    if (discovered.TryGetValue(key, out var duplicate))
+
+                    if (!options.ForceFullAnalysis &&
+                        indexByKey.TryGetValue(key, out var cached) &&
+                        cached.ManifestSize == manifestSize &&
+                        cached.ManifestMtimeUtcTicks == manifestMtime &&
+                        cached.AnalyzerSchemaVersion == GameAnalyzerVersions.SchemaVersion &&
+                        cached.Game is not null &&
+                        Directory.Exists(gameRoot) &&
+                        cached.DirectoryFingerprintHash == GameAnalyzer.ComputeDirectoryFingerprintHash(gameRoot))
                     {
-                        diagnostics[diagnosticIndex] = diagnostics[diagnosticIndex] with
+                        var reused = ApplyOverrides(cached.Game, gameRoot, overrides);
+                        var gameKey = (appId, Normalize(gameRoot));
+                        if (discovered.TryGetValue(gameKey, out var duplicate))
                         {
-                            Disposition = "Duplicate",
-                            Reason = $"Duplicate AppID and canonical installation path; retained {diagnostics[duplicate.DiagnosticIndex].ManifestPath}."
-                        };
+                            diagnostics[diagnosticIndex] = diagnostics[diagnosticIndex] with
+                            {
+                                Disposition = "Duplicate",
+                                Reason = $"Duplicate AppID and canonical installation path; retained {diagnostics[duplicate.DiagnosticIndex].ManifestPath}."
+                            };
+                            continue;
+                        }
+
+                        discovered[gameKey] = (
+                            reused,
+                            File.GetLastWriteTimeUtc(manifestPath),
+                            diagnosticIndex,
+                            cached with { LastVerifiedUtc = DateTimeOffset.UtcNow },
+                            true);
+                        cacheHits++;
+                        includedCounts[library.Key] = includedCounts.GetValueOrDefault(library.Key) + 1;
                         continue;
                     }
-                    discovered[key] = (game, File.GetLastWriteTimeUtc(manifestPath), diagnosticIndex);
-                    includedCounts[library.Key] = includedCounts.GetValueOrDefault(library.Key) + 1;
+
+                    pendingAnalysis.Add((
+                        appId, name, root, library.Key, gameRoot, manifestPath, manifestSize, manifestMtime,
+                        installing, diagnosticStateFlags, installDir, diagnosticIndex));
                 }
                 catch (Exception exception) when (exception is IOException or InvalidDataException or FormatException or UnauthorizedAccessException)
                 {
@@ -198,6 +276,117 @@ public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
                         diagnosticStateFlags, library.Key, "Malformed", exception.Message));
                 }
             }
+        }
+
+        var concurrency = options.AnalysisConcurrency > 0
+            ? options.AnalysisConcurrency
+            : Math.Clamp(Environment.ProcessorCount / 2, 1, 4);
+        using var gate = new SemaphoreSlim(concurrency, concurrency);
+        var analysisTasks = pendingAnalysis.Select(async item =>
+        {
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var analysisStarted = Environment.TickCount64;
+                GameOverride? gameOverride = null;
+                overrides?.TryGetValue(item.AppId, out gameOverride);
+                SteamGame game;
+                IndexedGameEntry indexEntry;
+                if (!Directory.Exists(item.GameRoot))
+                {
+                    var protonPrefix = Path.Combine(Path.Combine(item.LibraryKey, "steamapps"), "compatdata", item.AppId.ToString(), "pfx");
+                    game = new SteamGame(
+                        item.AppId, item.Name, item.Root, item.LibraryKey, item.GameRoot, protonPrefix,
+                        gameOverride?.Executable, gameOverride?.DeploymentDirectory ?? item.GameRoot,
+                        DetectionConfidence.None,
+                        item.Installing ? "Installing: Steam has not completed this app yet." : "Install directory is missing.",
+                        GameEngine.Unknown, [],
+                        RequiresConfirmation: false,
+                        InstallState: item.Installing ? SteamInstallState.Installing : SteamInstallState.Installed,
+                        IsNativeLinux: false,
+                        HasProtonPrefix: Directory.Exists(protonPrefix));
+                    indexEntry = ToIndexEntry(game, item.ManifestPath, item.ManifestSize, item.ManifestMtimeTicks, 0, null);
+                }
+                else
+                {
+                    var analysis = await gameAnalyzer.AnalyzeAsync(
+                        new GameInstall("steam", item.AppId.ToString(), item.Name, item.GameRoot, item.ManifestPath, item.ManifestSize, item.ManifestMtimeTicks),
+                        new GameAnalysisOptions(),
+                        cancellationToken).ConfigureAwait(false);
+                    Interlocked.Add(ref filesVisited, analysis.Fingerprint.FilesVisited);
+                    Interlocked.Add(ref analysisMs, Environment.TickCount64 - analysisStarted);
+                    Interlocked.Increment(ref analyzed);
+
+                    var candidates = analysis.Fingerprint.Executables
+                        .Select(x => new ExecutableCandidate(x.Path, x.Score, x.Confidence, x.Architecture, x.Size, x.Reasons))
+                        .ToArray();
+                    var selected = SelectCandidate(item.GameRoot, candidates, gameOverride?.Executable);
+                    if (selected is null && analysis.PrimaryExecutable is null && candidates.Length > 0 &&
+                        candidates[0].Confidence is DetectionConfidence.Low or DetectionConfidence.None)
+                        selected = candidates[0];
+                    else if (selected is null)
+                        selected = analysis.PrimaryExecutable is null
+                            ? candidates.FirstOrDefault()
+                            : candidates.FirstOrDefault(x => x.Path == analysis.PrimaryExecutable.Path) ?? candidates.FirstOrDefault();
+
+                    var deployment = selected is null
+                        ? ResolveDeploymentWithoutExecutable(item.GameRoot, gameOverride?.DeploymentDirectory)
+                        : ResolveDeployment(item.GameRoot, selected.Path, gameOverride?.DeploymentDirectory);
+                    var nativeLinux = selected is null && analysis.Fingerprint.HasNativeLinuxExecutable;
+                    var antiCheat = analysis.Fingerprint.AntiCheat.RequiresConfirmation;
+                    var protonPrefix = Path.Combine(item.LibraryKey, "steamapps", "compatdata", item.AppId.ToString(), "pfx");
+                    var reason = item.Installing ? "Installing: Steam has not completed this app yet." :
+                        nativeLinux ? "Native Linux / unsupported: no Windows executable was detected." :
+                        selected is null ? "No Windows executable found; a Proton prefix or manual executable may become available later." :
+                        gameOverride?.Executable is not null ? "Selected because a persistent manual executable override is configured." :
+                        analysis.PrimaryExecutable is null && candidates.Length > 1
+                            ? $"Low confidence executable ranking; showing {Math.Min(5, candidates.Length)} candidates."
+                            : FormatSelectionReason(selected);
+                    game = new SteamGame(
+                        item.AppId, item.Name, item.Root, item.LibraryKey, item.GameRoot, protonPrefix,
+                        selected?.Path, deployment, selected?.Confidence ?? DetectionConfidence.None, reason,
+                        analysis.Fingerprint.Engine, candidates, antiCheat,
+                        item.Installing ? SteamInstallState.Installing : SteamInstallState.Installed,
+                        nativeLinux, Directory.Exists(protonPrefix),
+                        Platform: nativeLinux ? GameBinaryPlatform.Linux : GameBinaryPlatform.Windows,
+                        Environment: nativeLinux ? CompatibilityEnvironment.Native : CompatibilityEnvironment.Proton,
+                        IsActionable: !nativeLinux,
+                        UnsupportedReason: nativeLinux
+                            ? "Native Linux / unsupported: no Windows executable was detected."
+                            : null);
+                    indexEntry = ToIndexEntry(
+                        game, item.ManifestPath, item.ManifestSize, item.ManifestMtimeTicks,
+                        analysis.Fingerprint.DirectoryFingerprint.SampleHash, analysis.Fingerprint);
+                }
+
+                return (item, game, indexEntry);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }).ToArray();
+
+        var analyzedGames = await Task.WhenAll(analysisTasks).ConfigureAwait(false);
+        foreach (var (item, game, indexEntry) in analyzedGames)
+        {
+            var gameKey = (item.AppId, Normalize(item.GameRoot));
+            if (discovered.TryGetValue(gameKey, out var duplicate))
+            {
+                diagnostics[item.DiagnosticIndex] = diagnostics[item.DiagnosticIndex] with
+                {
+                    Disposition = "Duplicate",
+                    Reason = $"Duplicate AppID and canonical installation path; retained {diagnostics[duplicate.DiagnosticIndex].ManifestPath}."
+                };
+                continue;
+            }
+
+            var diagnosticReason = item.Installing ? "Included while Steam is still downloading or installing it." :
+                game.IsNativeLinux ? "Included as Native Linux / unsupported; no Windows executable was found." :
+                game.Executable is null ? "Included; no Windows executable was found." : "Included as an installed Steam game.";
+            diagnostics[item.DiagnosticIndex] = diagnostics[item.DiagnosticIndex] with { Reason = diagnosticReason };
+            discovered[gameKey] = (game, File.GetLastWriteTimeUtc(item.ManifestPath), item.DiagnosticIndex, indexEntry, false);
+            includedCounts[item.LibraryKey] = includedCounts.GetValueOrDefault(item.LibraryKey) + 1;
         }
 
         foreach (var library in libraries)
@@ -218,21 +407,60 @@ public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
             .GroupBy(item => item.Game.AppId)
             .Select(group => group.OrderByDescending(item => item.LastWriteUtc)
                 .ThenBy(item => Normalize(item.Game.GameRoot), StringComparer.Ordinal)
-                .First().Game)
+                .First())
             .ToArray();
-        var selectedIdentities = selectedEntries.Select(game => (game.AppId, Normalize(game.GameRoot))).ToHashSet();
+        var selectedIdentities = selectedEntries.Select(entry => (entry.Game.AppId, Normalize(entry.Game.GameRoot))).ToHashSet();
         foreach (var entry in discovered.Where(entry => !selectedIdentities.Contains(entry.Key)))
         {
-            var index = entry.Value.DiagnosticIndex;
-            diagnostics[index] = diagnostics[index] with
+            var diagnosticIndex = entry.Value.DiagnosticIndex;
+            diagnostics[diagnosticIndex] = diagnostics[diagnosticIndex] with
             {
                 Disposition = "Duplicate",
                 Reason = "Duplicate AppID at another canonical installation path; a newer manifest was retained."
             };
         }
+
         var games = selectedEntries
+            .Select(entry => InstalledGame.FromSteamGame(entry.Game))
             .OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        var removed = 0;
+        if (indexStore is not null && options.UseLibraryIndex)
+        {
+            var nextIndex = new LibraryIndexDocument
+            {
+                ScanGeneration = (index?.ScanGeneration ?? 0) + 1,
+                SteamRoots = roots,
+                Libraries = libraries.Keys.Order(StringComparer.Ordinal).ToList(),
+                Warnings = warnings.ToList(),
+                Games = selectedEntries.Select(entry =>
+                {
+                    var indexed = (entry.IndexEntry ?? ToIndexEntry(
+                        entry.Game, null, 0, 0,
+                        entry.FromCache ? entry.IndexEntry?.DirectoryFingerprintHash ?? 0 : GameAnalyzer.ComputeDirectoryFingerprintHash(entry.Game.GameRoot),
+                        null)) with
+                    {
+                        LastVerifiedUtc = DateTimeOffset.UtcNow
+                    };
+                    indexed.Game = ApplyOverrides(entry.Game, entry.Game.GameRoot, overrides);
+                    return indexed;
+                }).ToList()
+            };
+            removed = Math.Max(0, (index?.Games.Count ?? 0) - nextIndex.Games.Count);
+            if (!cancellationToken.IsCancellationRequested)
+                await indexStore.SaveAsync(nextIndex, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        LastMetrics = new IncrementalScanMetrics(
+            manifestCounts.Values.Sum(),
+            cacheHits,
+            analyzed,
+            removed,
+            Environment.TickCount64 - started,
+            analysisMs,
+            filesVisited);
+
         return new ScanResult(
             games,
             roots,
@@ -291,6 +519,57 @@ public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
             result.Add(new(original, canonical, source, exists, readable, deduplicated, skip));
         }
         return result;
+    }
+
+    private static IndexedGameEntry ToIndexEntry(
+        SteamGame game,
+        string? manifestPath,
+        long manifestSize,
+        long manifestMtime,
+        long directoryHash,
+        GameFingerprint? fingerprint) =>
+        new()
+        {
+            Store = "steam",
+            StoreGameId = game.AppId.ToString(),
+            CanonicalRoot = Normalize(game.GameRoot),
+            ManifestPath = manifestPath,
+            ManifestSize = manifestSize,
+            ManifestMtimeUtcTicks = manifestMtime,
+            DirectoryFingerprintHash = directoryHash,
+            AnalyzerSchemaVersion = GameAnalyzerVersions.SchemaVersion,
+            IndexedUtc = DateTimeOffset.UtcNow,
+            LastVerifiedUtc = DateTimeOffset.UtcNow,
+            SelectedExecutable = game.Executable,
+            Engine = game.Engine,
+            Confidence = game.Confidence,
+            HasAntiCheat = game.RequiresConfirmation,
+            IsNativeLinux = game.IsNativeLinux,
+            HasProtonPrefix = game.HasProtonPrefix,
+            ProtonPrefix = game.ProtonPrefix,
+            Game = game
+        };
+
+    private static SteamGame ApplyOverrides(
+        SteamGame game,
+        string gameRoot,
+        IReadOnlyDictionary<uint, GameOverride>? overrides)
+    {
+        if (overrides is null || !overrides.TryGetValue(game.AppId, out var gameOverride))
+            return game;
+        var selected = SelectCandidate(gameRoot, game.Candidates, gameOverride.Executable);
+        var deployment = selected is null
+            ? ResolveDeploymentWithoutExecutable(gameRoot, gameOverride.DeploymentDirectory)
+            : ResolveDeployment(gameRoot, selected.Path, gameOverride.DeploymentDirectory);
+        return game with
+        {
+            Executable = selected?.Path ?? game.Executable,
+            DeploymentDirectory = deployment,
+            Confidence = selected?.Confidence ?? game.Confidence,
+            SelectionReason = gameOverride.Executable is not null
+                ? "Selected because a persistent manual executable override is configured."
+                : game.SelectionReason
+        };
     }
 
     private static IEnumerable<(string Path, SteamRootSource Source)> DefaultRootCandidates()
@@ -387,28 +666,6 @@ public sealed class SteamDiscoveryService(ExecutableDetector executableDetector)
             ? " in the expected game directory"
             : string.Empty;
         return $"Selected because it is the primary {architecture} game executable{location}.";
-    }
-
-    private static bool HasNativeLinuxExecutable(string root)
-    {
-        try
-        {
-            var magic = new byte[4];
-            foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.TopDirectoryOnly))
-            {
-                using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                if (stream.Read(magic) == magic.Length && magic.SequenceEqual(new byte[] { 0x7f, (byte)'E', (byte)'L', (byte)'F' }))
-                    return true;
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
-        return false;
-    }
-
-    private static bool HasAntiCheat(string root)
-    {
-        var markers = new[] { "EasyAntiCheat", "BattlEye", "start_protected_game.exe" };
-        return markers.Any(marker => Directory.Exists(Path.Combine(root, marker)) || File.Exists(Path.Combine(root, marker)));
     }
 
     private static bool IsSteamTool(string name, string installDirectory) =>

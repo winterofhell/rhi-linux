@@ -20,7 +20,7 @@ public sealed partial class MainWindow : Window
     private bool closeRequested;
     private Grid Workspace => this.FindControl<Grid>("WorkspaceGrid") ?? throw new InvalidOperationException("Workspace grid was not loaded.");
     private ComboBox ThemeBox => this.FindControl<ComboBox>("ThemeSelector") ?? throw new InvalidOperationException("Theme selector was not loaded.");
-    private ListBox GamesList => this.FindControl<ListBox>("GameList") ?? throw new InvalidOperationException("Game list was not loaded.");
+    private ListBox? GamesList => this.FindControl<ListBox>("GameList");
     private Button CopyButton => this.FindControl<Button>("CopyLaunchButton") ?? throw new InvalidOperationException("Copy button was not loaded.");
     private TextBlock CopyStatus => this.FindControl<TextBlock>("CopyFeedback") ?? throw new InvalidOperationException("Copy feedback was not loaded.");
     private TextBox SearchInput => this.FindControl<TextBox>("SearchBox") ?? throw new InvalidOperationException("Search box was not loaded.");
@@ -32,8 +32,10 @@ public sealed partial class MainWindow : Window
         this.viewModel = viewModel;
         AvaloniaXamlLoader.Load(this);
         DataContext = viewModel;
+        viewModel.PropertyChanged += ViewModel_PropertyChanged;
         Opened += OnOpened;
         Closing += OnClosing;
+        UpdateWorkspaceColumns();
     }
 
     private async void OnOpened(object? sender, EventArgs eventArgs)
@@ -42,11 +44,32 @@ public sealed partial class MainWindow : Window
         await viewModel.InitializeAsync(operationCancellation.Token);
         Width = Math.Clamp(viewModel.Preferences.WindowWidth, MinWidth, 3840);
         Height = Math.Clamp(viewModel.Preferences.WindowHeight, MinHeight, 2160);
-        Workspace.ColumnDefinitions[0].Width = new GridLength(Math.Clamp(viewModel.Preferences.SidebarWidth, 240, 520));
+        UpdateWorkspaceColumns();
         ThemeBox.SelectedIndex = viewModel.Preferences.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         ApplyTheme(viewModel.Preferences.Theme);
-        GamesList.SelectedItem = viewModel.SelectedGame;
+        if (GamesList is not null)
+            GamesList.SelectedItem = viewModel.SelectedGame;
         initialized = true;
+    }
+
+    private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
+    {
+        if (eventArgs.PropertyName is nameof(MainViewModel.ShowLibraryPage) or nameof(MainViewModel.SelectedNavigation))
+            UpdateWorkspaceColumns();
+    }
+
+    private void UpdateWorkspaceColumns()
+    {
+        if (viewModel.ShowLibraryPage)
+        {
+            Workspace.ColumnDefinitions[1].Width = new GridLength(Math.Clamp(viewModel.Preferences.SidebarWidth, 240, 520));
+            Workspace.ColumnDefinitions[2].Width = new GridLength(6);
+        }
+        else
+        {
+            Workspace.ColumnDefinitions[1].Width = new GridLength(0);
+            Workspace.ColumnDefinitions[2].Width = new GridLength(0);
+        }
     }
 
     private async void OnClosing(object? sender, WindowClosingEventArgs eventArgs)
@@ -66,8 +89,10 @@ public sealed partial class MainWindow : Window
 
         viewModel.Preferences.WindowWidth = Width;
         viewModel.Preferences.WindowHeight = Height;
-        viewModel.Preferences.SidebarWidth = Workspace.ColumnDefinitions[0].ActualWidth;
+        if (viewModel.ShowLibraryPage && Workspace.ColumnDefinitions[1].ActualWidth > 0)
+            viewModel.Preferences.SidebarWidth = Workspace.ColumnDefinitions[1].ActualWidth;
         viewModel.Preferences.SelectedAppId = viewModel.SelectedGame?.AppId;
+        viewModel.PropertyChanged -= ViewModel_PropertyChanged;
 
         try
         {
@@ -98,19 +123,65 @@ public sealed partial class MainWindow : Window
         await RefreshViewAsync();
     }
 
+    private void OpenOverview_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.Navigate(MainSection.Overview);
+
+    private void OpenLibrary_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.Navigate(MainSection.Library);
+
+    private void OpenUpdates_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.Navigate(MainSection.Updates);
+
+    private void OpenDiagnostics_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.Navigate(MainSection.Diagnostics);
+
+    private void OpenSettings_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.Navigate(MainSection.Settings);
+
+    private void OpenReadyGames_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.FilterLibraryForReadiness("Ready games");
+
+    private void OpenNeedsAttention_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.FilterLibraryForReadiness("Needs attention");
+
+    private void OpenRecoveryItems_Click(object? sender, RoutedEventArgs eventArgs) =>
+        viewModel.FilterLibraryForReadiness("Recovery required");
+
+    private async void RefreshReadiness_Click(object? sender, RoutedEventArgs eventArgs) =>
+        await viewModel.RefreshReadinessAsync(true);
+
+    private async void CopyReadinessLaunch_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        var value = viewModel.Readiness.LaunchCopyValue;
+        if (string.IsNullOrWhiteSpace(value)) return;
+        var clipboard = GetTopLevel(this)?.Clipboard;
+        if (clipboard is null) return;
+        await clipboard.SetTextAsync(value);
+        viewModel.Readiness.MarkCopied();
+    }
+
+    private void ReviewComponentUpdate_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (sender is not Button { Tag: string installId }) return;
+        viewModel.OpenReadinessForInstall(installId);
+    }
+
     private async Task RefreshViewAsync()
     {
         operationCancellation?.Cancel();
         operationCancellation?.Dispose();
         operationCancellation = new CancellationTokenSource();
         await viewModel.RefreshAsync(operationCancellation.Token);
-        GamesList.SelectedItem = viewModel.SelectedGame;
+        if (GamesList is not null)
+            GamesList.SelectedItem = viewModel.SelectedGame;
     }
 
     private void GameList_SelectionChanged(object? sender, SelectionChangedEventArgs eventArgs)
     {
-        if (!initialized || sender is not ListBox { SelectedItem: SteamGame game } ||
-            DataContext is not MainViewModel currentViewModel || game.AppId == currentViewModel.SelectedGame?.AppId) return;
+        if (!initialized || sender is not ListBox { SelectedItem: InstalledGame game } ||
+            DataContext is not MainViewModel currentViewModel ||
+            string.Equals(game.EffectiveInstallId, currentViewModel.SelectedGame?.EffectiveInstallId, StringComparison.Ordinal))
+            return;
 
         selectionChangeCancellation?.Cancel();
         selectionChangeCancellation?.Dispose();
@@ -121,7 +192,7 @@ public sealed partial class MainWindow : Window
 
     private async Task ChangeSelectedGameAsync(
         MainViewModel currentViewModel,
-        SteamGame game,
+        InstalledGame game,
         CancellationTokenSource cancellation)
     {
         var cancellationToken = cancellation.Token;
@@ -191,13 +262,14 @@ public sealed partial class MainWindow : Window
         {
             Title = "Choose the primary Windows game executable",
             AllowMultiple = false,
-            SuggestedStartLocation = await TryFolderAsync(game.DeploymentDirectory),
+            SuggestedStartLocation = await TryFolderAsync(game.DeploymentDirectory ?? game.GameRoot),
             FileTypeFilter = [new FilePickerFileType("Windows executable") { Patterns = ["*.exe"] }]
         });
         var path = files.FirstOrDefault()?.TryGetLocalPath();
         if (path is null) return;
         await viewModel.SaveOverridesAsync(path, game.DeploymentDirectory);
-        GamesList.SelectedItem = viewModel.SelectedGame;
+        if (GamesList is not null)
+            GamesList.SelectedItem = viewModel.SelectedGame;
     }
 
     private async void ChangeDeploymentFolder_Click(object? sender, RoutedEventArgs eventArgs)
@@ -207,12 +279,13 @@ public sealed partial class MainWindow : Window
         {
             Title = "Choose the game folder for compatibility files",
             AllowMultiple = false,
-            SuggestedStartLocation = await TryFolderAsync(game.DeploymentDirectory)
+            SuggestedStartLocation = await TryFolderAsync(game.DeploymentDirectory ?? game.GameRoot)
         });
         var path = folders.FirstOrDefault()?.TryGetLocalPath();
         if (path is null) return;
         await viewModel.SaveOverridesAsync(game.Executable, path);
-        GamesList.SelectedItem = viewModel.SelectedGame;
+        if (GamesList is not null)
+            GamesList.SelectedItem = viewModel.SelectedGame;
     }
 
     private async void OpenExecutableFolder_Click(object? sender, RoutedEventArgs eventArgs)
@@ -393,6 +466,7 @@ public sealed partial class MainWindow : Window
                 "The plan was discarded because a different game or installation folder is now selected. No files were changed.");
             return;
         }
+        viewModel.AttachRecommendedPlanSummary(plan);
         var dialog = new DeploymentPlanDialog(viewModel, plan);
         await dialog.ShowDialog(this);
     }

@@ -1,0 +1,3 @@
+game:
+  exe: this is : not: valid: yaml: [[[
+    broken

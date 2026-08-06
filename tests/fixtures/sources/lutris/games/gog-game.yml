@@ -1,0 +1,5 @@
+game:
+  exe: Relative.exe
+  prefix: @GAMES@/Lutris/Prefixes/GogGame
+wine:
+  version: wine-ge

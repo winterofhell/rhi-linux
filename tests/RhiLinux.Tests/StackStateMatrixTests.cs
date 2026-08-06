@@ -272,15 +272,15 @@ public sealed class StackStateMatrixTests
     {
         var root = temp.Directory("game");
         var executable = temp.Pe("game/Game.exe");
-        return new(42, "Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"), executable, root,
+        return new SteamGame(42, "Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"), executable, root,
             DetectionConfidence.High, "fixture", GameEngine.Unknown,
             [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["fixture"])]);
     }
 
-    private static SteamGame GameCard(uint appId, string name) =>
-        new(appId, name, "/steam", "/steam", $"/games/{appId}", $"/pfx/{appId}",
+    private static InstalledGame GameCard(uint appId, string name) =>
+        InstalledGame.FromSteamGame(new SteamGame(appId, name, "/steam", "/steam", $"/games/{appId}", $"/pfx/{appId}",
             $"/games/{appId}/Game.exe", $"/games/{appId}", DetectionConfidence.High, "fixture",
-            GameEngine.Unknown, [new($"/games/{appId}/Game.exe", 80, DetectionConfidence.High, PeArchitecture.X64, 1, [])]);
+            GameEngine.Unknown, [new($"/games/{appId}/Game.exe", 80, DetectionConfidence.High, PeArchitecture.X64, 1, [])]));
 
     private static IReadOnlyList<ComponentStatus> Statuses(ComponentHealth health) =>
     [
@@ -298,9 +298,9 @@ public sealed class StackStateMatrixTests
             Lifecycle: ComponentLifecycleState.NotInstalled)
     ];
 
-    private sealed class FixedDiscovery(IReadOnlyList<SteamGame> games) : IGameDiscovery
+    private sealed class FixedDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
     {
-        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken) =>
+        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken) =>
             Task.FromResult(new ScanResult(games, [], [], []));
     }
 
@@ -324,7 +324,7 @@ public sealed class StackStateMatrixTests
     private sealed class SequenceStatusProvider(params IReadOnlyList<ComponentStatus>[] scans) : IComponentStatusProvider
     {
         private int count;
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             var result = scans[Math.Min(count, scans.Length - 1)];
             count++;

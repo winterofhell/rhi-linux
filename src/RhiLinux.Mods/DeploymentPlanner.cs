@@ -31,8 +31,22 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     public static readonly string[] SupportedProxyNames =
         ["dxgi.dll", "winmm.dll", "d3d12.dll", "dbghelp.dll", "version.dll", "wininet.dll", "winhttp.dll"];
 
-    public async Task<DeploymentPlan> BuildRecommendedStackPlanAsync(
+    public Task<DeploymentPlan> BuildRecommendedStackPlanAsync(
         SteamGame game,
+        RecommendedStackArtifacts artifacts,
+        ProxySelectionResult? proxySelection = null,
+        CancellationToken cancellationToken = default) =>
+        BuildRecommendedStackPlanAsync(game.ToDeploymentTarget(), artifacts, proxySelection, cancellationToken);
+
+    public Task<DeploymentPlan> BuildRecommendedStackPlanAsync(
+        InstalledGame game,
+        RecommendedStackArtifacts artifacts,
+        ProxySelectionResult? proxySelection = null,
+        CancellationToken cancellationToken = default) =>
+        BuildRecommendedStackPlanAsync(game.ToDeploymentTarget(), artifacts, proxySelection, cancellationToken);
+
+    public async Task<DeploymentPlan> BuildRecommendedStackPlanAsync(
+        DeploymentTarget game,
         RecommendedStackArtifacts artifacts,
         ProxySelectionResult? proxySelection = null,
         CancellationToken cancellationToken = default)
@@ -172,8 +186,22 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return plan;
     }
 
-    public async Task<DeploymentPlan> BuildInstallPlanAsync(
+    public Task<DeploymentPlan> BuildInstallPlanAsync(
         SteamGame game,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildInstallPlanAsync(game.ToDeploymentTarget(), artifact, proxyName, cancellationToken);
+
+    public Task<DeploymentPlan> BuildInstallPlanAsync(
+        InstalledGame game,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildInstallPlanAsync(game.ToDeploymentTarget(), artifact, proxyName, cancellationToken);
+
+    public async Task<DeploymentPlan> BuildInstallPlanAsync(
+        DeploymentTarget game,
         ComponentArtifact artifact,
         string proxyName = "dxgi.dll",
         CancellationToken cancellationToken = default)
@@ -314,8 +342,22 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return plan;
     }
 
-    public async Task<DeploymentPlan> BuildRemovePlanAsync(
+    public Task<DeploymentPlan> BuildRemovePlanAsync(
         SteamGame game,
+        ComponentKind component,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildRemovePlanAsync(game.ToDeploymentTarget(), component, proxyName, cancellationToken);
+
+    public Task<DeploymentPlan> BuildRemovePlanAsync(
+        InstalledGame game,
+        ComponentKind component,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildRemovePlanAsync(game.ToDeploymentTarget(), component, proxyName, cancellationToken);
+
+    public async Task<DeploymentPlan> BuildRemovePlanAsync(
+        DeploymentTarget game,
         ComponentKind component,
         string proxyName = "dxgi.dll",
         CancellationToken cancellationToken = default)
@@ -404,8 +446,18 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return plan;
     }
 
-    public async Task<DeploymentPlan> BuildRemoveStackPlanAsync(
+    public Task<DeploymentPlan> BuildRemoveStackPlanAsync(
         SteamGame game,
+        CancellationToken cancellationToken = default) =>
+        BuildRemoveStackPlanAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public Task<DeploymentPlan> BuildRemoveStackPlanAsync(
+        InstalledGame game,
+        CancellationToken cancellationToken = default) =>
+        BuildRemoveStackPlanAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public async Task<DeploymentPlan> BuildRemoveStackPlanAsync(
+        DeploymentTarget game,
         CancellationToken cancellationToken = default)
     {
         var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot, cancellationToken);
@@ -426,8 +478,24 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return plan;
     }
 
-    public async Task<DeploymentPlan> BuildRepairPlanAsync(
+    public Task<DeploymentPlan> BuildRepairPlanAsync(
         SteamGame game,
+        ComponentKind component,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildRepairPlanAsync(game.ToDeploymentTarget(), component, artifact, proxyName, cancellationToken);
+
+    public Task<DeploymentPlan> BuildRepairPlanAsync(
+        InstalledGame game,
+        ComponentKind component,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildRepairPlanAsync(game.ToDeploymentTarget(), component, artifact, proxyName, cancellationToken);
+
+    public async Task<DeploymentPlan> BuildRepairPlanAsync(
+        DeploymentTarget game,
         ComponentKind component,
         ComponentArtifact artifact,
         string proxyName = "dxgi.dll",
@@ -481,8 +549,18 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return plan;
     }
 
-    public async Task<DeploymentPlan> BuildRestorePlanAsync(
+    public Task<DeploymentPlan> BuildRestorePlanAsync(
         SteamGame game,
+        CancellationToken cancellationToken = default) =>
+        BuildRestorePlanAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public Task<DeploymentPlan> BuildRestorePlanAsync(
+        InstalledGame game,
+        CancellationToken cancellationToken = default) =>
+        BuildRestorePlanAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public async Task<DeploymentPlan> BuildRestorePlanAsync(
+        DeploymentTarget game,
         CancellationToken cancellationToken = default)
     {
         var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot, cancellationToken);
@@ -521,7 +599,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private static void ConfigureOptiScaler(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         string? version,
         string? templatePath,
         bool enableReShade,
@@ -663,7 +741,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private async Task AddOptiScalerSupportFilesAsync(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         IReadOnlyList<ComponentArtifact>? supportFiles,
         IReadOnlyList<ComponentArtifact> officialArtifacts,
         CancellationToken cancellationToken)
@@ -691,7 +769,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
     private static void AddFinalLayoutVerification(
         DeploymentPlan plan,
-        SteamGame game,
+        DeploymentTarget game,
         RecommendedStackArtifacts artifacts,
         string proxy,
         string coexist,
@@ -723,7 +801,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private static void AddManagedOptiScalerMigrations(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         RecommendedStackArtifacts artifacts)
     {
         if (artifacts.OptiScalerBundle is null || artifacts.OptiScaler is null) return;
@@ -753,7 +831,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         }
     }
 
-    private static bool HasUnparseableManagedOptiScalerIni(SteamGame game, GameManifest manifest)
+    private static bool HasUnparseableManagedOptiScalerIni(DeploymentTarget game, GameManifest manifest)
     {
         var record = manifest.Files.FirstOrDefault(file =>
             file.Component == ComponentKind.OptiScaler &&
@@ -777,7 +855,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         }
     }
 
-    private static bool IsImmutableRuntimeDrift(SteamGame game, ManagedFile file)
+    private static bool IsImmutableRuntimeDrift(DeploymentTarget game, ManagedFile file)
     {
         if (!IsImmutableRuntimeFile(file)) return false;
         var path = Path.Combine(game.GameRoot, file.RelativePath);
@@ -801,7 +879,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
     private static string? RemainingManagedProxyName(
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         IReadOnlyList<ComponentKind> removedComponents)
     {
         var remaining = manifest.Files
@@ -833,7 +911,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private static bool AddStandaloneReShadeRepair(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         string coexistPath)
     {
         if (!File.Exists(coexistPath)) return false;
@@ -912,7 +990,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private static void AddManagedRemoval(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         ManagedFile file,
         RemovalPathOwnership ownership = RemovalPathOwnership.ManagedBySelectedComponent)
     {
@@ -1001,7 +1079,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private async Task AddReplacementAsync(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         ComponentArtifact artifact,
         string target,
         IReadOnlyList<ComponentArtifact> officialArtifacts,
@@ -1112,7 +1190,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private static void AddManagedUpdate(
         DeploymentPlan plan,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         ComponentArtifact artifact,
         string target)
     {
@@ -1150,7 +1228,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
     private static void AddReplacementAfterPlannedMove(
         DeploymentPlan plan,
-        SteamGame game,
+        DeploymentTarget game,
         ComponentArtifact artifact,
         string target)
     {
@@ -1167,13 +1245,13 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             "Update the managed ReShade file after moving it into the coexistence slot.", true, false, false, []);
     }
 
-    private static void ProtectCoexistenceTarget(GameManifest manifest, SteamGame game, string coexist, bool managedCoexist)
+    private static void ProtectCoexistenceTarget(GameManifest manifest, DeploymentTarget game, string coexist, bool managedCoexist)
     {
         if (File.Exists(coexist) && !managedCoexist && !IsOwned(manifest, game, coexist))
             throw new DeploymentConflictException("ReShade64.dll is occupied by an unowned file; coexistence cannot be configured safely.");
     }
 
-    private static string TargetFor(SteamGame game, ComponentArtifact artifact, string proxy) => artifact.Component switch
+    private static string TargetFor(DeploymentTarget game, ComponentArtifact artifact, string proxy) => artifact.Component switch
     {
         ComponentKind.ReShade or ComponentKind.OptiScaler => proxy,
         ComponentKind.RenoDx => Path.Combine(ResolveAddonDirectory(game.DeploymentDirectory, game.GameRoot), artifact.FileName),
@@ -1185,7 +1263,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         .FirstOrDefault(x => x.FileName.Equals("OptiScaler.ini", StringComparison.OrdinalIgnoreCase))?.Path;
 
     private static IReadOnlyList<ComponentArtifact> SelectOptiScalerSupportFiles(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfile profile,
         IReadOnlyList<ComponentArtifact> supportFiles)
     {
@@ -1220,7 +1298,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
     private static void AddOmittedBundleDecisions(
         DeploymentPlan plan,
-        SteamGame game,
+        DeploymentTarget game,
         OptiScalerBundleManifest? bundle,
         IReadOnlyList<ComponentArtifact> selectedSupport)
     {
@@ -1287,18 +1365,18 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         plan.ExpectedComponentStates.Add(new(component, installed));
     }
 
-    private static bool HasValidManagedFile(GameManifest manifest, SteamGame game, ComponentKind component) =>
+    private static bool HasValidManagedFile(GameManifest manifest, DeploymentTarget game, ComponentKind component) =>
         manifest.Files.Where(x => x.Component == component).Any(x =>
         {
             var path = Path.Combine(game.GameRoot, x.RelativePath);
             return File.Exists(path) && HashPath(path).Equals(x.Sha256, StringComparison.OrdinalIgnoreCase);
         });
 
-    private static void EnsureManifestBelongsToGame(GameManifest manifest, SteamGame game)
+    private static void EnsureManifestBelongsToGame(GameManifest manifest, DeploymentTarget game)
     {
-        if (manifest.Files.Count > 0 && manifest.AppId != game.AppId)
+        if (manifest.Files.Count > 0 && !ManifestBelongsToGame(manifest, game))
             throw new DeploymentConflictException(
-                $"The ownership manifest belongs to Steam AppID {manifest.AppId}, not selected AppID {game.AppId}. " +
+                $"The ownership manifest belongs to install ID '{manifest.InstallId}' (Steam AppID {manifest.SteamAppId}), not selected install ID '{game.InstallId.Value}' (Steam AppID {game.SteamAppId}). " +
                 "No managed-file strategy can safely use another game's ownership records.");
         foreach (var file in manifest.Files)
         {
@@ -1307,7 +1385,16 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         }
     }
 
-    private static string ResolveGamePath(SteamGame game, string relativePath)
+    private static bool ManifestBelongsToGame(GameManifest manifest, DeploymentTarget game)
+    {
+        if (!string.IsNullOrWhiteSpace(manifest.InstallId))
+            return string.Equals(manifest.InstallId, game.InstallId.Value, StringComparison.Ordinal);
+        if (manifest.SteamAppId is { } manifestSteam && game.SteamAppId is { } gameSteam)
+            return manifestSteam == gameSteam;
+        return false;
+    }
+
+    private static string ResolveGamePath(DeploymentTarget game, string relativePath)
     {
         if (Path.IsPathRooted(relativePath))
             throw new DeploymentConflictException("The ownership manifest contains an absolute path outside its portable game-relative model.");
@@ -1322,31 +1409,31 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     private static string? VersionOf(GameManifest manifest, ComponentKind component) =>
         manifest.Files.FirstOrDefault(x => x.Component == component)?.Version;
 
-    private static bool ManagedAt(GameManifest manifest, SteamGame game, string path, ComponentKind component) =>
+    private static bool ManagedAt(GameManifest manifest, DeploymentTarget game, string path, ComponentKind component) =>
         ManagedRecordAt(manifest, game, path, component) is not null;
 
     private static ManagedFile? ManagedRecordAt(
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         string path,
         ComponentKind component) =>
         manifest.Files.FirstOrDefault(x => x.Component == component &&
             Path.GetFullPath(Path.Combine(game.GameRoot, x.RelativePath)).Equals(Path.GetFullPath(path), StringComparison.Ordinal));
 
-    private static bool IsOwned(GameManifest manifest, SteamGame game, string path) =>
+    private static bool IsOwned(GameManifest manifest, DeploymentTarget game, string path) =>
         manifest.Files.Any(x => Path.GetFullPath(Path.Combine(game.GameRoot, x.RelativePath))
             .Equals(Path.GetFullPath(path), StringComparison.Ordinal));
 
-    private static void AddCommonWarnings(DeploymentPlan plan, SteamGame game, ProxySelectionResult proxy)
+    private static void AddCommonWarnings(DeploymentPlan plan, DeploymentTarget game, ProxySelectionResult proxy)
     {
         if (game.RequiresConfirmation)
             plan.Warnings.Add("Anti-cheat files were detected. Explicit compatibility confirmation is required.");
     }
 
-    private static void AddManifest(DeploymentPlan plan, SteamGame game) => plan.Operations.Add(new(
+    private static void AddManifest(DeploymentPlan plan, DeploymentTarget game) => plan.Operations.Add(new(
         DeploymentOperationType.WriteManifest, Path.Combine(game.GameRoot, ".rhi-linux", "manifest.json")));
 
-    private static bool ManagedReShadePresetMissing(SteamGame game, StackSnapshot snapshot)
+    private static bool ManagedReShadePresetMissing(DeploymentTarget game, StackSnapshot snapshot)
     {
         var reshade = snapshot.ReportFor(ComponentKind.ReShade);
         if (reshade is null) return false;
@@ -1362,16 +1449,17 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return !File.Exists(ReShadePresetService.CleanPresetPath(game));
     }
 
-    private static DeploymentPlan NewPlan(SteamGame game, string action) => new()
+    private static DeploymentPlan NewPlan(DeploymentTarget game, string action) => new()
     {
         Id = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}",
-        AppId = game.AppId,
+        InstallId = game.InstallId.Value,
+        SteamAppId = game.SteamAppId,
         GameRoot = game.GameRoot,
         DeploymentDirectory = game.DeploymentDirectory,
         Action = action
     };
 
-    private static void ValidateBundle(SteamGame game, RecommendedStackArtifacts artifacts)
+    private static void ValidateBundle(DeploymentTarget game, RecommendedStackArtifacts artifacts)
     {
         if (artifacts.ReShade is null && artifacts.RenoDx is null && artifacts.OptiScaler is null)
             throw new InvalidOperationException("No component was selected for installation.");
@@ -1397,7 +1485,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
 
     private static DeploymentConflictException BuildProxyConflict(
         ProxySelectionResult selection,
-        SteamGame game,
+        DeploymentTarget game,
         ComponentKind component)
     {
         var lines = new List<string>
@@ -1416,7 +1504,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         return new DeploymentConflictException(string.Join(Environment.NewLine, lines));
     }
 
-    private static void ValidateArtifact(SteamGame game, ComponentArtifact artifact)
+    private static void ValidateArtifact(DeploymentTarget game, ComponentArtifact artifact)
     {
         if (!File.Exists(artifact.Path)) throw new FileNotFoundException("Artifact does not exist.", artifact.Path);
         var extension = Path.GetExtension(artifact.FileName);
@@ -1440,7 +1528,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                 $"{artifact.Component} payload architecture is {artifactArchitecture}, but the selected game is {gameArchitecture}.");
     }
 
-    private static PeArchitecture SelectedArchitecture(SteamGame game)
+    private static PeArchitecture SelectedArchitecture(DeploymentTarget game)
     {
         var candidate = game.Candidates.FirstOrDefault(item => game.Executable is not null &&
             Path.GetFullPath(item.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal));
@@ -1468,7 +1556,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     }
 
     private static bool TryGetTrustedBackup(
-        SteamGame game,
+        DeploymentTarget game,
         ManagedFile file,
         out string? backupPath,
         out string? error)

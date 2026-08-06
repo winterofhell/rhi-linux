@@ -47,18 +47,38 @@ public sealed class ProxyDiagnosticsService(GameProfileCatalog? profiles = null)
     private readonly GameProfileCatalog profiles = profiles ?? new GameProfileCatalog();
     private readonly TargetFileClassifier targetFileClassifier = new(profiles ?? new GameProfileCatalog());
 
-    public async Task<ProxySelectionResult> DiagnoseAsync(SteamGame game, CancellationToken cancellationToken = default)
+    public Task<ProxySelectionResult> DiagnoseAsync(SteamGame game, CancellationToken cancellationToken = default) =>
+        DiagnoseAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public Task<ProxySelectionResult> DiagnoseAsync(InstalledGame game, CancellationToken cancellationToken = default) =>
+        DiagnoseAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public async Task<ProxySelectionResult> DiagnoseAsync(DeploymentTarget game, CancellationToken cancellationToken = default)
         => await DiagnoseAsync(game, null, null, cancellationToken);
 
-    public async Task<ProxySelectionResult> DiagnoseAsync(
+    public Task<ProxySelectionResult> DiagnoseAsync(
         SteamGame game,
+        ComponentKind desiredComponent,
+        IReadOnlyList<ComponentArtifact> officialArtifacts,
+        CancellationToken cancellationToken = default) =>
+        DiagnoseAsync(game.ToDeploymentTarget(), desiredComponent, officialArtifacts, cancellationToken);
+
+    public Task<ProxySelectionResult> DiagnoseAsync(
+        InstalledGame game,
+        ComponentKind desiredComponent,
+        IReadOnlyList<ComponentArtifact> officialArtifacts,
+        CancellationToken cancellationToken = default) =>
+        DiagnoseAsync(game.ToDeploymentTarget(), desiredComponent, officialArtifacts, cancellationToken);
+
+    public async Task<ProxySelectionResult> DiagnoseAsync(
+        DeploymentTarget game,
         ComponentKind desiredComponent,
         IReadOnlyList<ComponentArtifact> officialArtifacts,
         CancellationToken cancellationToken = default)
         => await DiagnoseAsync(game, (ComponentKind?)desiredComponent, officialArtifacts, cancellationToken);
 
     private async Task<ProxySelectionResult> DiagnoseAsync(
-        SteamGame game,
+        DeploymentTarget game,
         ComponentKind? desiredComponent,
         IReadOnlyList<ComponentArtifact>? officialArtifacts,
         CancellationToken cancellationToken)
@@ -114,7 +134,7 @@ public sealed class ProxyDiagnosticsService(GameProfileCatalog? profiles = null)
     }
 
     private async Task<ProxyCandidateDiagnostic> ClassifyAsync(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfile profile,
         GameManifest manifest,
         string proxyName,

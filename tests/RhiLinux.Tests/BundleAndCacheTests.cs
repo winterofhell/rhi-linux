@@ -200,7 +200,8 @@ public sealed class BundleAndCacheTests
         Directory.CreateDirectory(Path.GetDirectoryName(state)!);
         await File.WriteAllTextAsync(state, JsonSerializer.Serialize(new GameManifest
         {
-            AppId = 42,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             Files = [new(Path.GetRelativePath(gameRoot, patcher), ComponentKind.OptiPatcher, patcherHash, "legacy", null, null)]
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
         var ini = temp.File("stage/OptiScaler.ini", "[Plugins]\nLoadReshade=false\nLoadAsiPlugins=false\n");

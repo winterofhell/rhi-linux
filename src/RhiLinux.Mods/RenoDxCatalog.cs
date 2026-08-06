@@ -383,6 +383,13 @@ public sealed class RenoDxGameMatcher
         SteamGame game,
         GameProfileMatch profile,
         RenoDxCatalogIndex catalog,
+        RemoteManifestCatalog? remote) =>
+        Resolve(game.ToDeploymentTarget(), profile, catalog, remote);
+
+    public RenoDxMatchResult Resolve(
+        DeploymentTarget game,
+        GameProfileMatch profile,
+        RenoDxCatalogIndex catalog,
         RemoteManifestCatalog? remote)
     {
         if (game.RequiresConfirmation)
@@ -402,16 +409,16 @@ public sealed class RenoDxGameMatcher
             .ToArray();
         var normalizedTitle = RenoDxIdentity.NormalizeKey(game.Name);
 
-        if (remote is not null)
+        if (remote is not null && game.SteamAppId is { } steamAppId)
         {
-            var appIdNames = remote.SteamAppIds.Where(entry => entry.Value == game.AppId).Select(entry => entry.Key).ToArray();
+            var appIdNames = remote.SteamAppIds.Where(entry => entry.Value == steamAppId).Select(entry => entry.Key).ToArray();
             if (appIdNames.Length > 1)
                 return Ambiguous("remote-appid-ambiguous",
                     appIdNames.Select(name => CandidateFromName(catalog, name, RenoDxMatchType.ExactAppId, 1.0,
-                        new RenoDxMatchEvidence("steam-appid", $"Remote manifest maps AppID {game.AppId} to '{name}'", 1))).Where(x => x is not null).Cast<RenoDxMatchCandidate>().ToArray());
+                        new RenoDxMatchEvidence("steam-appid", $"Remote manifest maps AppID {steamAppId} to '{name}'", 1))).Where(x => x is not null).Cast<RenoDxMatchCandidate>().ToArray());
             if (appIdNames.Length == 1 &&
                 TryFinish(catalog, appIdNames[0], RenoDxMatchType.ExactAppId, 1.0, game, architectureDecision,
-                    [new("steam-appid", $"Remote manifest Steam AppID {game.AppId}", 1)], remote) is { } appIdMatch)
+                    [new("steam-appid", $"Remote manifest Steam AppID {steamAppId}", 1)], remote) is { } appIdMatch)
                 return appIdMatch;
         }
 
@@ -499,7 +506,7 @@ public sealed class RenoDxGameMatcher
     }
 
     private static RenoDxMatchResult? TryEngineFallback(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfileMatch profile,
         RenoDxCatalogIndex catalog,
         ArchitectureDecision architectureDecision,
@@ -531,7 +538,7 @@ public sealed class RenoDxGameMatcher
             evidence, remote, true);
     }
 
-    private static bool HasSupportingSignal(RenoDxMatchCandidate candidate, SteamGame game)
+    private static bool HasSupportingSignal(RenoDxMatchCandidate candidate, DeploymentTarget game)
     {
         var executableStem = game.Executable is null ? null : Path.GetFileNameWithoutExtension(game.Executable);
         var directory = Path.GetFileName(game.GameRoot.TrimEnd(Path.DirectorySeparatorChar));
@@ -615,7 +622,7 @@ public sealed class RenoDxGameMatcher
         string canonicalName,
         RenoDxMatchType type,
         double confidence,
-        SteamGame game,
+        DeploymentTarget game,
         ArchitectureDecision architectureDecision,
         IReadOnlyList<RenoDxMatchEvidence> evidence,
         RemoteManifestCatalog? remote)
@@ -631,7 +638,7 @@ public sealed class RenoDxGameMatcher
         RenoDxCatalogEntry entry,
         RenoDxMatchType type,
         double confidence,
-        SteamGame game,
+        DeploymentTarget game,
         ArchitectureDecision architectureDecision,
         IReadOnlyList<RenoDxMatchEvidence> evidence,
         RemoteManifestCatalog? remote,
@@ -746,7 +753,7 @@ public sealed class RenoDxGameMatcher
     }
 
     private static RenoDxMatchResult FromBuiltIn(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfileMatch profile,
         RenoDxSource source,
         RenoDxMatchType type,
@@ -777,7 +784,7 @@ public sealed class RenoDxGameMatcher
     }
 
     private static RenoDxMatchResult BuildBuiltIn(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfileMatch profile,
         RenoDxSource source,
         RenoDxMatchType type,
@@ -793,7 +800,7 @@ public sealed class RenoDxGameMatcher
                 : ArtifactSupportKind.ExecutableOrAliasProfile;
         var selection = new ArtifactSelection(ComponentKind.RenoDx, source.Version, source.Url, source.Version,
             Path.GetFileName(source.Url.LocalPath), source.Architecture,
-            source.IsGameSpecific && profile.ExactAppId ? game.AppId : null,
+            source.IsGameSpecific && profile.ExactAppId ? game.SteamAppId : null,
             source.FileName, null, ArtifactArchiveKind.None, GameProfile: profile.Profile.Id, Support: support,
             SourceValidatedByOfficialMetadata: true);
         return new(type, 1, null, selection, compatibility, evidence, [], suggestedExecutable, source.Architecture,
@@ -804,7 +811,7 @@ public sealed class RenoDxGameMatcher
         RenoDxCatalogEntry entry,
         RenoDxMatchType type,
         double confidence,
-        SteamGame game,
+        DeploymentTarget game,
         IReadOnlyList<RenoDxMatchEvidence> evidence,
         RemoteManifestCatalog? remote,
         bool usedEngineFallback,
@@ -835,7 +842,7 @@ public sealed class RenoDxGameMatcher
                 : RenoDxCompatibilityState.GenericUnrealAddonAvailable
             : compatibility;
         var selection = new ArtifactSelection(ComponentKind.RenoDx, "snapshot", source, "snapshot", fileName,
-            addonArchitecture, effectiveEngineFallback ? null : game.AppId, fileName, null,
+            addonArchitecture, effectiveEngineFallback ? null : game.SteamAppId, fileName, null,
             ArtifactArchiveKind.None, GameProfile: RenoDxIdentity.NormalizeKey(entry.CanonicalName), Support: support,
             SourceValidatedByOfficialMetadata: true);
         return new(effectiveEngineFallback ? RenoDxMatchType.EngineFallback : type, confidence, entry, selection,
@@ -871,7 +878,7 @@ public sealed class RenoDxGameMatcher
         }
     }
 
-    private static ArchitectureDecision DecideArchitecture(SteamGame game, RenoDxCatalogEntry? entry)
+    private static ArchitectureDecision DecideArchitecture(DeploymentTarget game, RenoDxCatalogEntry? entry)
     {
         var selected = game.Candidates.FirstOrDefault(item => game.Executable is not null &&
             Path.GetFullPath(item.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal))

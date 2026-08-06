@@ -35,8 +35,16 @@ public sealed class TargetFileClassifier(GameProfileCatalog? profiles = null)
 {
     private readonly GameProfileCatalog profiles = profiles ?? new GameProfileCatalog();
 
-    public async Task<TargetFileDiagnostic> ClassifyAsync(
+    public Task<TargetFileDiagnostic> ClassifyAsync(
         SteamGame game,
+        GameManifest manifest,
+        string target,
+        IReadOnlyList<ComponentArtifact>? officialArtifacts = null,
+        CancellationToken cancellationToken = default) =>
+        ClassifyAsync(game.ToDeploymentTarget(), manifest, target, officialArtifacts, cancellationToken);
+
+    public async Task<TargetFileDiagnostic> ClassifyAsync(
+        DeploymentTarget game,
         GameManifest manifest,
         string target,
         IReadOnlyList<ComponentArtifact>? officialArtifacts = null,
@@ -140,7 +148,7 @@ public sealed class TargetFileClassifier(GameProfileCatalog? profiles = null)
         _ => TargetFileClassification.UnknownForeignFile
     };
 
-    private static string? FindMatchingBackup(SteamGame game, string relative, string hash)
+    private static string? FindMatchingBackup(DeploymentTarget game, string relative, string hash)
     {
         var backupRoot = Path.Combine(game.GameRoot, ".rhi-linux", "backups");
         if (!Directory.Exists(backupRoot)) return null;

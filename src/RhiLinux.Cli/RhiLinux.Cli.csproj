@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="../RhiLinux.Core/RhiLinux.Core.csproj" />
     <ProjectReference Include="../RhiLinux.Steam/RhiLinux.Steam.csproj" />
+    <ProjectReference Include="../RhiLinux.Sources/RhiLinux.Sources.csproj" />
     <ProjectReference Include="../RhiLinux.Mods/RhiLinux.Mods.csproj" />
   </ItemGroup>
 </Project>

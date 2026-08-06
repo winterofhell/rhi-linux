@@ -7,6 +7,151 @@ namespace RhiLinux.Tests;
 public sealed class GuiViewModelTests
 {
     [Fact]
+    public async Task FiltersByStoreAndLauncherBadges()
+    {
+        var discovery = new FakeDiscovery(
+        [
+            Game(10, "Steam Game") with { Store = GameStore.Steam, PrimaryLauncher = GameLauncher.Steam, ExternalId = "10" },
+            Game(20, "Heroic Epic") with { Store = GameStore.Epic, PrimaryLauncher = GameLauncher.Heroic, ExternalId = "Control" },
+            Game(25, "Legendary Epic") with { Store = GameStore.Epic, PrimaryLauncher = GameLauncher.Legendary, ExternalId = "Control" },
+            Game(28, "Minigalaxy Gog") with { Store = GameStore.Gog, PrimaryLauncher = GameLauncher.Minigalaxy, ExternalId = "456" },
+            Game(30, "Lutris Gog") with { Store = GameStore.Gog, PrimaryLauncher = GameLauncher.Lutris, ExternalId = "123", IsActionable = false, UnsupportedReason = "Native" , Platform = GameBinaryPlatform.Linux }
+        ]);
+        var viewModel = Create(discovery);
+        await viewModel.InitializeAsync();
+
+        viewModel.LibraryFilter = "Heroic";
+        Assert.Equal("Heroic Epic", Assert.Single(viewModel.FilteredGames).Name);
+        viewModel.LibraryFilter = "Legendary";
+        Assert.Equal("Legendary Epic", Assert.Single(viewModel.FilteredGames).Name);
+        viewModel.LibraryFilter = "Minigalaxy";
+        Assert.Equal("Minigalaxy Gog", Assert.Single(viewModel.FilteredGames).Name);
+        viewModel.LibraryFilter = "GOG";
+        Assert.Equal(2, viewModel.FilteredGames.Count);
+        viewModel.LibraryFilter = "Native/unsupported";
+        Assert.Equal("Lutris Gog", Assert.Single(viewModel.FilteredGames).Name);
+        Assert.Contains("GOG", viewModel.FilteredGames[0].IdentitySummary, StringComparison.Ordinal);
+        Assert.Contains("Lutris", viewModel.FilteredGames[0].IdentitySummary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NavigationSelectsExactlyOnePageAndPreservesStateAcrossRefresh()
+    {
+        var discovery = new FakeDiscovery([Game(10, "First"), Game(20, "Second")]);
+        var viewModel = Create(discovery);
+        await viewModel.InitializeAsync();
+        var scansAfterInit = discovery.ScanCount;
+
+        viewModel.Navigate(MainSection.Overview);
+        Assert.Equal(MainSection.Overview, viewModel.SelectedSection);
+        Assert.True(viewModel.ShowOverviewPage);
+        Assert.False(viewModel.ShowLibraryPage);
+        Assert.False(viewModel.ShowUpdatesPage);
+        Assert.False(viewModel.ShowDiagnosticsPage);
+        Assert.False(viewModel.ShowSettingsPage);
+
+        viewModel.Navigate(MainSection.Updates);
+        Assert.True(viewModel.ShowUpdatesPage);
+        Assert.False(viewModel.ShowLibraryPage);
+        Assert.True(viewModel.UpdatesIsEmpty || viewModel.UpdatesIsUnavailable || viewModel.UpdatesHasAvailable || viewModel.UpdatesIsLoading || viewModel.UpdatesIsOffline);
+
+        viewModel.Navigate(MainSection.Diagnostics);
+        Assert.True(viewModel.ShowDiagnosticsPage);
+        Assert.False(viewModel.ShowOverviewPage);
+
+        viewModel.Navigate(MainSection.Settings);
+        Assert.True(viewModel.ShowSettingsPage);
+        Assert.False(viewModel.ShowDiagnosticsPage);
+
+        viewModel.Navigate(MainSection.Library);
+        Assert.True(viewModel.ShowLibraryPage);
+        Assert.False(viewModel.ShowSettingsPage);
+
+        viewModel.LibraryFilter = "Steam";
+        viewModel.Navigate(MainSection.Overview);
+        await viewModel.RefreshAsync();
+        Assert.Equal(MainSection.Overview, viewModel.SelectedSection);
+        Assert.Equal("Steam", viewModel.LibraryFilter);
+        Assert.True(discovery.ScanCount > scansAfterInit);
+        Assert.False(viewModel.ShowWelcome);
+        Assert.False(viewModel.ShowNoGames);
+    }
+
+    [Fact]
+    public async Task FilterChangesDoNotTriggerSourceScanAndSurviveLibraryUpdates()
+    {
+        var discovery = new FakeDiscovery([Game(10, "Steam Game"), Game(20, "Heroic Epic") with
+        {
+            Store = GameStore.Epic,
+            PrimaryLauncher = GameLauncher.Heroic,
+            ExternalId = "Control"
+        }]);
+        var viewModel = Create(discovery);
+        await viewModel.InitializeAsync();
+        var scansAfterInit = discovery.ScanCount;
+        viewModel.Navigate(MainSection.Diagnostics);
+
+        foreach (var filter in new[]
+                 {
+                     "All", "Steam", "Epic", "GOG", "Amazon", "Heroic", "Legendary", "Lutris", "Bottles",
+                     "Minigalaxy", "Manual"
+                 })
+        {
+            viewModel.LibraryFilter = filter;
+        }
+
+        Assert.Equal(scansAfterInit, discovery.ScanCount);
+        Assert.Equal(MainSection.Diagnostics, viewModel.SelectedSection);
+
+        discovery.Games = [Game(10, "Steam Game updated"), Game(30, "Third")];
+        await viewModel.RefreshAsync();
+        Assert.Equal(MainSection.Diagnostics, viewModel.SelectedSection);
+        Assert.Equal("Manual", viewModel.LibraryFilter);
+    }
+
+    [Fact]
+    public async Task ProviderTogglePersistsAndSchedulesRefresh()
+    {
+        var discovery = new FakeDiscovery([Game(10, "Steam Game")]);
+        var preferences = new MemoryPreferencesStore(new UiPreferences { EnableHeroic = true, ScanAllSources = true });
+        var viewModel = Create(discovery, preferences);
+        await viewModel.InitializeAsync();
+        var scansAfterInit = discovery.ScanCount;
+
+        viewModel.EnableHeroic = false;
+        Assert.False(preferences.Saved?.EnableHeroic);
+        await Task.Delay(400);
+        Assert.True(discovery.ScanCount > scansAfterInit);
+
+        var scansAfterDisable = discovery.ScanCount;
+        viewModel.EnableLutris = false;
+        Assert.False(preferences.Saved?.EnableLutris);
+        await Task.Delay(400);
+        Assert.True(discovery.ScanCount > scansAfterDisable);
+
+        viewModel.EnableHeroic = true;
+        Assert.True(preferences.Saved?.EnableHeroic);
+    }
+
+    [Fact]
+    public async Task EmptyLibraryShowsOverviewWithoutOverlappingLibraryEmptyState()
+    {
+        var viewModel = Create(new FakeDiscovery([]));
+        await viewModel.InitializeAsync();
+
+        viewModel.Navigate(MainSection.Overview);
+        Assert.True(viewModel.ShowOverviewPage);
+        Assert.False(viewModel.ShowNoGames);
+        Assert.False(viewModel.ShowWelcome);
+        Assert.Equal(0, viewModel.OverviewGameCount);
+        Assert.Contains("0 games", viewModel.OverviewSummary, StringComparison.Ordinal);
+
+        viewModel.Navigate(MainSection.Library);
+        Assert.True(viewModel.ShowNoGames);
+        Assert.False(viewModel.ShowOverviewPage);
+    }
+
+    [Fact]
     public async Task FiltersByNameAppIdAndEngine()
     {
         var discovery = new FakeDiscovery([Game(10, "Unreal Quest", GameEngine.Unreal), Game(20, "Small World", GameEngine.Unity)]);
@@ -40,7 +185,7 @@ public sealed class GuiViewModelTests
     [Fact]
     public async Task StartupReconcilesStalePersistedGameList()
     {
-        var stale = Game(10, "Uninstalled");
+        var stale = PersistedGameEntry.FromInstalledGame(Game(10, "Uninstalled"));
         var current = Game(20, "Current");
         var stateStore = new MemoryStateStore(new ApplicationState { DiscoveredGames = [stale] });
         var viewModel = new MainViewModel(new FakeDiscovery([current]), new FakeStatusProvider(), stateStore,
@@ -49,7 +194,7 @@ public sealed class GuiViewModelTests
         await viewModel.InitializeAsync();
 
         Assert.Equal(20u, Assert.Single(viewModel.Games).AppId);
-        Assert.Equal(20u, Assert.Single(stateStore.State.DiscoveredGames).AppId);
+        Assert.Equal(20u, Assert.Single(stateStore.State.DiscoveredGames).SteamAppId);
         Assert.Equal(20u, viewModel.SelectedGame?.AppId);
     }
 
@@ -84,7 +229,7 @@ public sealed class GuiViewModelTests
             Executable = null,
             Confidence = DetectionConfidence.None,
             SelectionReason = "No Windows executable found; a Proton prefix may become available later.",
-            HasProtonPrefix = false
+            Prefix = null
         };
         var discovery = new FakeDiscovery([]);
         var viewModel = Create(discovery);
@@ -352,9 +497,10 @@ public sealed class GuiViewModelTests
         var plan = new DeploymentPlan
         {
             Id = "fixture",
-            AppId = 10,
+            InstallId = first.EffectiveInstallId,
+            SteamAppId = first.SteamAppId,
             GameRoot = first.GameRoot,
-            DeploymentDirectory = first.DeploymentDirectory,
+            DeploymentDirectory = first.DeploymentDirectory ?? first.GameRoot,
             Action = "install RenoDx",
             ExpectedComponentStates = [new(ComponentKind.RenoDx, true)]
         };
@@ -400,9 +546,10 @@ public sealed class GuiViewModelTests
         var plan = new DeploymentPlan
         {
             Id = "fixture",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
-            DeploymentDirectory = game.DeploymentDirectory,
+            DeploymentDirectory = game.DeploymentDirectory ?? game.GameRoot,
             Action = "install RenoDx",
             ExpectedComponentStates = [new(ComponentKind.RenoDx, true)]
         };
@@ -444,9 +591,10 @@ public sealed class GuiViewModelTests
         var plan = new DeploymentPlan
         {
             Id = "fixture",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
-            DeploymentDirectory = game.DeploymentDirectory,
+            DeploymentDirectory = game.DeploymentDirectory ?? game.GameRoot,
             Action = "install RenoDx",
             ExpectedComponentStates = [new(ComponentKind.RenoDx, true)]
         };
@@ -675,9 +823,10 @@ public sealed class GuiViewModelTests
         var plan = new DeploymentPlan
         {
             Id = "fixture",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
-            DeploymentDirectory = game.DeploymentDirectory,
+            DeploymentDirectory = game.DeploymentDirectory ?? game.GameRoot,
             Action = "remove ReShade",
             ExpectedComponentStates = [new(ComponentKind.ReShade, false)]
         };
@@ -775,7 +924,7 @@ public sealed class GuiViewModelTests
     public void DeploymentDialogConfirmsOneClickActionAndReportsRollback()
     {
         var gameRoot = Path.Combine(Path.GetTempPath(), "gui-plan-fixture");
-        var plan = new DeploymentPlan { Id = "test", AppId = 10, GameRoot = gameRoot, DeploymentDirectory = gameRoot, Action = "remove RenoDX" };
+        var plan = new DeploymentPlan { Id = "test", InstallId = "steam:10:legacy", SteamAppId = 10, GameRoot = gameRoot, DeploymentDirectory = gameRoot, Action = "remove RenoDX" };
         plan.Operations.Add(new(DeploymentOperationType.DeleteManagedFile, Path.Combine(gameRoot, "managed.dll")));
         var viewModel = new DeploymentPlanDialogViewModel(plan);
 
@@ -792,7 +941,8 @@ public sealed class GuiViewModelTests
         var repairPlan = new DeploymentPlan
         {
             Id = "repair",
-            AppId = 10,
+            InstallId = "steam:10:legacy",
+            SteamAppId = 10,
             GameRoot = gameRoot,
             DeploymentDirectory = gameRoot,
             Action = "install recommended setup",
@@ -828,6 +978,7 @@ public sealed class GuiViewModelTests
 
         Assert.Equal("remember", preferences.Saved?.SearchText);
         Assert.Equal(42u, preferences.Saved?.SelectedAppId);
+        Assert.False(string.IsNullOrWhiteSpace(preferences.Saved?.SelectedInstallId));
     }
 
     [Fact]
@@ -911,22 +1062,24 @@ public sealed class GuiViewModelTests
         using var temp = new TestDirectory();
         var root = temp.Directory("current-game");
         var executable = temp.Pe("current-game/Game.exe");
-        var current = new SteamGame(20, "Current", temp.Path, temp.Path, root,
+        var current = InstalledGame.FromSteamGame(new SteamGame(20, "Current", temp.Path, temp.Path, root,
             temp.Combine("compatdata", "20", "pfx"), executable, root, DetectionConfidence.High,
-            "fixture", GameEngine.Unknown, []);
+            "fixture", GameEngine.Unknown, []));
         var currentBlob = new string('c', 64);
         var manifestPath = temp.Combine("current-game", ".rhi-linux", "manifest.json");
         Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
         await File.WriteAllTextAsync(manifestPath, System.Text.Json.JsonSerializer.Serialize(new GameManifest
         {
-            AppId = current.AppId,
+            InstallId = current.EffectiveInstallId,
+            SteamAppId = current.SteamAppId,
             Files = [new("managed.dll", ComponentKind.OptiScaler, new string('d', 64), "1", null, null,
                 SourceBlobSha256: currentBlob)]
         }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+        var disconnected = Game(10, "Disconnected");
         var state = new ApplicationState
         {
-            DiscoveredGames = [Game(10, "Disconnected")],
-            ArtifactReferencesByAppId = { [10] = [new string('a', 64)] }
+            DiscoveredGames = [PersistedGameEntry.FromInstalledGame(disconnected)],
+            ArtifactReferencesByInstallId = { [disconnected.EffectiveInstallId] = [new string('a', 64)] }
         };
         var store = new MemoryStateStore(state);
         var viewModel = new MainViewModel(new FakeDiscovery([current]), new FakeStatusProvider(), store,
@@ -934,8 +1087,8 @@ public sealed class GuiViewModelTests
 
         await viewModel.InitializeAsync();
 
-        Assert.Equal(new string('a', 64), Assert.Single(store.State.ArtifactReferencesByAppId[10]));
-        Assert.Equal(currentBlob, Assert.Single(store.State.ArtifactReferencesByAppId[20]));
+        Assert.Equal(new string('a', 64), Assert.Single(store.State.ArtifactReferencesByInstallId[disconnected.EffectiveInstallId]));
+        Assert.Equal(currentBlob, Assert.Single(store.State.ArtifactReferencesByInstallId[current.EffectiveInstallId]));
     }
 
     [Fact]
@@ -991,14 +1144,15 @@ public sealed class GuiViewModelTests
     private static ComponentCardViewModel Card(ComponentHealth health, ResolvedArtifact? resolved = null) =>
         new(new ComponentStatus(ComponentKind.RenoDx, health, null, [], "fixture state"), resolved);
     private static DeploymentPlan Plan(
-        SteamGame game,
+        InstalledGame game,
         string action,
         params ComponentStateExpectation[] expectations) => new()
         {
             Id = Guid.NewGuid().ToString("N"),
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
-            DeploymentDirectory = game.DeploymentDirectory,
+            DeploymentDirectory = game.DeploymentDirectory ?? game.GameRoot,
             Action = action,
             ExpectedComponentStates = [.. expectations]
         };
@@ -1018,23 +1172,24 @@ public sealed class GuiViewModelTests
         MemoryPreferencesStore? preferences = null,
         IComponentStatusProvider? statusProvider = null,
         IStackStatusProvider? stackStatusProvider = null,
-        Func<SteamGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder = null) => new(
+        Func<InstalledGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder = null) => new(
         discovery,
         statusProvider ?? new FakeStatusProvider(),
         new MemoryStateStore(),
         preferences ?? new MemoryPreferencesStore(new UiPreferences()),
         stackStatusProvider: stackStatusProvider,
         recommendedPlanBuilder: recommendedPlanBuilder);
-    private static SteamGame Game(uint id, string name, GameEngine engine = GameEngine.Unknown) => new(
-        id, name, "/fixture/steam", "/fixture/library", $"/fixture/game/{id}", $"/fixture/pfx/{id}",
-        $"/fixture/game/{id}/game.exe", $"/fixture/game/{id}", DetectionConfidence.High, "fixture", engine, []);
+    private static InstalledGame Game(uint id, string name, GameEngine engine = GameEngine.Unknown) =>
+        InstalledGame.FromSteamGame(new SteamGame(
+            id, name, "/fixture/steam", "/fixture/library", $"/fixture/game/{id}", $"/fixture/pfx/{id}",
+            $"/fixture/game/{id}/game.exe", $"/fixture/game/{id}", DetectionConfidence.High, "fixture", engine, []));
 
-    private sealed class FakeDiscovery(IReadOnlyList<SteamGame> games) : IGameDiscovery
+    private sealed class FakeDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
     {
-        public IReadOnlyList<SteamGame> Games { get; set; } = games;
+        public IReadOnlyList<InstalledGame> Games { get; set; } = games;
         public Exception? Error { get; set; }
         public int ScanCount { get; private set; }
-        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken)
+        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken)
         {
             ScanCount++;
             return Error is null ? Task.FromResult(new ScanResult(Games, [], [], [])) : Task.FromException<ScanResult>(Error);
@@ -1045,19 +1200,19 @@ public sealed class GuiViewModelTests
     {
         private readonly TaskCompletionSource requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<ScanResult> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken)
+        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken)
         {
             requested.TrySetResult();
             return completion.Task;
         }
         public Task WaitForRequestAsync() => requested.Task;
-        public void Complete(IReadOnlyList<SteamGame> games) => completion.TrySetResult(new(games, [], [], []));
+        public void Complete(IReadOnlyList<InstalledGame> games) => completion.TrySetResult(new(games, [], [], []));
     }
 
     private sealed class FakeStatusProvider : IComponentStatusProvider
     {
         public ComponentHealth ReShadeHealth { get; set; } = ComponentHealth.Available;
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<ComponentStatus>>(
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<ComponentStatus>>(
         [
             new(ComponentKind.ReShade, ReShadeHealth, null, [], ReShadeHealth == ComponentHealth.Available ? "fixture" : "fixture changed"),
             new(ComponentKind.RenoDx, ComponentHealth.Available, null, [], "fixture"),
@@ -1069,7 +1224,7 @@ public sealed class GuiViewModelTests
     {
         private readonly Dictionary<uint, TaskCompletionSource<IReadOnlyList<ComponentStatus>>> pending = [];
 
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             var completion = new TaskCompletionSource<IReadOnlyList<ComponentStatus>>(TaskCreationOptions.RunContinuationsAsynchronously);
             pending[game.AppId] = completion;
@@ -1085,7 +1240,7 @@ public sealed class GuiViewModelTests
     {
         public int Count { get; private set; }
 
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             Count++;
             return Task.FromResult<IReadOnlyList<ComponentStatus>>(new[] { ComponentKind.ReShade, ComponentKind.RenoDx, ComponentKind.OptiScaler }
@@ -1096,7 +1251,7 @@ public sealed class GuiViewModelTests
 
     private sealed class PerGameStatusProvider(IReadOnlyDictionary<uint, ComponentHealth> health) : IComponentStatusProvider
     {
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken) =>
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ComponentStatus>>(new[] { ComponentKind.ReShade, ComponentKind.RenoDx, ComponentKind.OptiScaler }
                 .Select(component => new ComponentStatus(component, health[game.AppId], "fixture", [component + ".dll"], $"game {game.AppId}"))
                 .ToArray());
@@ -1104,7 +1259,7 @@ public sealed class GuiViewModelTests
 
     private sealed class FailingPerGameStatusProvider(uint failingAppId) : IComponentStatusProvider
     {
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken) =>
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken) =>
             game.AppId == failingAppId
                 ? Task.FromException<IReadOnlyList<ComponentStatus>>(new IOException("fixture failure"))
                 : Task.FromResult(Statuses(game.AppId, ComponentHealth.Available));
@@ -1113,7 +1268,7 @@ public sealed class GuiViewModelTests
     private sealed class SequenceStatusProvider(params ComponentHealth[] sequence) : IComponentStatusProvider
     {
         public int Count { get; private set; }
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             var health = sequence[Math.Min(Count, sequence.Length - 1)];
             Count++;
@@ -1125,7 +1280,7 @@ public sealed class GuiViewModelTests
     {
         private int count;
 
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             var result = scans[Math.Min(count, scans.Length - 1)];
             count++;
@@ -1139,7 +1294,7 @@ public sealed class GuiViewModelTests
         private readonly Dictionary<uint, TaskCompletionSource> requested = [];
         private readonly Dictionary<uint, TaskCompletionSource> cancelled = [];
 
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             var completion = new TaskCompletionSource<IReadOnlyList<ComponentStatus>>(TaskCreationOptions.RunContinuationsAsynchronously);
             pending[game.AppId] = completion;
@@ -1162,7 +1317,7 @@ public sealed class GuiViewModelTests
 
     private sealed class JitterStatusProvider : IComponentStatusProvider
     {
-        public async Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public async Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             await Task.Delay(game.AppId == 10 ? 3 : 1, CancellationToken.None);
             return Statuses(game.AppId, ComponentHealth.Available);
@@ -1175,7 +1330,7 @@ public sealed class GuiViewModelTests
         private readonly Dictionary<uint, TaskCompletionSource> requested = [];
         private readonly Dictionary<uint, TaskCompletionSource> cancelled = [];
 
-        public Task<StackStatusReport> GetAsync(SteamGame game, bool allowNetwork, CancellationToken cancellationToken, bool forceRefresh = false)
+        public Task<StackStatusReport> GetAsync(InstalledGame game, bool allowNetwork, CancellationToken cancellationToken, bool forceRefresh = false)
         {
             var completion = new TaskCompletionSource<StackStatusReport>(TaskCreationOptions.RunContinuationsAsynchronously);
             pending[game.AppId] = completion;
@@ -1186,14 +1341,14 @@ public sealed class GuiViewModelTests
 
         public Task WaitForRequestAsync(uint appId) => Get(requested, appId).Task;
         public Task WaitForCancellationAsync(uint appId) => Get(cancelled, appId).Task;
-        public void Complete(SteamGame game, ComponentHealth health, MetadataCheckState metadata, bool cached)
+        public void Complete(InstalledGame game, ComponentHealth health, MetadataCheckState metadata, bool cached)
         {
             Complete(game, Statuses(game.AppId, health), canAcquireReno: false, canAcquireOpti: true,
                 canInstallRecommendedStack: true, metadata: metadata, cached: cached);
         }
 
         public void Complete(
-            SteamGame game,
+            InstalledGame game,
             IReadOnlyList<ComponentStatus> statuses,
             bool canAcquireReno,
             bool canAcquireOpti,
@@ -1289,20 +1444,37 @@ public sealed class GuiViewModelTests
         public Task<UiPreferences> LoadAsync(CancellationToken cancellationToken = default) => Task.FromResult(preferences);
         public Task SaveAsync(UiPreferences preferences, CancellationToken cancellationToken = default)
         {
-            Saved = new UiPreferences
-            {
-                WindowWidth = preferences.WindowWidth,
-                WindowHeight = preferences.WindowHeight,
-                SidebarWidth = preferences.SidebarWidth,
-                SelectedAppId = preferences.SelectedAppId,
-                Theme = preferences.Theme,
-                SearchText = preferences.SearchText,
-                CacheLimitMiB = preferences.CacheLimitMiB,
-                ReduceMotion = preferences.ReduceMotion,
-                CheckForUpdatesAutomatically = preferences.CheckForUpdatesAutomatically,
-                AdditionalSteamLibrary = preferences.AdditionalSteamLibrary
-            };
+            Saved = ClonePreferences(preferences);
             return Task.CompletedTask;
         }
+
+        private static UiPreferences ClonePreferences(UiPreferences preferences) => new()
+        {
+            SchemaVersion = preferences.SchemaVersion,
+            WindowWidth = preferences.WindowWidth,
+            WindowHeight = preferences.WindowHeight,
+            SidebarWidth = preferences.SidebarWidth,
+            SelectedAppId = preferences.SelectedAppId,
+            SelectedInstallId = preferences.SelectedInstallId,
+            Theme = preferences.Theme,
+            SearchText = preferences.SearchText,
+            CacheLimitMiB = preferences.CacheLimitMiB,
+            ReduceMotion = preferences.ReduceMotion,
+            CheckForUpdatesAutomatically = preferences.CheckForUpdatesAutomatically,
+            AdditionalSteamLibrary = preferences.AdditionalSteamLibrary,
+            LibraryFilter = preferences.LibraryFilter,
+            WatchSteamLibraries = preferences.WatchSteamLibraries,
+            ScanAllSources = preferences.ScanAllSources,
+            EnableHeroic = preferences.EnableHeroic,
+            EnableLegendary = preferences.EnableLegendary,
+            EnableLutris = preferences.EnableLutris,
+            EnableBottles = preferences.EnableBottles,
+            EnableMinigalaxy = preferences.EnableMinigalaxy,
+            AutomaticallyEvaluateReadiness = preferences.AutomaticallyEvaluateReadiness,
+            ShowUnsupportedNativeGames = preferences.ShowUnsupportedNativeGames,
+            WarnBeforeAntiCheatDeployments = preferences.WarnBeforeAntiCheatDeployments,
+            PreferExistingManagedVersions = preferences.PreferExistingManagedVersions,
+            RefreshArtifactMetadataOnStartup = preferences.RefreshArtifactMetadataOnStartup
+        };
     }
 }

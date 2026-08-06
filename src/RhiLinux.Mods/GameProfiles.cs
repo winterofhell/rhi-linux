@@ -86,11 +86,20 @@ public sealed class GameProfileCatalog
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    public async Task<GameProfileMatch> MatchAsync(SteamGame game, CancellationToken cancellationToken = default)
+    public Task<GameProfileMatch> MatchAsync(SteamGame game, CancellationToken cancellationToken = default) =>
+        MatchAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public Task<GameProfileMatch> MatchAsync(InstalledGame game, CancellationToken cancellationToken = default) =>
+        MatchAsync(game.ToDeploymentTarget(), cancellationToken);
+
+    public async Task<GameProfileMatch> MatchAsync(DeploymentTarget game, CancellationToken cancellationToken = default)
     {
         var profiles = await LoadAsync(cancellationToken);
-        var exact = profiles.SingleOrDefault(x => x.SteamAppId == game.AppId);
-        if (exact is not null) return EnsureEligible(game, exact, $"Exact Steam AppID {game.AppId}", true);
+        if (game.SteamAppId is { } steamAppId)
+        {
+            var exact = profiles.SingleOrDefault(x => x.SteamAppId == steamAppId);
+            if (exact is not null) return EnsureEligible(game, exact, $"Exact Steam AppID {steamAppId}", true);
+        }
 
         var executableName = game.Executable is null ? null : Path.GetFileNameWithoutExtension(game.Executable);
         var executableMatches = profiles.Where(x => x.SteamAppId is null && x.RenoDxSupport == GameProfileSupport.Supported &&
@@ -129,7 +138,7 @@ public sealed class GameProfileCatalog
         return new(UnsupportedProfile(game), "No exact AppID, alias, executable, or approved engine profile matched", false);
     }
 
-    private static GameProfileMatch EnsureEligible(SteamGame game, GameProfile profile, string reason, bool exactAppId)
+    private static GameProfileMatch EnsureEligible(DeploymentTarget game, GameProfile profile, string reason, bool exactAppId)
     {
         if (game.Executable is null || !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase))
             return new(UnsupportedProfile(game), "No Windows game executable was selected; native Linux games are not eligible", false);
@@ -147,7 +156,7 @@ public sealed class GameProfileCatalog
         return new(profile, reason, exactAppId);
     }
 
-    private static PeArchitecture SelectedArchitecture(SteamGame game)
+    private static PeArchitecture SelectedArchitecture(DeploymentTarget game)
     {
         var candidate = game.Candidates.FirstOrDefault(x => game.Executable is not null &&
             Path.GetFullPath(x.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal))
@@ -199,8 +208,8 @@ public sealed class GameProfileCatalog
         return !Path.IsPathRooted(path) && !normalized.Split('/').Contains("..", StringComparer.Ordinal);
     }
 
-    private static GameProfile UnsupportedProfile(SteamGame game) => new(
-        $"unsupported-{game.AppId}", game.AppId, game.Name, [], null, null, game.Engine, "Unknown",
+    private static GameProfile UnsupportedProfile(DeploymentTarget game) => new(
+        $"unsupported-{game.InstallId.Value}", game.SteamAppId, game.Name, [], null, null, game.Engine, "Unknown",
         DeploymentPlanner.SupportedProxyNames, [], [], null, GameProfileSupport.Unsupported, false,
         new Dictionary<string, string>(), [], ["No supported game profile is available."], null);
 

@@ -133,13 +133,14 @@ public sealed class ComponentDetectionTests
             new(ComponentKind.RenoDx, temp.Pe("stage/renodx-fixture.addon64"), "renodx-fixture.addon64", "1")), false)).Succeeded);
         var manifestPath = Path.Combine(game.GameRoot, ".rhi-linux", "manifest.json");
         var manifest = JsonSerializer.Deserialize<GameManifest>(await File.ReadAllTextAsync(manifestPath), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
-        manifest.AppId = 999;
+        manifest.InstallId = GameInstallId.LegacySteam(999).Value;
+        manifest.SteamAppId = 999;
         await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
         var status = Assert.Single(await new ComponentDetector().DetectAsync(game), x => x.Component == ComponentKind.RenoDx);
 
         Assert.Equal(ComponentHealth.ForeignInstallation, status.Health);
-        Assert.Contains("AppID 999", status.Explanation, StringComparison.Ordinal);
+        Assert.Contains("999", status.Explanation, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -156,7 +157,8 @@ public sealed class ComponentDetectionTests
         var installed = temp.Pe("game/renodx-wrong.addon32", 0x014c);
         temp.File("game/.rhi-linux/manifest.json", JsonSerializer.Serialize(new GameManifest
         {
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             Files =
             [
                 new("renodx-wrong.addon32", ComponentKind.RenoDx,
@@ -226,7 +228,8 @@ public sealed class ComponentDetectionTests
         var game = Game(temp);
         temp.File("game/.rhi-linux/manifest.json", JsonSerializer.Serialize(new GameManifest
         {
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             Files = [new("../outside.addon64", ComponentKind.RenoDx, "00", "1", null, null)]
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 

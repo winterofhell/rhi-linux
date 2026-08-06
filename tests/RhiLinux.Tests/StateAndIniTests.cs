@@ -9,12 +9,12 @@ public sealed class StateAndIniTests
     public async Task StateRoundTripsWithVersionAndOverride()
     {
         using var temp = new TestDirectory(); var store = new JsonStateStore(temp.Combine("data", "state.json"));
-        var state = new ApplicationState(); state.Overrides[42] = new("game.exe", "bin");
-        state.ArtifactReferencesByAppId[42] = [new string('a', 64), new string('b', 64)];
+        var state = new ApplicationState(); state.Overrides["steam:42:legacy"] = new("game.exe", "bin");
+        state.ArtifactReferencesByInstallId["steam:42:legacy"] = [new string('a', 64), new string('b', 64)];
         await store.SaveAsync(state);
         var loaded = await store.LoadAsync();
-        Assert.Equal(ApplicationState.CurrentSchemaVersion, loaded.SchemaVersion); Assert.Equal("game.exe", loaded.Overrides[42].Executable);
-        Assert.Equal(state.ArtifactReferencesByAppId[42], loaded.ArtifactReferencesByAppId[42]);
+        Assert.Equal(ApplicationState.CurrentSchemaVersion, loaded.SchemaVersion); Assert.Equal("game.exe", loaded.Overrides["steam:42:legacy"].Executable);
+        Assert.Equal(state.ArtifactReferencesByInstallId["steam:42:legacy"], loaded.ArtifactReferencesByInstallId["steam:42:legacy"]);
         Assert.Empty(Directory.EnumerateFiles(temp.Combine("data"), "*.tmp"));
     }
 

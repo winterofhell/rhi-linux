@@ -68,7 +68,9 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
             action.Contains("update", StringComparison.Ordinal) ? "Update" :
             action.Contains("restore", StringComparison.Ordinal) ? "Restore" : "Install";
         Title = $"Ready to {ActionButtonText.ToLowerInvariant()}";
-        Subtitle = $"{plan.Action} · Steam AppID {plan.AppId}";
+        Subtitle = plan.SteamAppId is { } steamAppId
+            ? $"{plan.Action} · Steam AppID {steamAppId}"
+            : $"{plan.Action} · {plan.InstallId}";
         CompatibilityMessage = plan.CompatibilityMessage ?? string.Empty;
         Warnings = plan.Warnings;
         Operations = plan.Operations.Select((operation, index) => new PlanOperationViewModel(index + 1, DeploymentExecutor.Describe(operation))).ToArray();

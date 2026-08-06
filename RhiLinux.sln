@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Gui", "src/RhiLinu
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Tests", "tests/RhiLinux.Tests/RhiLinux.Tests.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290006}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhiLinux.Sources", "src/RhiLinux.Sources/RhiLinux.Sources.csproj", "{C1B27CB6-0D38-4EA0-877E-102564290007}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -45,5 +47,9 @@ Global
 		{C1B27CB6-0D38-4EA0-877E-102564290006}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C1B27CB6-0D38-4EA0-877E-102564290006}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C1B27CB6-0D38-4EA0-877E-102564290006}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290007}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290007}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290007}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C1B27CB6-0D38-4EA0-877E-102564290007}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

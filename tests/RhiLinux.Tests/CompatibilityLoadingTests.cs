@@ -43,9 +43,9 @@ public sealed class CompatibilityLoadingTests
         using var temp = new TestDirectory();
         var root = temp.Directory("game");
         var executable = temp.Pe("game/Binaries/Win64/Game.exe");
-        var game = new SteamGame(9002, "Legacy Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"),
+        var game = InstalledGame.FromSteamGame(new SteamGame(9002, "Legacy Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"),
             executable, root, DetectionConfidence.High, "legacy", GameEngine.UnrealLegacy,
-            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["legacy"])]);
+            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["legacy"])]));
         var viewModel = new MainViewModel(
             new StaticDiscovery([game]),
             new StaticStatusProvider(ComponentHealth.Unsupported),
@@ -163,14 +163,14 @@ public sealed class CompatibilityLoadingTests
         Assert.DoesNotContain("Value=\"#FF000000\"", styles, StringComparison.Ordinal);
     }
 
-    private static SteamGame UnrealGame(TestDirectory temp, uint appId, string name)
+    private static InstalledGame UnrealGame(TestDirectory temp, uint appId, string name)
     {
         var root = temp.Directory($"game-{appId}");
         var fileName = $"{name.Replace(" ", string.Empty, StringComparison.Ordinal)}-Win64-Shipping.exe";
         var executable = temp.Pe($"game-{appId}/Binaries/Win64/{fileName}");
-        return new SteamGame(appId, name, temp.Path, temp.Path, root, temp.Combine($"pfx-{appId}"),
+        return InstalledGame.FromSteamGame(new SteamGame(appId, name, temp.Path, temp.Path, root, temp.Combine($"pfx-{appId}"),
             executable, Path.GetDirectoryName(executable)!, DetectionConfidence.High, "shipping", GameEngine.Unreal,
-            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 2048, ["shipping"])]);
+            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 2048, ["shipping"])]));
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 5000)
@@ -183,15 +183,15 @@ public sealed class CompatibilityLoadingTests
         }
     }
 
-    private sealed class StaticDiscovery(IReadOnlyList<SteamGame> games) : IGameDiscovery
+    private sealed class StaticDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
     {
-        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken) =>
+        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken) =>
             Task.FromResult(new ScanResult(games, [], [], []));
     }
 
     private sealed class StaticStatusProvider(ComponentHealth health = ComponentHealth.Available) : IComponentStatusProvider
     {
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken) =>
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ComponentStatus>>(
             [
                 new(ComponentKind.ReShade, health, null, [], "fixture"),
@@ -205,7 +205,7 @@ public sealed class CompatibilityLoadingTests
         private readonly Dictionary<uint, TaskCompletionSource<StackStatusReport>> pending = [];
         private readonly Dictionary<uint, TaskCompletionSource> requested = [];
 
-        public Task<StackStatusReport> GetAsync(SteamGame game, bool allowNetwork, CancellationToken cancellationToken, bool forceRefresh = false)
+        public Task<StackStatusReport> GetAsync(InstalledGame game, bool allowNetwork, CancellationToken cancellationToken, bool forceRefresh = false)
         {
             var completion = new TaskCompletionSource<StackStatusReport>(TaskCreationOptions.RunContinuationsAsynchronously);
             pending[game.AppId] = completion;
@@ -223,7 +223,7 @@ public sealed class CompatibilityLoadingTests
             return asked.Task;
         }
 
-        public void CompleteReady(SteamGame game)
+        public void CompleteReady(InstalledGame game)
         {
             var profile = new GameProfile("engine-unreal-x64", null, "Unreal Engine 4/5 64-bit fallback", [], null, null,
                 GameEngine.Unreal, "DirectX", ["dxgi.dll"], [], [],

@@ -18,6 +18,10 @@ public sealed class XdgPaths
     public string AppDataDirectory => Path.Combine(DataDirectory, "rhi-linux");
     public string AppCacheDirectory => Path.Combine(CacheDirectory, "rhi-linux");
     public string StateFile => Path.Combine(AppDataDirectory, "state.json");
+    public string LibraryIndexFile => Path.Combine(AppDataDirectory, "library-index.json");
+    public string SourceIndexFile => Path.Combine(AppDataDirectory, "source-index.json");
+    public string LibraryDatabaseFile => Path.Combine(AppDataDirectory, "library.db");
+    public string LogsDirectory => Path.Combine(AppDataDirectory, "logs");
 
     private static string Resolve(IReadOnlyDictionary<string, string?> env, string key, string fallback) =>
         env.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)

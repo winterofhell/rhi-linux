@@ -10,12 +10,26 @@ public sealed class UiPreferences
     public double WindowHeight { get; set; } = 820;
     public double SidebarWidth { get; set; } = 310;
     public uint? SelectedAppId { get; set; }
+    public string? SelectedInstallId { get; set; }
     public string Theme { get; set; } = "System";
     public string SearchText { get; set; } = string.Empty;
     public int CacheLimitMiB { get; set; } = 5 * 1024;
     public bool ReduceMotion { get; set; }
     public bool CheckForUpdatesAutomatically { get; set; } = true;
     public string AdditionalSteamLibrary { get; set; } = string.Empty;
+    public string LibraryFilter { get; set; } = "All";
+    public bool WatchSteamLibraries { get; set; } = true;
+    public bool ScanAllSources { get; set; } = true;
+    public bool EnableHeroic { get; set; } = true;
+    public bool EnableLegendary { get; set; } = true;
+    public bool EnableLutris { get; set; } = true;
+    public bool EnableBottles { get; set; } = true;
+    public bool EnableMinigalaxy { get; set; } = true;
+    public bool AutomaticallyEvaluateReadiness { get; set; } = true;
+    public bool ShowUnsupportedNativeGames { get; set; } = true;
+    public bool WarnBeforeAntiCheatDeployments { get; set; } = true;
+    public bool PreferExistingManagedVersions { get; set; } = true;
+    public bool RefreshArtifactMetadataOnStartup { get; set; } = true;
 }
 
 public interface IUiPreferencesStore

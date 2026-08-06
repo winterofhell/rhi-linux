@@ -1,0 +1,5 @@
+game:
+  exe: ./start.sh
+system:
+  env:
+    LANG: C

@@ -51,7 +51,8 @@ public sealed class DeploymentTests
         var plan = new DeploymentPlan
         {
             Id = "component-state-mismatch",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "test component postcondition",
@@ -83,7 +84,8 @@ public sealed class DeploymentTests
         var plan = new DeploymentPlan
         {
             Id = "ini-digest",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "test backup digest",
@@ -115,7 +117,8 @@ public sealed class DeploymentTests
         var plan = new DeploymentPlan
         {
             Id = "invalid-before-lock",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "invalid hand-built plan",
@@ -151,7 +154,8 @@ public sealed class DeploymentTests
         var plan = new DeploymentPlan
         {
             Id = "rollback",
-            AppId = 42,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "test",
@@ -173,7 +177,8 @@ public sealed class DeploymentTests
         var plan = new DeploymentPlan
         {
             Id = "copy-read-failure",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "test failed copy rollback",
@@ -235,7 +240,8 @@ public sealed class DeploymentTests
         var plan = new DeploymentPlan
         {
             Id = "verify-removed-ini-key",
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "remove managed INI value",

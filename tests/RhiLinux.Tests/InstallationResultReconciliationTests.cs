@@ -83,30 +83,31 @@ public sealed class InstallationResultReconciliationTests
         Assert.Contains("Legacy=1", text, StringComparison.Ordinal);
     }
 
-    private static SteamGame Game(uint appId, string name) =>
-        new(appId, name, "/steam", "/steam", $"/games/{appId}", $"/pfx/{appId}",
+    private static InstalledGame Game(uint appId, string name) =>
+        InstalledGame.FromSteamGame(new SteamGame(appId, name, "/steam", "/steam", $"/games/{appId}", $"/pfx/{appId}",
             $"/games/{appId}/Game.exe", $"/games/{appId}", DetectionConfidence.High, "fixture",
-            GameEngine.Unknown, [new($"/games/{appId}/Game.exe", 80, DetectionConfidence.High, PeArchitecture.X64, 1, [])]);
+            GameEngine.Unknown, [new($"/games/{appId}/Game.exe", 80, DetectionConfidence.High, PeArchitecture.X64, 1, [])]));
 
     private static IReadOnlyList<ComponentStatus> ComponentStatuses(
         params (ComponentKind Component, ComponentHealth Health)[] values) =>
         values.Select(value => new ComponentStatus(value.Component, value.Health, null, [],
             $"{value.Component} {value.Health}")).ToArray();
 
-    private static DeploymentPlan Plan(SteamGame game, string action, params ComponentStateExpectation[] expectations) =>
+    private static DeploymentPlan Plan(InstalledGame game, string action, params ComponentStateExpectation[] expectations) =>
         new()
         {
             Id = Guid.NewGuid().ToString("N"),
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
-            DeploymentDirectory = game.DeploymentDirectory,
+            DeploymentDirectory = game.DeploymentDirectory ?? game.GameRoot,
             Action = action,
             ExpectedComponentStates = expectations.ToList()
         };
 
-    private sealed class FakeDiscovery(IReadOnlyList<SteamGame> games) : IGameDiscovery
+    private sealed class FakeDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
     {
-        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<uint, GameOverride> overrides, CancellationToken cancellationToken) =>
+        public Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken) =>
             Task.FromResult(new ScanResult(games, [], [], []));
     }
 
@@ -137,7 +138,7 @@ public sealed class InstallationResultReconciliationTests
     {
         private int count;
 
-        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(SteamGame game, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ComponentStatus>> DetectAsync(InstalledGame game, CancellationToken cancellationToken)
         {
             var result = scans[Math.Min(count, scans.Length - 1)];
             count++;

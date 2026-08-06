@@ -121,24 +121,36 @@ public enum LaunchOptionStatus
 }
 
 public readonly record struct OperationContext(
-    uint AppId,
+    GameInstallId InstallId,
     long SelectionGeneration,
     string GameRoot,
     string DeploymentDirectory,
     string? Executable,
     ComponentKind? Component = null)
 {
-    public static OperationContext From(SteamGame game, long generation, ComponentKind? component = null) =>
-        new(game.AppId, generation, game.GameRoot, game.DeploymentDirectory, game.Executable, component);
+    public static OperationContext From(DeploymentTarget game, long generation, ComponentKind? component = null) =>
+        new(game.InstallId, generation, game.GameRoot, game.DeploymentDirectory, game.Executable, component);
 
-    public bool Matches(SteamGame game, long generation) =>
-        AppId == game.AppId &&
+    public static OperationContext From(InstalledGame game, long generation, ComponentKind? component = null) =>
+        From(game.ToDeploymentTarget(), generation, component);
+
+    public static OperationContext From(SteamGame game, long generation, ComponentKind? component = null) =>
+        From(game.ToDeploymentTarget(), generation, component);
+
+    public bool Matches(DeploymentTarget game, long generation) =>
+        InstallId.Equals(game.InstallId) &&
         SelectionGeneration == generation &&
         PathsEqual(GameRoot, game.GameRoot) &&
         PathsEqual(DeploymentDirectory, game.DeploymentDirectory);
 
+    public bool Matches(InstalledGame game, long generation) =>
+        Matches(game.ToDeploymentTarget(), generation);
+
+    public bool Matches(SteamGame game, long generation) =>
+        Matches(game.ToDeploymentTarget(), generation);
+
     public bool MatchesPlan(DeploymentPlan plan) =>
-        AppId == plan.AppId &&
+        InstallId.Value == plan.InstallId &&
         SelectionGeneration == plan.SelectionGeneration &&
         PathsEqual(GameRoot, plan.GameRoot) &&
         PathsEqual(DeploymentDirectory, plan.DeploymentDirectory);
@@ -171,7 +183,52 @@ public sealed record SteamGame(
     bool RequiresConfirmation = false,
     SteamInstallState InstallState = SteamInstallState.Installed,
     bool IsNativeLinux = false,
-    bool HasProtonPrefix = true);
+    bool HasProtonPrefix = true,
+    string? InstallId = null,
+    GameStore Store = GameStore.Steam,
+    GameLauncher Launcher = GameLauncher.Steam,
+    string? ExternalId = null,
+    GameBinaryPlatform Platform = GameBinaryPlatform.Windows,
+    CompatibilityEnvironment Environment = CompatibilityEnvironment.Proton,
+    IReadOnlyList<SourceGameRecord>? Sources = null,
+    IReadOnlyList<SourceDiagnostic>? SourceDiagnostics = null,
+    bool IsActionable = true,
+    string? UnsupportedReason = null)
+{
+    public string EffectiveInstallId =>
+        InstallId
+        ?? (Store == GameStore.Steam && AppId != 0
+            ? GameInstallId.FromSteam(AppId, GameRoot, Executable).Value
+            : GameInstallId.Create(Store, Launcher, ExternalId, GameRoot, Executable).Value);
+
+    public uint? SteamAppId => Store == GameStore.Steam && AppId != 0 ? AppId : null;
+
+    public string StoreBadge => Store switch
+    {
+        GameStore.Steam => "Steam",
+        GameStore.Epic => "Epic",
+        GameStore.Gog => "GOG",
+        GameStore.Amazon => "Amazon",
+        GameStore.Other => "Other",
+        _ => "Unknown"
+    };
+
+    public string LauncherBadge => Launcher.ToString();
+
+    public string IdentitySummary
+    {
+        get
+        {
+            var parts = new List<string> { StoreBadge, LauncherBadge };
+            if (Engine != GameEngine.Unknown) parts.Add(Engine.ToString());
+            if (IsNativeLinux || Platform == GameBinaryPlatform.Linux)
+                parts.Add("Native");
+            else if (!IsActionable && UnsupportedReason is not null)
+                parts.Add("Unsupported");
+            return string.Join(" · ", parts);
+        }
+    }
+}
 
 public sealed record SteamManifestDiagnostic(
     string ManifestPath,
@@ -207,7 +264,7 @@ public sealed record SteamRootDiagnostic(
     string? SkipReason);
 
 public sealed record ScanResult(
-    IReadOnlyList<SteamGame> Games,
+    IReadOnlyList<InstalledGame> Games,
     IReadOnlyList<string> SteamRoots,
     IReadOnlyList<string> Libraries,
     IReadOnlyList<string> Warnings,
@@ -327,7 +384,7 @@ public sealed record ComponentStateReport(
     ComponentStateEvidence Evidence);
 
 public sealed record StackSnapshot(
-    uint AppId,
+    string InstallId,
     string GameRoot,
     string DeploymentDirectory,
     string? Executable,
@@ -350,7 +407,8 @@ public sealed record StackSnapshot(
     ArtifactFingerprint? OptiScalerArtifactFingerprint = null,
     IReadOnlyList<string>? RequiredConfigurationKeys = null,
     IReadOnlyList<string>? ConcreteDefects = null,
-    IReadOnlyList<string>? Warnings = null)
+    IReadOnlyList<string>? Warnings = null,
+    uint? SteamAppId = null)
 {
     public bool IsHealthy =>
         ConcreteDefects is not { Count: > 0 } &&
@@ -380,13 +438,139 @@ public sealed record ComponentStatus(
 public sealed class ApplicationState
 {
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
     public DateTimeOffset LastScanUtc { get; set; }
-    public List<SteamGame> DiscoveredGames { get; set; } = [];
-    public Dictionary<uint, GameOverride> Overrides { get; set; } = [];
+    public List<PersistedGameEntry> DiscoveredGames { get; set; } = [];
+    public Dictionary<string, GameOverride> Overrides { get; set; } = new(StringComparer.Ordinal);
     public List<TransactionRecord> Transactions { get; set; } = [];
-    public Dictionary<uint, List<string>> ArtifactReferencesByAppId { get; set; } = [];
+    public Dictionary<string, List<string>> ArtifactReferencesByInstallId { get; set; } = new(StringComparer.Ordinal);
+    public List<OrphanedLegacyStateEntry> OrphanedLegacyEntries { get; set; } = [];
+    public List<string> MigrationDiagnostics { get; set; } = [];
 }
+
+public sealed record PersistedGameEntry(
+    string InstallId,
+    string Name,
+    GameStore Store,
+    GameLauncher Launcher,
+    string? ExternalId,
+    uint? SteamAppId,
+    string InstallRoot,
+    string? Executable,
+    string? DeploymentDirectory,
+    string? Prefix,
+    GameBinaryPlatform Platform = GameBinaryPlatform.Windows,
+    CompatibilityEnvironment Environment = CompatibilityEnvironment.Proton,
+    DetectionConfidence Confidence = DetectionConfidence.None,
+    GameEngine Engine = GameEngine.Unknown,
+    string SelectionReason = "",
+    bool RequiresConfirmation = false,
+    bool IsActionable = true,
+    string? UnsupportedReason = null,
+    bool IsStale = false,
+    string? SteamRoot = null,
+    string? LibraryRoot = null)
+{
+    public static PersistedGameEntry FromSteamGame(SteamGame game) => new(
+        game.EffectiveInstallId,
+        game.Name,
+        game.Store,
+        game.Launcher,
+        game.ExternalId ?? game.SteamAppId?.ToString(),
+        game.SteamAppId,
+        game.GameRoot,
+        game.Executable,
+        game.DeploymentDirectory,
+        string.IsNullOrWhiteSpace(game.ProtonPrefix) ? null : game.ProtonPrefix,
+        game.Platform,
+        game.Environment,
+        game.Confidence,
+        game.Engine,
+        game.SelectionReason,
+        game.RequiresConfirmation,
+        game.IsActionable,
+        game.UnsupportedReason,
+        SteamRoot: game.SteamRoot,
+        LibraryRoot: game.LibraryRoot);
+
+    public static PersistedGameEntry FromInstalledGame(InstalledGame game) => new(
+        game.InstallId.Value,
+        game.Name,
+        game.Store,
+        game.PrimaryLauncher,
+        game.ExternalId,
+        game.SteamAppId,
+        game.CanonicalInstallRoot,
+        game.Executable,
+        game.DeploymentDirectory,
+        game.Prefix,
+        game.Platform,
+        game.Environment,
+        game.Confidence,
+        game.Engine,
+        game.SelectionReason,
+        game.RequiresConfirmation,
+        game.IsActionable,
+        game.UnsupportedReason,
+        game.IsStale);
+
+    [Obsolete("Use InstalledGame / DeploymentTarget. Steam-edge conversion only.")]
+    public SteamGame ToSteamGame() => new(
+        SteamAppId ?? 0,
+        Name,
+        SteamRoot ?? string.Empty,
+        LibraryRoot ?? InstallRoot,
+        InstallRoot,
+        Prefix ?? string.Empty,
+        Executable,
+        DeploymentDirectory ?? InstallRoot,
+        Confidence,
+        SelectionReason,
+        Engine,
+        [],
+        RequiresConfirmation,
+        SteamInstallState.Installed,
+        Platform == GameBinaryPlatform.Linux,
+        !string.IsNullOrWhiteSpace(Prefix),
+        InstallId,
+        Store,
+        Launcher,
+        ExternalId,
+        Platform,
+        Environment,
+        IsActionable: IsActionable,
+        UnsupportedReason: UnsupportedReason);
+
+    public DeploymentTarget ToDeploymentTarget() => new(
+        new GameInstallId(InstallId),
+        Name,
+        InstallRoot,
+        Executable,
+        DeploymentDirectory ?? InstallRoot,
+        Prefix,
+        SteamAppId,
+        Store,
+        Launcher,
+        ExternalId,
+        Confidence,
+        SelectionReason,
+        Engine,
+        [],
+        RequiresConfirmation,
+        Platform == GameBinaryPlatform.Linux,
+        !string.IsNullOrWhiteSpace(Prefix),
+        Platform,
+        Environment,
+        IsActionable,
+        UnsupportedReason,
+        IsStale);
+}
+
+public sealed record OrphanedLegacyStateEntry(
+    string Kind,
+    string Key,
+    string Reason,
+    string? PayloadJson = null);
 
 public sealed record GameOverride(string? Executable, string? DeploymentDirectory);
 
@@ -416,25 +600,41 @@ public sealed record ConfigurationPatchRecord(
 
 public sealed class GameManifest
 {
-    public int SchemaVersion { get; set; } = 1;
-    public uint AppId { get; set; }
+    public int SchemaVersion { get; set; } = 2;
+    public string InstallId { get; set; } = string.Empty;
+    public uint? SteamAppId { get; set; }
     public DateTimeOffset UpdatedUtc { get; set; }
     public List<ManagedFile> Files { get; set; } = [];
     public List<ConfigurationPatchRecord> ConfigurationPatches { get; set; } = [];
     public List<string> TransactionIds { get; set; } = [];
     [JsonIgnore]
     public bool MetadataMigrated { get; set; }
+
+    [JsonPropertyName("appId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public uint? LegacyAppId
+    {
+        get => null;
+        set
+        {
+            if (value is null or 0) return;
+            SteamAppId ??= value;
+            if (string.IsNullOrWhiteSpace(InstallId))
+                InstallId = GameInstallId.LegacySteam(value.Value).Value;
+        }
+    }
 }
 
 public sealed record TransactionRecord(
     string Id,
-    uint AppId,
+    string InstallId,
     string Action,
     DateTimeOffset StartedUtc,
     DateTimeOffset? CompletedUtc,
     bool RolledBack,
     IReadOnlyList<string> CompletedOperations,
-    string? Error);
+    string? Error,
+    uint? SteamAppId = null);
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DeploymentOperationType
@@ -498,7 +698,8 @@ public sealed record ComponentStateExpectation(ComponentKind Component, bool Ins
 public sealed class DeploymentPlan
 {
     public required string Id { get; init; }
-    public required uint AppId { get; init; }
+    public required string InstallId { get; init; }
+    public uint? SteamAppId { get; init; }
     public required string GameRoot { get; init; }
     public required string DeploymentDirectory { get; init; }
     public long SelectionGeneration { get; set; }

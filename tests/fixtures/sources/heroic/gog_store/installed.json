@@ -1,0 +1,17 @@
+{
+  "installed": [
+    {
+      "appName": "cyberpunk_gog",
+      "title": "Cyberpunk 2077",
+      "install_path": "@GAMES@/Heroic/Cyberpunk 2077",
+      "executable": "bin/x64/Cyberpunk2077.exe",
+      "platform": "windows",
+      "version": "2.0",
+      "is_dlc": false
+    },
+    {
+      "appName": "broken_gog",
+      "title": "Broken Gog Entry"
+    }
+  ]
+}

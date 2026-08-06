@@ -2,14 +2,17 @@
   <PropertyGroup><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" PrivateAssets="all" />
     <ProjectReference Include="../../src/RhiLinux.Core/RhiLinux.Core.csproj" />
     <ProjectReference Include="../../src/RhiLinux.Steam/RhiLinux.Steam.csproj" />
+    <ProjectReference Include="../../src/RhiLinux.Sources/RhiLinux.Sources.csproj" />
     <ProjectReference Include="../../src/RhiLinux.Mods/RhiLinux.Mods.csproj" />
     <ProjectReference Include="../../src/RhiLinux.Gui/RhiLinux.Gui.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../fixtures/renodx/**/*" CopyToOutputDirectory="PreserveNewest" Link="fixtures/renodx/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="../fixtures/sources/**/*" CopyToOutputDirectory="PreserveNewest" Link="fixtures/sources/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

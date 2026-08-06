@@ -16,16 +16,38 @@ public static class ReShadePresetService
         "Clarity"
     ];
 
-    public static string HostIniPath(SteamGame game) =>
+    public static string HostIniPath(SteamGame game) => HostIniPath(game.ToDeploymentTarget());
+
+    public static string HostIniPath(InstalledGame game) => HostIniPath(game.ToDeploymentTarget());
+
+    public static string HostIniPath(DeploymentTarget game) =>
         Path.Combine(game.DeploymentDirectory, HostIniFileName);
 
-    public static string CleanPresetPath(SteamGame game) =>
+    public static string CleanPresetPath(SteamGame game) => CleanPresetPath(game.ToDeploymentTarget());
+
+    public static string CleanPresetPath(InstalledGame game) => CleanPresetPath(game.ToDeploymentTarget());
+
+    public static string CleanPresetPath(DeploymentTarget game) =>
         Path.Combine(game.DeploymentDirectory, CleanPresetFileName);
 
     public static void ConfigureFreshInstallation(
         DeploymentPlan plan,
         GameManifest manifest,
         SteamGame game,
+        bool forceReset = false) =>
+        ConfigureFreshInstallation(plan, manifest, game.ToDeploymentTarget(), forceReset);
+
+    public static void ConfigureFreshInstallation(
+        DeploymentPlan plan,
+        GameManifest manifest,
+        InstalledGame game,
+        bool forceReset = false) =>
+        ConfigureFreshInstallation(plan, manifest, game.ToDeploymentTarget(), forceReset);
+
+    public static void ConfigureFreshInstallation(
+        DeploymentPlan plan,
+        GameManifest manifest,
+        DeploymentTarget game,
         bool forceReset = false)
     {
         var hostPath = HostIniPath(game);

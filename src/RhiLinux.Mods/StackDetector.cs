@@ -10,8 +10,20 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
     private readonly GameProfileCatalog profiles = profiles ?? new GameProfileCatalog();
     private readonly ProxyDiagnosticsService proxyDiagnostics = proxyDiagnostics ?? new ProxyDiagnosticsService(profiles);
 
-    public async Task<StackSnapshot> DetectAsync(
+    public Task<StackSnapshot> DetectAsync(
         SteamGame game,
+        long generation = 0,
+        CancellationToken cancellationToken = default) =>
+        DetectAsync(game.ToDeploymentTarget(), generation, cancellationToken);
+
+    public Task<StackSnapshot> DetectAsync(
+        InstalledGame game,
+        long generation = 0,
+        CancellationToken cancellationToken = default) =>
+        DetectAsync(game.ToDeploymentTarget(), generation, cancellationToken);
+
+    public async Task<StackSnapshot> DetectAsync(
+        DeploymentTarget game,
         long generation = 0,
         CancellationToken cancellationToken = default)
     {
@@ -24,10 +36,11 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         {
             var unknown = CreateUnknownComponents($"The ownership manifest could not be verified: {exception.Message}");
             return new StackSnapshot(
-                game.AppId, game.GameRoot, game.DeploymentDirectory, game.Executable, generation,
+                game.InstallId.Value, game.GameRoot, game.DeploymentDirectory, game.Executable, generation,
                 StackLayoutKind.Invalid, null, null, null, null, null, false,
                 SelectedArchitecture(game), OwnershipHealth.Unavailable, unknown,
-                "Ownership metadata could not be verified.");
+                "Ownership metadata could not be verified.",
+                SteamAppId: game.SteamAppId);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -70,14 +83,15 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
             ? new[] { "LoadReshade=true", "LoadAsiPlugins=true" }
             : Array.Empty<string>();
         return new StackSnapshot(
-            game.AppId, game.GameRoot, game.DeploymentDirectory, game.Executable, generation,
+            game.InstallId.Value, game.GameRoot, game.DeploymentDirectory, game.Executable, generation,
             stackLayout, layout.ActiveProxy, layout.ProxyOwner, layout.ReShadeRuntimePath,
             layout.RenoDxAddonPath, layout.OptiScalerRuntimePath, layout.ChainingConfigured,
             architecture, ownership, components, summary, launch, chainMode,
             UpdateEvaluator.BuildFingerprint(reshade),
             UpdateEvaluator.BuildFingerprint(reno),
             UpdateEvaluator.BuildFingerprint(opti),
-            requiredKeys, defects, warnings);
+            requiredKeys, defects, warnings,
+            SteamAppId: game.SteamAppId);
     }
 
     public static ComponentStatus ToComponentStatus(ComponentStateReport report) =>
@@ -204,7 +218,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         PeArchitecture SelectedArchitecture);
 
     private LayoutFacts AnalyzeLayout(
-        SteamGame game,
+        DeploymentTarget game,
         GameManifest manifest,
         string[] rootFiles,
         GameProfileMatch profile,
@@ -299,7 +313,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
             ExistingManaged(manifest, game, ComponentKind.RenoDx),
             patcherRecords,
             invalidPatcher,
-            manifest.Files.Count == 0 || manifest.AppId == game.AppId,
+            manifest.Files.Count == 0 || ManifestBelongsToGame(manifest, game),
             manifest.MetadataMigrated,
             optiIniMalformed,
             optiIniUserChanged,
@@ -308,7 +322,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
 
     private static ComponentStateReport EvaluateReShade(
         LayoutFacts layout,
-        SteamGame game,
+        DeploymentTarget game,
         GameManifest manifest,
         GameProfileMatch profile)
     {
@@ -360,7 +374,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
     private static ComponentStateReport EvaluateRenoDx(
         LayoutFacts layout,
         ComponentStateReport reshade,
-        SteamGame game,
+        DeploymentTarget game,
         GameManifest manifest,
         GameProfileMatch profile,
         ProxySelectionResult proxy)
@@ -369,7 +383,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         if (!layout.ManifestMatchesGame && manifest.Files.Any(x => x.Component == ComponentKind.RenoDx))
             return Report(ComponentKind.RenoDx, ComponentLifecycleState.Unknown, RuntimeHealth.Unknown,
                 FileIntegrityStatus.Unknown, ConfigurationHealth.Unknown, OwnershipHealth.Foreign,
-                $"The ownership manifest belongs to Steam AppID {manifest.AppId}, not the selected game. The installation is treated as unknown.",
+                $"The ownership manifest belongs to install ID '{manifest.InstallId}' (Steam AppID {manifest.SteamAppId}), not the selected game. The installation is treated as unknown.",
                 "ownership.foreign_appid", evidence);
 
         var unsafeRecords = manifest.Files.Where(x => x.Component == ComponentKind.RenoDx)
@@ -451,7 +465,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
 
     private static ComponentStateReport EvaluateOptiScaler(
         LayoutFacts layout,
-        SteamGame game,
+        DeploymentTarget game,
         GameManifest manifest,
         OptiScalerEligibility eligibility)
     {
@@ -598,7 +612,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         ComponentKind component,
         IReadOnlyList<string> detected,
         GameManifest manifest,
-        SteamGame game,
+        DeploymentTarget game,
         LayoutFacts layout,
         ComponentStateEvidence evidence,
         GameProfileMatch? profile)
@@ -778,7 +792,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         LayoutFacts layout,
         ComponentKind component,
         GameManifest manifest,
-        SteamGame game)
+        DeploymentTarget game)
     {
         var recorded = manifest.Files.Count(x => x.Component == component);
         if (recorded == 0) return OwnershipHealth.Unmanaged;
@@ -875,7 +889,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
                     "ownership.unavailable")))
             .ToArray();
 
-    private static string[] ExistingManaged(GameManifest manifest, SteamGame game, ComponentKind component) =>
+    private static string[] ExistingManaged(GameManifest manifest, DeploymentTarget game, ComponentKind component) =>
         manifest.Files
             .Where(x => x.Component == component)
             .Where(x => IsPathInsideGame(game, x.RelativePath))
@@ -916,7 +930,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
             File.Exists(path));
     }
 
-    private static bool IsOwnedOptiScalerProxy(GameManifest manifest, SteamGame game, string path)
+    private static bool IsOwnedOptiScalerProxy(GameManifest manifest, DeploymentTarget game, string path)
     {
         var relative = Path.GetRelativePath(game.GameRoot, path);
         var record = manifest.Files.FirstOrDefault(file =>
@@ -1041,14 +1055,23 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         return null;
     }
 
-    private static bool ManagedFileMatches(SteamGame game, ManagedFile file)
+    private static bool ManagedFileMatches(DeploymentTarget game, ManagedFile file)
     {
         if (!IsPathInsideGame(game, file.RelativePath)) return false;
         var path = Path.Combine(game.GameRoot, file.RelativePath);
         return File.Exists(path) && Hash(path).Equals(file.Sha256, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsPathInsideGame(SteamGame game, string relativePath)
+    private static bool ManifestBelongsToGame(GameManifest manifest, DeploymentTarget game)
+    {
+        if (!string.IsNullOrWhiteSpace(manifest.InstallId))
+            return string.Equals(manifest.InstallId, game.InstallId.Value, StringComparison.Ordinal);
+        if (manifest.SteamAppId is { } manifestSteam && game.SteamAppId is { } gameSteam)
+            return manifestSteam == gameSteam;
+        return false;
+    }
+
+    private static bool IsPathInsideGame(DeploymentTarget game, string relativePath)
     {
         if (Path.IsPathRooted(relativePath)) return false;
         var gameRoot = Path.GetFullPath(game.GameRoot);
@@ -1081,7 +1104,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         catch (UnauthorizedAccessException) { return PeArchitecture.Unknown; }
     }
 
-    private static PeArchitecture SelectedArchitecture(SteamGame game) =>
+    private static PeArchitecture SelectedArchitecture(DeploymentTarget game) =>
         game.Candidates.FirstOrDefault(x => game.Executable is not null &&
             Path.GetFullPath(x.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal))?.Architecture ??
         (game.Executable is not null && File.Exists(game.Executable)

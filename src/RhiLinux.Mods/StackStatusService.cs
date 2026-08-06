@@ -16,8 +16,22 @@ public sealed class StackStatusService(HttpClient httpClient, XdgPaths paths)
 {
     private readonly GameProfileCatalog catalog = new(paths);
 
-    public async Task<StackStatusReport> GetAsync(
+    public Task<StackStatusReport> GetAsync(
         SteamGame game,
+        bool allowNetwork,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false) =>
+        GetAsync(game.ToDeploymentTarget(), allowNetwork, cancellationToken, forceRefresh);
+
+    public Task<StackStatusReport> GetAsync(
+        InstalledGame game,
+        bool allowNetwork,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false) =>
+        GetAsync(game.ToDeploymentTarget(), allowNetwork, cancellationToken, forceRefresh);
+
+    public async Task<StackStatusReport> GetAsync(
+        DeploymentTarget game,
         bool allowNetwork,
         CancellationToken cancellationToken = default,
         bool forceRefresh = false)

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace RhiLinux.Core;
 
@@ -85,7 +86,8 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
             }
 
             await VerifyExpectedComponentStatesAsync(plan, manifest, cancellationToken);
-            manifest.AppId = plan.AppId;
+            manifest.InstallId = plan.InstallId;
+            manifest.SteamAppId = plan.SteamAppId;
             manifest.UpdatedUtc = DateTimeOffset.UtcNow;
             manifest.TransactionIds.Add(plan.Id);
             var manifestOperation = plan.Operations.FindIndex(x => x.Type == DeploymentOperationType.WriteManifest);
@@ -744,7 +746,7 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
     private static async Task<GameManifest> LoadManifestAsync(DeploymentPlan plan, CancellationToken token)
     {
         var path = ManifestPath(plan);
-        if (!File.Exists(path)) return new GameManifest { AppId = plan.AppId };
+        if (!File.Exists(path)) return new GameManifest { InstallId = plan.InstallId, SteamAppId = plan.SteamAppId };
         await using var input = File.OpenRead(path);
         return await JsonSerializer.DeserializeAsync<GameManifest>(input, JsonOptions, token)
             ?? throw new InvalidDataException("Game manifest is empty.");
@@ -906,7 +908,8 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         var journal = new TransactionJournal
         {
             Id = plan.Id,
-            AppId = plan.AppId,
+            InstallId = plan.InstallId,
+            SteamAppId = plan.SteamAppId,
             Action = plan.Action,
             State = JournalState.InProgress,
             StartedUtc = now,
@@ -1312,8 +1315,15 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
     private static void ValidateJournalIdentity(DeploymentPlan plan, string path, TransactionJournal journal)
     {
         if (string.IsNullOrWhiteSpace(journal.Id)) throw new InvalidDataException("Journal transaction ID is missing.");
-        if (journal.AppId != plan.AppId)
-            throw new InvalidDataException($"Journal AppID {journal.AppId} does not match game AppID {plan.AppId}.");
+        if (journal.AppId != 0 && plan.SteamAppId is { } steamAppId && journal.AppId != steamAppId &&
+            string.IsNullOrWhiteSpace(journal.InstallId))
+            throw new InvalidDataException($"Journal AppID {journal.AppId} does not match Steam AppID {steamAppId}.");
+        if (!string.IsNullOrWhiteSpace(journal.InstallId) &&
+            !string.Equals(journal.InstallId, plan.InstallId, StringComparison.Ordinal))
+            throw new InvalidDataException($"Journal install ID {journal.InstallId} does not match {plan.InstallId}.");
+        if (string.IsNullOrWhiteSpace(journal.InstallId) && journal.AppId == 0 &&
+            !string.IsNullOrWhiteSpace(plan.InstallId))
+            journal.InstallId = plan.InstallId;
         var expectedPath = Path.Combine(plan.GameRoot, MetadataDirectoryName, "transactions",
             JournalFileStem(journal.Id) + ".json");
         if (!Path.GetFullPath(path).Equals(Path.GetFullPath(expectedPath), StringComparison.Ordinal))
@@ -1864,7 +1874,19 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         public const int CurrentSchemaVersion = 2;
         public int SchemaVersion { get; set; } = CurrentSchemaVersion;
         public required string Id { get; set; }
-        public uint AppId { get; set; }
+        public string InstallId { get; set; } = string.Empty;
+        public uint? SteamAppId { get; set; }
+        [JsonPropertyName("appId")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public uint AppId
+        {
+            get => SteamAppId ?? 0;
+            set
+            {
+                if (value != 0)
+                    SteamAppId ??= value;
+            }
+        }
         public required string Action { get; set; }
         public required string State { get; set; }
         public DateTimeOffset StartedUtc { get; set; }

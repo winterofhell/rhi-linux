@@ -1,0 +1,9 @@
+Name: UtilityBottle
+Environment: Software
+Arch: win64
+External_Programs:
+  winecfg:
+    id: winecfg
+    name: Wine Configuration
+    executable: C:/windows/system32/winecfg.exe
+    folder: C:/windows/system32

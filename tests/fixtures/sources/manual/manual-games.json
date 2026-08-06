@@ -1,0 +1,11 @@
+[
+  {
+    "name": "Manual Control",
+    "executable": "@GAMES@/Heroic/Control/Control_DX12.exe",
+    "installRoot": "@GAMES@/Heroic/Control",
+    "prefix": "@GAMES@/Heroic/Prefixes/Control",
+    "store": "Epic",
+    "externalId": "manual-control",
+    "tags": "favorite"
+  }
+]

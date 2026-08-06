@@ -1,0 +1,18 @@
+{
+  "Control": {
+    "app_name": "Control",
+    "title": "Control",
+    "install_path": "@GAMES@/Heroic/Control",
+    "executable": "Control_DX12.exe",
+    "platform": "Windows",
+    "is_dlc": false
+  },
+  "Hades": {
+    "app_name": "Hades",
+    "title": "Hades",
+    "install_path": "@GAMES@/Legendary/Hades",
+    "executable": "x64/Hades.exe",
+    "platform": "Windows",
+    "is_dlc": false
+  }
+}

@@ -6,7 +6,7 @@ namespace RhiLinux.Gui;
 
 public static class GameSearch
 {
-    public static IReadOnlyList<SteamGame> Rank(IEnumerable<SteamGame> games, string? query)
+    public static IReadOnlyList<InstalledGame> Rank(IEnumerable<InstalledGame> games, string? query)
     {
         if (string.IsNullOrWhiteSpace(query))
             return games.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -25,12 +25,22 @@ public static class GameSearch
             .ToArray();
     }
 
-    public static int Score(SteamGame game, string normalizedQuery, IReadOnlyList<string>? tokens = null)
+    public static int Score(InstalledGame game, string normalizedQuery, IReadOnlyList<string>? tokens = null)
     {
         tokens ??= Tokenize(normalizedQuery);
-        var appId = game.AppId.ToString(CultureInfo.InvariantCulture);
-        if (appId == normalizedQuery) return 10_000;
-        if (appId.StartsWith(normalizedQuery, StringComparison.Ordinal)) return 9_000;
+        if (game.SteamAppId is { } steamAppId)
+        {
+            var appId = steamAppId.ToString(CultureInfo.InvariantCulture);
+            if (appId == normalizedQuery) return 10_000;
+            if (appId.StartsWith(normalizedQuery, StringComparison.Ordinal)) return 9_000;
+        }
+
+        if (game.ExternalId is { Length: > 0 } external)
+        {
+            var normalizedExternal = Normalize(external);
+            if (normalizedExternal == normalizedQuery) return 9_500;
+            if (normalizedExternal.StartsWith(normalizedQuery, StringComparison.Ordinal)) return 8_500;
+        }
 
         var title = Normalize(game.Name);
         if (title == normalizedQuery) return 8_000;

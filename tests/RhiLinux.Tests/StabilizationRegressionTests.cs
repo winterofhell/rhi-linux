@@ -79,9 +79,9 @@ public sealed class StabilizationRegressionTests
         using var temp = new TestDirectory();
         var root = temp.Directory("game");
         var executable = temp.Pe("game/Game.exe");
-        var game = new SteamGame(42, "Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"),
+        var game = InstalledGame.FromSteamGame(new SteamGame(42, "Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"),
             executable, root, DetectionConfidence.High, "fixture", GameEngine.Unknown,
-            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["fixture"])]);
+            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["fixture"])]));
         var planner = new DeploymentPlanner();
         var executor = new DeploymentExecutor();
         var artifacts = new RecommendedStackArtifacts(
@@ -103,9 +103,9 @@ public sealed class StabilizationRegressionTests
         using var temp = new TestDirectory();
         var root = temp.Directory("game");
         var executable = temp.Pe("game/Game.exe");
-        var game = new SteamGame(42, "Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"),
+        var game = InstalledGame.FromSteamGame(new SteamGame(42, "Fixture", temp.Path, temp.Path, root, temp.Combine("pfx"),
             executable, root, DetectionConfidence.High, "fixture", GameEngine.Unknown,
-            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["fixture"])]);
+            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["fixture"])]));
         var planner = new DeploymentPlanner();
         var executor = new DeploymentExecutor();
         var artifacts = new RecommendedStackArtifacts(
@@ -116,7 +116,7 @@ public sealed class StabilizationRegressionTests
                 temp.File("stage/OptiScaler.ini", "[Plugins]\nLoadReshade=false\nLoadAsiPlugins=false\n"),
                 "OptiScaler.ini", "v0.9.4")]);
         Assert.True((await executor.ExecuteAsync(await planner.BuildRecommendedStackPlanAsync(game, artifacts), false)).Succeeded);
-        await File.AppendAllTextAsync(Path.Combine(game.DeploymentDirectory, "OptiScaler.ini"), "UserSetting=1\n");
+        await File.AppendAllTextAsync(Path.Combine(game.DeploymentDirectory ?? game.GameRoot, "OptiScaler.ini"), "UserSetting=1\n");
 
         var plan = await planner.BuildRecommendedStackPlanAsync(game, artifacts);
         Assert.False(plan.RequiresRepair);
@@ -172,11 +172,11 @@ public sealed class StabilizationRegressionTests
         Assert.DoesNotContain("Background=\"Black\"", source, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static SteamGame Game(uint appId, string name, GameEngine engine, string executable) =>
-        new(appId, name, "/tmp/steam", "/tmp/steam", $"/tmp/steam/steamapps/common/{name}",
+    private static InstalledGame Game(uint appId, string name, GameEngine engine, string executable) =>
+        InstalledGame.FromSteamGame(new SteamGame(appId, name, "/tmp/steam", "/tmp/steam", $"/tmp/steam/steamapps/common/{name}",
             $"/tmp/steam/steamapps/compatdata/{appId}/pfx", $"/tmp/steam/steamapps/common/{name}/{executable}",
             $"/tmp/steam/steamapps/common/{name}", DetectionConfidence.High,
             "Selected because it is the primary 64-bit game executable.",
             engine, [new($"/tmp/steam/steamapps/common/{name}/{executable}", 100, DetectionConfidence.High,
-                PeArchitecture.X64, 1024, ["64-bit PE executable"])]);
+                PeArchitecture.X64, 1024, ["64-bit PE executable"])]));
 }

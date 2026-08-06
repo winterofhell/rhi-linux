@@ -29,10 +29,11 @@ public static partial class SteamLaunchOptionService
     private static readonly Regex DxvkHdrFragment = DxvkHdrRegex();
 
     public static LaunchOptionObservation Observe(
-        SteamGame game,
+        InstalledGame game,
         string? requiredOption,
         string? detectedLaunchOptions = null)
     {
+        _ = game;
         var required = requiredOption?.Trim() ?? string.Empty;
         if (required.Length == 0)
         {
@@ -72,9 +73,12 @@ public static partial class SteamLaunchOptionService
     }
 
     public static async Task<string?> TryReadLaunchOptionsAsync(
-        SteamGame game,
+        InstalledGame game,
         CancellationToken cancellationToken = default)
     {
+        if (game.SteamAppId is not { } steamAppId || string.IsNullOrWhiteSpace(game.SteamRoot))
+            return null;
+
         foreach (var path in CandidateLocalConfigPaths(game.SteamRoot))
         {
             if (!File.Exists(path)) continue;
@@ -82,7 +86,7 @@ public static partial class SteamLaunchOptionService
             {
                 var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
                 var root = VdfParser.Parse(text);
-                var value = FindLaunchOptions(root, game.AppId);
+                var value = FindLaunchOptions(root, steamAppId);
                 if (value is not null) return value;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException)

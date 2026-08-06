@@ -1,0 +1,12 @@
+{
+  "installed": [
+    {
+      "id": "amazon-new-world",
+      "title": "New World",
+      "path": "@GAMES@/Heroic/New World",
+      "executable": "NewWorld.exe",
+      "platform": "Windows",
+      "version": "1.0"
+    }
+  ]
+}

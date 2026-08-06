@@ -6,9 +6,9 @@ RHI Linux automatically discovers Steam games and installs compatible ReShade, R
 
 ## Project status
 
-**Version 0.1.2 — Early Alpha**
+**Version 0.2.1 — Early Alpha**
 
-This release is usable, but it is still an early public build. Visual issues, compatibility problems, incomplete game profiles, and installation bugs may remain.
+This release adds incremental Steam library indexing, single-pass game fingerprinting, cached startup, Linux capability diagnostics, and a refreshed Avalonia shell. Visual issues, compatibility problems, incomplete game profiles, and installation bugs may remain.
 
 OptiScaler has primarily been tested on AMD gpus. NVIDIA specific behavior has not been thoroughly tested by the maintainer.
 
@@ -19,7 +19,11 @@ RHI Linux is unofficial and is not affiliated with or supported by the original 
 >
 > Always review the generated installation plan and keep backups of important game files.
 
+
+
 ## Quick start
+
+
 
 ### Run from source on Linux (based on your distro)
 
@@ -68,6 +72,8 @@ dotnet restore RhiLinux.sln
 dotnet build RhiLinux.sln -c Release --no-restore
 dotnet test RhiLinux.sln -c Release --no-build
 ```
+
+
 
 ## CLI
 

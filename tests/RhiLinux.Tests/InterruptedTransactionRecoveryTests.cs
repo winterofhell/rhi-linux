@@ -160,7 +160,8 @@ public sealed class InterruptedTransactionRecoveryTests
         Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
         await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(new GameManifest
         {
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             UpdatedUtc = DateTimeOffset.UtcNow,
             TransactionIds = [committedId]
         }, JsonOptions));
@@ -433,7 +434,8 @@ public sealed class InterruptedTransactionRecoveryTests
         var plan = new DeploymentPlan
         {
             Id = id,
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             GameRoot = game.GameRoot,
             DeploymentDirectory = game.DeploymentDirectory,
             Action = "snapshot cancellation test",
@@ -465,7 +467,8 @@ public sealed class InterruptedTransactionRecoveryTests
     private static DeploymentPlan CopyPlan(SteamGame game, string id, string source, string target) => new()
     {
         Id = id,
-        AppId = game.AppId,
+        InstallId = game.EffectiveInstallId,
+        SteamAppId = game.SteamAppId,
         GameRoot = game.GameRoot,
         DeploymentDirectory = game.DeploymentDirectory,
         Action = "test deployment",
@@ -503,7 +506,8 @@ public sealed class InterruptedTransactionRecoveryTests
         {
             SchemaVersion = schemaVersion,
             Id = id,
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             Action = "simulated interrupted transaction",
             State = state,
             StartedUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
@@ -587,7 +591,8 @@ public sealed class InterruptedTransactionRecoveryTests
     {
         public int SchemaVersion { get; set; }
         public required string Id { get; set; }
-        public uint AppId { get; set; }
+        public string InstallId { get; set; } = string.Empty;
+        public uint? SteamAppId { get; set; }
         public required string Action { get; set; }
         public required string State { get; set; }
         public DateTimeOffset StartedUtc { get; set; }

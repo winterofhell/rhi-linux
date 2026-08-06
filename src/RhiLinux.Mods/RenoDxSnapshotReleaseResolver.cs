@@ -89,8 +89,20 @@ public sealed class RenoDxSnapshotReleaseResolver(HttpClient httpClient, XdgPath
     private string ETagPath => IndexCachePath + ".etag";
     private string CheckedPath => IndexCachePath + ".checked";
 
-    public async Task<RenoDxSnapshotResolution> ResolveAsync(
+    public Task<RenoDxSnapshotResolution> ResolveAsync(
         SteamGame game,
+        RenoDxCatalogEntry? entry,
+        string? expectedFileName,
+        string? artifactSlug,
+        PeArchitecture architecture,
+        bool allowNetwork,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false) =>
+        ResolveAsync(game.ToDeploymentTarget(), entry, expectedFileName, artifactSlug, architecture,
+            allowNetwork, cancellationToken, forceRefresh);
+
+    public async Task<RenoDxSnapshotResolution> ResolveAsync(
+        DeploymentTarget game,
         RenoDxCatalogEntry? entry,
         string? expectedFileName,
         string? artifactSlug,
@@ -502,7 +514,7 @@ public sealed class RenoDxSnapshotReleaseResolver(HttpClient httpClient, XdgPath
 
     private static (RenoDxSnapshotAsset Asset, string Reason)? TryMatchStructured(
         RenoDxSnapshotReleaseIndex index,
-        SteamGame game,
+        DeploymentTarget game,
         RenoDxCatalogEntry? entry,
         PeArchitecture architecture)
     {
@@ -510,7 +522,7 @@ public sealed class RenoDxSnapshotReleaseResolver(HttpClient httpClient, XdgPath
         RenoDxSnapshotGameMapping? mapping = null;
         foreach (var candidate in index.Games)
         {
-            if (candidate.SteamAppId is uint appId && appId == game.AppId)
+            if (candidate.SteamAppId is uint appId && appId == game.SteamAppId)
             {
                 mapping = candidate;
                 break;
@@ -851,7 +863,7 @@ public sealed class RenoDxSnapshotReleaseResolver(HttpClient httpClient, XdgPath
     private static string BuildAddonFileName(string slug, PeArchitecture architecture) =>
         $"renodx-{slug}.addon{(architecture == PeArchitecture.X86 ? "32" : "64")}";
 
-    private static bool HasX64Executable(SteamGame game) =>
+    private static bool HasX64Executable(DeploymentTarget game) =>
         game.Candidates.Any(item => item.Architecture == PeArchitecture.X64) ||
         game.Executable is not null && File.Exists(game.Executable) &&
         SafeArchitecture(game.Executable) == PeArchitecture.X64;

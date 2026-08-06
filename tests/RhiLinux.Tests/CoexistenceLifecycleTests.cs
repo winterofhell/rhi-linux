@@ -387,8 +387,8 @@ public sealed class CoexistenceLifecycleTests
             composed.Text);
 
         var observed = SteamLaunchOptionService.Observe(
-            new(1, "Fixture", "/steam", "/steam", "/game", "/pfx", "/game/Game.exe", "/game",
-                DetectionConfidence.High, "fixture", GameEngine.Unknown, []),
+            InstalledGame.FromSteamGame(new SteamGame(1, "Fixture", "/steam", "/steam", "/game", "/pfx", "/game/Game.exe", "/game",
+                DetectionConfidence.High, "fixture", GameEngine.Unknown, [])),
             required,
             "gamemoderun WINEDLLOVERRIDES=\"dxgi=n,b\" %command%");
         Assert.Equal(LaunchOptionStatus.Correct, observed.Status);

@@ -1,0 +1,6 @@
+{
+  "cyberpunk_gog": {
+    "winePrefix": "@GAMES@/Heroic/Prefixes/Cyberpunk",
+    "targetExe": "bin/x64/Cyberpunk2077.exe"
+  }
+}

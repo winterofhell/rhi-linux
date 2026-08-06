@@ -1,0 +1,5 @@
+{
+  "install_dir": "@GAMES@/GOG Games",
+  "locale": "en",
+  "keep_installers": false
+}

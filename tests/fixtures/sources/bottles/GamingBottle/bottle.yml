@@ -1,0 +1,29 @@
+Name: GamingBottle
+Environment: Gaming
+Arch: win64
+External_Programs:
+  control:
+    id: control
+    name: Control
+    executable: C:/Games/Control/Control_DX12.exe
+    folder: C:/Games/Control
+  absolute:
+    id: absolute
+    name: Absolute Game
+    executable: @BOTTLE@/drive_c/Games/Absolute/Absolute.exe
+    folder: @BOTTLE@/drive_c/Games/Absolute
+  relative:
+    id: relative
+    name: Relative Game
+    executable: drive_c/Games/Relative/Relative.exe
+    folder: drive_c/Games/Relative
+  setup:
+    id: setup
+    name: Game Setup
+    executable: C:/Games/Control/setup.exe
+    folder: C:/Games/Control
+  missing:
+    id: missing
+    name: Missing Game
+    executable: C:/Games/Missing/Missing.exe
+    folder: C:/Games/Missing

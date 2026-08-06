@@ -1,8 +1,11 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using RhiLinux.Core;
 using RhiLinux.Mods;
+using RhiLinux.Sources;
 using RhiLinux.Steam;
 
 namespace RhiLinux.Gui;
@@ -27,6 +30,53 @@ public enum UpdateCheckState { Checking, UpToDate, UpdateAvailable, Offline, Una
 public enum SelectionPhase { Idle, DetectingGame, CheckingCompatibility, CheckingUpdates }
 
 public enum PrimaryActionKind { None, Install, Update, Repair, Remove }
+
+public enum MainSection
+{
+    Overview,
+    Library,
+    Updates,
+    Diagnostics,
+    Settings
+}
+
+public sealed class DiagnosticItemViewModel(SourceDiagnostic diagnostic)
+{
+    public string Severity { get; } = diagnostic.Severity.ToString();
+    public string Provider { get; } = string.IsNullOrWhiteSpace(diagnostic.ProviderId) ? "unknown" : diagnostic.ProviderId;
+    public string Code { get; } = diagnostic.Code;
+    public string Summary { get; } = diagnostic.Message;
+    public string Path { get; } = diagnostic.MetadataPath ?? string.Empty;
+    public string Detail { get; } = diagnostic.TechnicalDetail ?? string.Empty;
+    public bool HasPath => Path.Length > 0;
+    public bool HasDetail => Detail.Length > 0;
+    public bool IsError => diagnostic.Severity == SourceDiagnosticSeverity.Error;
+    public bool IsWarning => diagnostic.Severity == SourceDiagnosticSeverity.Warning;
+    public bool IsInfo => diagnostic.Severity == SourceDiagnosticSeverity.Info;
+}
+
+public sealed class ProviderStatusRowViewModel(
+    string id,
+    string name,
+    bool isEnabled,
+    bool isDetected,
+    int rootCount,
+    int gameCount,
+    string status,
+    string rootPath)
+{
+    public string Id { get; } = id;
+    public string Name { get; } = name;
+    public bool IsEnabled { get; } = isEnabled;
+    public bool IsDetected { get; } = isDetected;
+    public int RootCount { get; } = rootCount;
+    public int GameCount { get; } = gameCount;
+    public string Status { get; } = status;
+    public string RootPath { get; } = rootPath;
+    public string DetectionLabel => IsDetected ? "Detected" : "Not detected";
+    public string EnabledLabel => IsEnabled ? "Enabled" : "Disabled";
+    public bool HasRootPath => RootPath.Length > 0;
+}
 
 public sealed class ComponentCardViewModel : INotifyPropertyChanged
 {
@@ -344,7 +394,7 @@ public sealed class ComponentCardViewModel : INotifyPropertyChanged
 public sealed record ExecutableCandidateDisplay(int Score, string Confidence, string Path, string Reasons);
 
 public sealed record GameSelectionSnapshot(
-    SteamGame Game,
+    InstalledGame Game,
     long Generation,
     bool IsLoading,
     IReadOnlyList<ComponentCardViewModel> ComponentCards,
@@ -372,7 +422,7 @@ public sealed record GameSelectionSnapshot(
     SelectionPhase Phase = SelectionPhase.Idle,
     string TimingDiagnostics = "")
 {
-    public static GameSelectionSnapshot Loading(SteamGame game, long generation, bool canCheckUpdates) => new(
+    public static GameSelectionSnapshot Loading(InstalledGame game, long generation, bool canCheckUpdates) => new(
         game,
         generation,
         true,
@@ -413,12 +463,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IStackStatusProvider? stackStatusProvider;
     private readonly XdgPaths paths;
     private readonly ArtifactCacheService artifactCache;
-    private readonly Func<SteamGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder;
+    private readonly Func<InstalledGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder;
+    private readonly PlatformCapabilities platformCapabilities;
+    private readonly LibraryWatchService? libraryWatchService;
+    private readonly IReadOnlyList<IGameSourceProvider> watchProviders;
+    private readonly IGameReadinessService readinessService;
+    private readonly ConcurrentDictionary<string, GameReadinessState> readinessSummaries = new(StringComparer.Ordinal);
     private ApplicationState applicationState = new();
-    private List<SteamGame> games = [];
-    private IReadOnlyList<SteamGame> filteredGames = [];
+    private List<InstalledGame> games = [];
+    private IReadOnlyList<InstalledGame> filteredGames = [];
     private GameSelectionSnapshot? activeSnapshot;
     private string searchText = string.Empty;
+    private string libraryFilter = "All";
     private string globalStatus = "Ready to scan";
     private string? errorMessage;
     private UiState currentState = UiState.Empty;
@@ -431,23 +487,50 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string capabilityPreflightText = string.Empty;
     private bool isCacheBusy;
     private long busyGeneration;
+    private string scanMetricsText = string.Empty;
+    private string protonSummary = string.Empty;
+    private string hdrSummary = string.Empty;
+    private string launchCompositionText = string.Empty;
+    private string selectedNavigation = "Library";
+    private IReadOnlyList<DiagnosticItemViewModel> diagnosticItems = [];
+    private IReadOnlyList<ProviderStatusRowViewModel> providerStatuses = [];
+    private string lastScanSummary = "No scan yet";
+    private long providerRefreshGeneration;
+    private IReadOnlyList<ComponentUpdateItemViewModel> componentUpdates = [];
 
     public MainViewModel() : this(null) { }
 
     public MainViewModel(IReadOnlyList<string>? steamRoots)
     {
         paths = new XdgPaths();
-        discovery = new GameDiscoveryAdapter(new SteamDiscoveryService(new ExecutableDetector()), steamRoots);
+        var indexStore = new JsonLibraryIndexStore(paths.LibraryIndexFile);
+        var discoveryService = new SteamDiscoveryService(new ExecutableDetector(), libraryIndexStore: indexStore);
+        var multiSource = new MultiSourceLibraryService(
+            MultiSourceLibraryService.CreateDefaultProviders(discoveryService),
+            new GameAnalyzer(),
+            indexStore,
+            new JsonSourceIndexStore(paths.SourceIndexFile));
+        discovery = new GameDiscoveryAdapter(discoveryService, steamRoots, indexStore, multiSource, paths);
         var httpClient = MetadataHttp.CreateClient();
         var stackStatusService = new StackStatusService(httpClient, paths);
         stackStatusProvider = new StackReportProviderAdapter(stackStatusService);
         var catalog = new GameProfileCatalog(paths);
-        statusProvider = new ComponentStatusProviderAdapter(new ComponentDetector(catalog));
+        var detector = new ComponentDetector(catalog);
+        statusProvider = new ComponentStatusProviderAdapter(detector);
         stateStore = new JsonStateStore(paths.StateFile);
         preferencesStore = new JsonUiPreferencesStore(Path.Combine(paths.AppConfigDirectory, "ui.json"));
         planner = new DeploymentPlanner();
         executor = new DeploymentExecutor();
         artifactCache = new ArtifactCacheService(paths);
+        platformCapabilities = new LinuxPlatformCapabilityProvider().Detect();
+        watchProviders = MultiSourceLibraryService.CreateDefaultProviders(discoveryService);
+        libraryWatchService = new LibraryWatchService(_ => RefreshAsync());
+        readinessService = new GameReadinessService(
+            stackStatusService,
+            detector,
+            new ProxyDiagnosticsService(catalog),
+            new RecommendedSetupService(),
+            new LaunchConfigurationService());
     }
 
     public MainViewModel(
@@ -458,7 +541,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         DeploymentPlanner? planner = null,
         IDeploymentExecutor? executor = null,
         IStackStatusProvider? stackStatusProvider = null,
-        Func<SteamGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder = null)
+        Func<InstalledGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder = null,
+        IGameReadinessService? readinessService = null)
     {
         this.discovery = discovery;
         this.statusProvider = statusProvider;
@@ -470,13 +554,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         this.recommendedPlanBuilder = recommendedPlanBuilder;
         paths = new XdgPaths();
         artifactCache = new ArtifactCacheService(paths);
+        platformCapabilities = new LinuxPlatformCapabilityProvider().Detect();
+        libraryWatchService = null;
+        watchProviders = [];
+        this.readinessService = readinessService ?? new GameReadinessService(
+            recommendations: new RecommendedSetupService(),
+            launchConfiguration: new LaunchConfigurationService());
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public UiPreferences Preferences { get; private set; } = new();
-    public IReadOnlyList<SteamGame> Games => games;
-    public IReadOnlyList<SteamGame> FilteredGames { get => filteredGames; private set => Set(ref filteredGames, value); }
-    public SteamGame? SelectedGame => activeSnapshot?.Game;
+    public IReadOnlyList<InstalledGame> Games => games;
+    public IReadOnlyList<InstalledGame> FilteredGames { get => filteredGames; private set => Set(ref filteredGames, value); }
+    public InstalledGame? SelectedGame => activeSnapshot?.Game;
     public IReadOnlyList<ComponentCardViewModel> ComponentCards => activeSnapshot?.ComponentCards ?? [];
     public string SearchText
     {
@@ -488,6 +578,172 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ApplyFilter();
         }
     }
+
+    public string LibraryFilter
+    {
+        get => libraryFilter;
+        set
+        {
+            if (!Set(ref libraryFilter, value ?? "All")) return;
+            Preferences.LibraryFilter = libraryFilter;
+            ApplyFilter();
+        }
+    }
+
+    public string SelectedNavigation
+    {
+        get => selectedNavigation;
+        set
+        {
+            var next = NormalizeNavigation(value);
+            if (!Set(ref selectedNavigation, next)) return;
+            OnPropertyChanged(nameof(SelectedSection));
+            OnPropertyChanged(nameof(ShowOverviewPage));
+            OnPropertyChanged(nameof(ShowLibraryPage));
+            OnPropertyChanged(nameof(ShowUpdatesPage));
+            OnPropertyChanged(nameof(ShowDiagnosticsPage));
+            OnPropertyChanged(nameof(ShowSettingsPage));
+            RaiseStateProperties();
+            RaiseUpdatesPageProperties();
+        }
+    }
+
+    public MainSection SelectedSection => SelectedNavigation switch
+    {
+        "Overview" => MainSection.Overview,
+        "Updates" => MainSection.Updates,
+        "Diagnostics" => MainSection.Diagnostics,
+        "Settings" => MainSection.Settings,
+        _ => MainSection.Library
+    };
+
+    public bool ShowOverviewPage => SelectedSection == MainSection.Overview;
+    public bool ShowLibraryPage => SelectedSection == MainSection.Library;
+    public bool ShowUpdatesPage => SelectedSection == MainSection.Updates;
+    public bool ShowDiagnosticsPage => SelectedSection == MainSection.Diagnostics;
+    public bool ShowSettingsPage => SelectedSection == MainSection.Settings;
+    public IReadOnlyList<string> NavigationItems { get; } = ["Overview", "Library", "Updates", "Diagnostics", "Settings"];
+    public IReadOnlyList<string> LibraryFilters { get; } =
+    [
+        "All", "Steam", "Epic", "GOG", "Amazon", "Heroic", "Legendary", "Lutris", "Bottles", "Minigalaxy", "Manual",
+        "Windows", "Native/unsupported", "Needs executable confirmation",
+        "Ready", "Not configured", "Anti-cheat", "Unsupported", "Unreal", "Unity", "RE Engine", "Installing"
+    ];
+    public string ScanMetricsText
+    {
+        get => scanMetricsText;
+        private set
+        {
+            if (!Set(ref scanMetricsText, value)) return;
+            OnPropertyChanged(nameof(HasScanMetrics));
+        }
+    }
+    public bool HasScanMetrics => ScanMetricsText.Length > 0;
+    public string SourceDiagnosticsText { get; private set; } = string.Empty;
+    public IReadOnlyList<DiagnosticItemViewModel> DiagnosticItems
+    {
+        get => diagnosticItems;
+        private set
+        {
+            diagnosticItems = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasDiagnosticItems));
+            OnPropertyChanged(nameof(DiagnosticWarningCount));
+            OnPropertyChanged(nameof(OverviewDiagnosticSummary));
+        }
+    }
+    public IReadOnlyList<ProviderStatusRowViewModel> ProviderStatuses
+    {
+        get => providerStatuses;
+        private set
+        {
+            providerStatuses = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasProviderStatuses));
+        }
+    }
+    public bool HasDiagnosticItems => DiagnosticItems.Count > 0;
+    public bool HasProviderStatuses => ProviderStatuses.Count > 0;
+    public int DiagnosticWarningCount =>
+        DiagnosticItems.Count(item => item.Severity is "Warning" or "Error");
+    public string LastScanSummary
+    {
+        get => lastScanSummary;
+        private set => Set(ref lastScanSummary, value);
+    }
+    public string ProtonSummary { get => protonSummary; private set => Set(ref protonSummary, value); }
+    public string HdrSummary { get => hdrSummary; private set => Set(ref hdrSummary, value); }
+    public string LaunchCompositionText { get => launchCompositionText; private set => Set(ref launchCompositionText, value); }
+    public PlatformCapabilities PlatformCapabilities => platformCapabilities;
+    public ReadinessPresentation Readiness { get; } = new();
+    public int OverviewGameCount => games.Count;
+    public int OverviewWindowsCount => games.Count(game =>
+        game.Platform == GameBinaryPlatform.Windows && game.IsActionable && !game.IsNativeLinux);
+    public int OverviewAntiCheatCount => games.Count(game => game.RequiresConfirmation);
+    public int OverviewUnsupportedCount => games.Count(game => game.IsNativeLinux || game.Executable is null || !game.IsActionable);
+    public int OverviewInstallingCount => games.Count(game => game.InstallState == SteamInstallState.Installing);
+    public int OverviewEnabledSourceCount => CountEnabledSources();
+    public int OverviewReadyCount => CountReadiness(GameReadinessState.Ready, GameReadinessState.ReadyWithWarnings);
+    public int OverviewNeedsAttentionCount => CountReadiness(
+        GameReadinessState.NeedsConfiguration, GameReadinessState.NeedsUserSelection, GameReadinessState.Error);
+    public int OverviewUnsupportedReadinessCount => CountReadiness(
+        GameReadinessState.Unsupported, GameReadinessState.Unavailable);
+    public int OverviewUpdateCount => componentUpdates.Count(item => item.CanReview);
+    public int OverviewRecoveryCount => readinessSummaries.Count(pair =>
+        pair.Value is GameReadinessState.NeedsConfiguration) +
+        games.Count(game => DeploymentRecoveryProbe.Probe(game.GameRoot).HasInterruptedTransaction);
+    public string OverviewSummary =>
+        $"{OverviewGameCount} games · {OverviewReadyCount} ready · {OverviewNeedsAttentionCount} need attention";
+    public string OverviewAttentionSummary =>
+        OverviewNeedsAttentionCount == 0 && OverviewUnsupportedReadinessCount == 0 && OverviewRecoveryCount == 0
+            ? "No games currently need attention."
+            : $"{OverviewNeedsAttentionCount} need attention · {OverviewUnsupportedReadinessCount} unsupported · {OverviewRecoveryCount} recoveries";
+    public string OverviewSourceSummary =>
+        $"{OverviewEnabledSourceCount} enabled · {DiagnosticWarningCount} provider warnings · {LastScanSummary}";
+    public string OverviewDiagnosticSummary =>
+        HasDiagnosticItems
+            ? $"{DiagnosticItems.Count} recent diagnostics ({DiagnosticWarningCount} warnings/errors)."
+            : "No recent source diagnostics.";
+    public string OverviewUpdateSummary =>
+        OverviewUpdateCount > 0
+            ? $"{OverviewUpdateCount} component update{(OverviewUpdateCount == 1 ? "" : "s")} available."
+            : IsCheckingUpdates
+                ? "Checking official component sources…"
+                : HasUpdates
+                    ? UpdateStatusText
+                    : "No pending component updates are known.";
+    public IReadOnlyList<ComponentUpdateItemViewModel> ComponentUpdates
+    {
+        get => componentUpdates;
+        private set
+        {
+            componentUpdates = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasComponentUpdates));
+            OnPropertyChanged(nameof(OverviewUpdateCount));
+            OnPropertyChanged(nameof(OverviewUpdateSummary));
+            RaiseUpdatesPageProperties();
+        }
+    }
+    public bool HasComponentUpdates => ComponentUpdates.Count > 0;
+    public bool UpdatesHasAvailable => HasComponentUpdates || HasUpdates;
+    public bool UpdatesIsLoading => IsCheckingUpdates;
+    public bool UpdatesIsOffline => !IsCheckingUpdates && UpdateState == UpdateCheckState.Offline;
+    public bool UpdatesIsUnavailable =>
+        !IsCheckingUpdates &&
+        !HasComponentUpdates &&
+        !HasUpdates &&
+        UpdateState == UpdateCheckState.UnableToCheck &&
+        HasSelection;
+    public bool UpdatesIsEmpty =>
+        !IsCheckingUpdates &&
+        !HasComponentUpdates &&
+        !HasUpdates &&
+        !UpdatesIsOffline &&
+        !UpdatesIsUnavailable;
+    public IReadOnlyList<ComponentCardViewModel> OutdatedComponents =>
+        ComponentCards.Where(card => card.Health == ComponentHealth.Outdated).ToArray();
+
     public string GlobalStatus { get => globalStatus; private set => Set(ref globalStatus, value); }
     public string? ErrorMessage { get => errorMessage; private set { if (Set(ref errorMessage, value)) OnPropertyChanged(nameof(HasError)); } }
     public UiState CurrentState { get => currentState; private set { if (Set(ref currentState, value)) RaiseStateProperties(); } }
@@ -560,7 +816,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string FilteredGameCount => FilteredGames.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
     public bool HasSelection => SelectedGame is not null;
     public bool IsSelectionLoading => activeSnapshot?.IsLoading == true;
-    public bool ShowGameLoading => HasSelection && IsSelectionLoading;
     public bool UseMotion => !Preferences.ReduceMotion;
     public bool ReduceMotion
     {
@@ -585,6 +840,160 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _ = SavePreferencesAsync();
         }
     }
+
+    public bool ScanAllSources
+    {
+        get => Preferences.ScanAllSources;
+        set
+        {
+            if (Preferences.ScanAllSources == value) return;
+            Preferences.ScanAllSources = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+            OnPropertyChanged(nameof(OverviewSummary));
+            OnPropertyChanged(nameof(OverviewSourceSummary));
+            ScheduleProviderRefresh();
+        }
+    }
+
+    public bool EnableHeroic
+    {
+        get => Preferences.EnableHeroic;
+        set
+        {
+            if (Preferences.EnableHeroic == value) return;
+            Preferences.EnableHeroic = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+            OnPropertyChanged(nameof(OverviewSummary));
+            OnPropertyChanged(nameof(OverviewSourceSummary));
+            ScheduleProviderRefresh();
+        }
+    }
+
+    public bool EnableLegendary
+    {
+        get => Preferences.EnableLegendary;
+        set
+        {
+            if (Preferences.EnableLegendary == value) return;
+            Preferences.EnableLegendary = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+            OnPropertyChanged(nameof(OverviewSummary));
+            OnPropertyChanged(nameof(OverviewSourceSummary));
+            ScheduleProviderRefresh();
+        }
+    }
+
+    public bool EnableLutris
+    {
+        get => Preferences.EnableLutris;
+        set
+        {
+            if (Preferences.EnableLutris == value) return;
+            Preferences.EnableLutris = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+            OnPropertyChanged(nameof(OverviewSummary));
+            OnPropertyChanged(nameof(OverviewSourceSummary));
+            ScheduleProviderRefresh();
+        }
+    }
+
+    public bool EnableBottles
+    {
+        get => Preferences.EnableBottles;
+        set
+        {
+            if (Preferences.EnableBottles == value) return;
+            Preferences.EnableBottles = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+            OnPropertyChanged(nameof(OverviewSummary));
+            OnPropertyChanged(nameof(OverviewSourceSummary));
+            ScheduleProviderRefresh();
+        }
+    }
+
+    public bool EnableMinigalaxy
+    {
+        get => Preferences.EnableMinigalaxy;
+        set
+        {
+            if (Preferences.EnableMinigalaxy == value) return;
+            Preferences.EnableMinigalaxy = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+            OnPropertyChanged(nameof(OverviewSummary));
+            OnPropertyChanged(nameof(OverviewSourceSummary));
+            ScheduleProviderRefresh();
+        }
+    }
+
+    public bool AutomaticallyEvaluateReadiness
+    {
+        get => Preferences.AutomaticallyEvaluateReadiness;
+        set
+        {
+            if (Preferences.AutomaticallyEvaluateReadiness == value) return;
+            Preferences.AutomaticallyEvaluateReadiness = value;
+            OnPropertyChanged();
+            _ = SavePreferencesAsync();
+        }
+    }
+
+    public bool ShowUnsupportedNativeGames
+    {
+        get => Preferences.ShowUnsupportedNativeGames;
+        set
+        {
+            if (Preferences.ShowUnsupportedNativeGames == value) return;
+            Preferences.ShowUnsupportedNativeGames = value;
+            OnPropertyChanged();
+            ApplyFilter();
+            _ = SavePreferencesAsync();
+        }
+    }
+
+    public bool WarnBeforeAntiCheatDeployments
+    {
+        get => Preferences.WarnBeforeAntiCheatDeployments;
+        set
+        {
+            if (Preferences.WarnBeforeAntiCheatDeployments == value) return;
+            Preferences.WarnBeforeAntiCheatDeployments = value;
+            OnPropertyChanged();
+            _ = SavePreferencesAsync();
+            if (SelectedGame is not null) _ = RefreshReadinessAsync(true);
+        }
+    }
+
+    public bool PreferExistingManagedVersions
+    {
+        get => Preferences.PreferExistingManagedVersions;
+        set
+        {
+            if (Preferences.PreferExistingManagedVersions == value) return;
+            Preferences.PreferExistingManagedVersions = value;
+            OnPropertyChanged();
+            _ = SavePreferencesAsync();
+            if (SelectedGame is not null) _ = RefreshReadinessAsync(true);
+        }
+    }
+
+    public bool RefreshArtifactMetadataOnStartup
+    {
+        get => Preferences.RefreshArtifactMetadataOnStartup;
+        set
+        {
+            if (Preferences.RefreshArtifactMetadataOnStartup == value) return;
+            Preferences.RefreshArtifactMetadataOnStartup = value;
+            OnPropertyChanged();
+            _ = SavePreferencesAsync();
+        }
+    }
+
     public string AdditionalSteamLibrary
     {
         get => Preferences.AdditionalSteamLibrary;
@@ -594,15 +1003,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (Preferences.AdditionalSteamLibrary == normalized) return;
             Preferences.AdditionalSteamLibrary = normalized;
             OnPropertyChanged();
-            _ = SavePreferencesAsync();
+            ScheduleProviderRefresh();
         }
     }
     public string SelectionProgress => activeSnapshot?.Progress ?? string.Empty;
     public ExecutionResult? PreviousOperationResult => activeSnapshot?.PreviousOperationResult;
-    public bool ShowWelcome => CurrentState == UiState.Empty;
-    public bool ShowNoGames => CurrentState == UiState.NoGames;
-    public bool ShowNoMatches => HasGames && !HasFilteredGames && !IsBusy;
-    public bool ShowGame => HasSelection;
+    public bool ShowWelcome => ShowLibraryPage && CurrentState == UiState.Empty;
+    public bool ShowNoGames => ShowLibraryPage && CurrentState == UiState.NoGames;
+    public bool ShowNoMatches => ShowLibraryPage && HasGames && !HasFilteredGames && !IsBusy;
+    public bool ShowGame => ShowLibraryPage && HasSelection && CurrentState is not UiState.Empty and not UiState.NoGames;
+    public bool ShowGameLoading => ShowGame && IsSelectionLoading;
     public bool HasWarnings => SelectedGame?.RequiresConfirmation == true || ComponentCards.Any(x => x.Health == ComponentHealth.Conflicting);
     public string WarningText => SelectedGame?.RequiresConfirmation == true
         ? "Anti-cheat files were detected. Deployment requires additional confirmation and may be unsupported."
@@ -611,22 +1021,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
             : string.Empty;
     public string SelectedGameTitle => SelectedGame?.Name ?? "No game selected";
     public string SelectedGameSubtitle => SelectedGame is null ? string.Empty :
-        $"Steam AppID {SelectedGame.AppId}  ·  {(SelectedGame.InstallState == SteamInstallState.Installing ? "Installing" : SelectedGame.IsNativeLinux ? "Native Linux / unsupported" : SelectedGame.Engine.ToString())}";
+        SelectedGame.IdentitySummary +
+        (SelectedGame.ExternalId is { Length: > 0 } external && SelectedGame.Store != GameStore.Steam
+            ? $"  ·  {external}"
+            : SelectedGame.Store == GameStore.Steam
+                ? $"  ·  AppID {SelectedGame.AppId}"
+                : string.Empty) +
+        (SelectedGame.InstallState == SteamInstallState.Installing ? "  ·  Installing" : string.Empty);
     public string ExecutableDisplay => SelectedGame?.Executable is null ? "Not detected" : Path.GetFileName(SelectedGame.Executable);
     public string ExecutablePath => SelectedGame?.Executable ?? string.Empty;
-    public string DeploymentDisplay => SelectedGame is null ? string.Empty : ShortenPath(SelectedGame.DeploymentDirectory);
+    public string DeploymentDisplay => SelectedGame is null ? string.Empty : ShortenPath(SelectedGame.DeploymentDirectory ?? SelectedGame.GameRoot);
     public string DeploymentPath => SelectedGame?.DeploymentDirectory ?? string.Empty;
     public string ProtonPrefixDisplay => SelectedGame is null ? string.Empty :
         SelectedGame.HasProtonPrefix ? ShortenPath(SelectedGame.ProtonPrefix) : "Proton prefix not created yet";
     public string ProtonPrefixPath => SelectedGame?.ProtonPrefix ?? string.Empty;
     public string ConfidenceText => SelectedGame is null ? string.Empty : $"{SelectedGame.Confidence} confidence";
-    public string ArchitectureDisplay => SelectedGame?.Candidates.FirstOrDefault(x =>
+    public string ArchitectureDisplay => SelectedGame?.CandidateList.FirstOrDefault(x =>
             SelectedGame.Executable is not null &&
             Path.GetFullPath(x.Path).Equals(Path.GetFullPath(SelectedGame.Executable), StringComparison.Ordinal))?.Architecture
-            .ToString() ?? SelectedGame?.Candidates.FirstOrDefault()?.Architecture.ToString() ?? "Unknown";
+            .ToString() ?? SelectedGame?.CandidateList.FirstOrDefault()?.Architecture.ToString() ?? "Unknown";
     public string EngineDisplay => SelectedGame?.Engine.ToString() ?? "Unknown";
     public string SelectionReason => SelectedGame?.SelectionReason ?? string.Empty;
-    public IReadOnlyList<ExecutableCandidateDisplay> Candidates => SelectedGame?.Candidates.Select(x =>
+    public IReadOnlyList<ExecutableCandidateDisplay> Candidates => SelectedGame?.CandidateList.Select(x =>
         new ExecutableCandidateDisplay(x.Score, x.Confidence.ToString(), x.Path, string.Join(" · ", x.Reasons))).ToArray() ?? [];
     public string LaunchOption => activeSnapshot?.RequiredLaunchOption ?? string.Empty;
     public LaunchOptionStatus LaunchOptionStatus => activeSnapshot?.LaunchOptionStatus ?? LaunchOptionStatus.NotDetected;
@@ -688,13 +1104,48 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Preferences.CheckForUpdatesAutomatically = true;
         Preferences.AdditionalSteamLibrary = string.Empty;
         Preferences.Theme = "System";
+        Preferences.ScanAllSources = true;
+        Preferences.EnableHeroic = true;
+        Preferences.EnableLegendary = true;
+        Preferences.EnableLutris = true;
+        Preferences.EnableBottles = true;
+        Preferences.EnableMinigalaxy = true;
+        Preferences.AutomaticallyEvaluateReadiness = true;
+        Preferences.ShowUnsupportedNativeGames = true;
+        Preferences.WarnBeforeAntiCheatDeployments = true;
+        Preferences.PreferExistingManagedVersions = true;
+        Preferences.RefreshArtifactMetadataOnStartup = true;
         OnPropertyChanged(nameof(CacheLimitGiB));
         OnPropertyChanged(nameof(ReduceMotion));
         OnPropertyChanged(nameof(UseMotion));
         OnPropertyChanged(nameof(CheckForUpdatesAutomatically));
         OnPropertyChanged(nameof(AdditionalSteamLibrary));
-        _ = SavePreferencesAsync();
+        OnPropertyChanged(nameof(ScanAllSources));
+        OnPropertyChanged(nameof(EnableHeroic));
+        OnPropertyChanged(nameof(EnableLegendary));
+        OnPropertyChanged(nameof(EnableLutris));
+        OnPropertyChanged(nameof(EnableBottles));
+        OnPropertyChanged(nameof(EnableMinigalaxy));
+        OnPropertyChanged(nameof(AutomaticallyEvaluateReadiness));
+        OnPropertyChanged(nameof(ShowUnsupportedNativeGames));
+        OnPropertyChanged(nameof(WarnBeforeAntiCheatDeployments));
+        OnPropertyChanged(nameof(PreferExistingManagedVersions));
+        OnPropertyChanged(nameof(RefreshArtifactMetadataOnStartup));
+        OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+        OnPropertyChanged(nameof(OverviewSummary));
+        OnPropertyChanged(nameof(OverviewSourceSummary));
+        ScheduleProviderRefresh();
     }
+
+    public void Navigate(MainSection section) =>
+        SelectedNavigation = section switch
+        {
+            MainSection.Overview => "Overview",
+            MainSection.Updates => "Updates",
+            MainSection.Diagnostics => "Diagnostics",
+            MainSection.Settings => "Settings",
+            _ => "Library"
+        };
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -713,10 +1164,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
             OnPropertyChanged(nameof(CacheLimitGiB));
             OnPropertyChanged(nameof(CheckForUpdatesAutomatically));
             OnPropertyChanged(nameof(AdditionalSteamLibrary));
+            OnPropertyChanged(nameof(ScanAllSources));
+            OnPropertyChanged(nameof(EnableHeroic));
+            OnPropertyChanged(nameof(EnableLegendary));
+            OnPropertyChanged(nameof(EnableLutris));
+            OnPropertyChanged(nameof(EnableBottles));
+            OnPropertyChanged(nameof(EnableMinigalaxy));
             applicationState = await stateStore.LoadAsync(cancellationToken);
             RefreshCapabilityPreflight();
-            CurrentState = UiState.Empty;
+            libraryFilter = string.IsNullOrWhiteSpace(Preferences.LibraryFilter) ? "All" : Preferences.LibraryFilter;
+            OnPropertyChanged(nameof(LibraryFilter));
+            if (applicationState.DiscoveredGames.Count > 0)
+            {
+                games = applicationState.DiscoveredGames.Select(InstalledGame.FromPersistedGameEntry).ToList();
+                ApplyFilter();
+                RaiseOverviewProperties();
+                CurrentState = games.Count == 0 ? UiState.NoGames : UiState.Ready;
+                GlobalStatus = $"{games.Count} games from cache · refreshing…";
+                var cached = ResolvePreferredGame(games, Preferences) ?? FilteredGames.FirstOrDefault();
+                if (cached is not null)
+                    await SelectAsync(cached, cancellationToken);
+            }
+            else
+                CurrentState = UiState.Empty;
             await RefreshAsync(cancellationToken);
+            await RefreshWatchTargetsAsync(cancellationToken);
         }
         catch (OperationCanceledException) { GlobalStatus = "Scan cancelled"; CurrentState = UiState.Empty; }
         catch (Exception exception) { SetError("Could not initialize", exception); }
@@ -771,7 +1243,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             await RefreshArtifactReferencesAsync(games, cancellationToken);
             await stateStore.SaveAsync(applicationState, cancellationToken);
-            var references = applicationState.ArtifactReferencesByAppId.Values.SelectMany(x => x)
+            var references = applicationState.ArtifactReferencesByInstallId.Values.SelectMany(x => x)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var result = await artifactCache.CleanupAsync(references,
                 Preferences.CacheLimitMiB * 1024L * 1024L, cancellationToken);
@@ -795,9 +1267,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
             adapter.ExtraSteamRoots = string.IsNullOrWhiteSpace(Preferences.AdditionalSteamLibrary)
                 ? null
                 : [Preferences.AdditionalSteamLibrary];
+            adapter.UseAllSources = Preferences.ScanAllSources;
+            adapter.ForceFullAnalysis = false;
+            var enabled = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "steam" };
+            if (Preferences.EnableHeroic) enabled.Add("heroic");
+            if (Preferences.EnableLegendary) enabled.Add("legendary");
+            if (Preferences.EnableLutris) enabled.Add("lutris");
+            if (Preferences.EnableBottles) enabled.Add("bottles");
+            if (Preferences.EnableMinigalaxy) enabled.Add("minigalaxy");
+            enabled.Add("manual");
+            adapter.EnabledProviders = enabled;
         }
         var previousGames = games.Select(GameIdentity).ToHashSet();
-        var selectedAppId = SelectedGame?.AppId ?? Preferences.SelectedAppId;
+        var selectedInstallId = SelectedGame?.EffectiveInstallId ?? Preferences.SelectedInstallId;
+        var selectedAppId = SelectedGame?.SteamAppId ?? Preferences.SelectedAppId;
         var refreshSelectionGeneration = Volatile.Read(ref selectionGeneration);
         if (SelectedGame is { } currentGame)
         {
@@ -815,21 +1298,60 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CurrentState = UiState.Scanning;
         var busy = BeginBusy();
         ErrorMessage = null;
-        GlobalStatus = "Scanning Steam libraries…";
+        GlobalStatus = Preferences.ScanAllSources ? "Scanning game sources…" : "Scanning Steam libraries…";
         try
         {
             var result = await discovery.ScanAsync(applicationState.Overrides, cancellationToken);
-            await RefreshArtifactReferencesAsync(applicationState.DiscoveredGames.Concat(result.Games), cancellationToken);
-            games = result.Games.ToList();
-            applicationState.DiscoveredGames = games;
+            await RefreshArtifactReferencesAsync(
+                applicationState.DiscoveredGames.Select(InstalledGame.FromPersistedGameEntry).Concat(result.Games),
+                cancellationToken);
+            LibraryCollectionDiff.Apply(games, result.Games);
+            applicationState.DiscoveredGames = games.Select(PersistedGameEntry.FromInstalledGame).ToList();
             applicationState.LastScanUtc = DateTimeOffset.UtcNow;
             await stateStore.SaveAsync(applicationState, cancellationToken);
             OnPropertyChanged(nameof(Games));
             OnPropertyChanged(nameof(HasGames));
+            RaiseOverviewProperties();
             ApplyFilter();
+            await RefreshWatchTargetsAsync(cancellationToken);
+            var metrics = (discovery as GameDiscoveryAdapter)?.LastMetrics;
+            var multi = (discovery as GameDiscoveryAdapter)?.LastMultiSourceResult;
+            if (multi is not null)
+            {
+                ScanMetricsText =
+                    $"{multi.Games.Count} installs · gen {multi.ScanGeneration} · " +
+                    string.Join(" · ", multi.TimingsMilliseconds.Select(entry => $"{entry.Key} {entry.Value:0} ms"));
+                ApplySourcePanels(multi);
+            }
+            else if (metrics is not null)
+            {
+                ScanMetricsText =
+                    $"{metrics.CacheHits} cache hits · {metrics.Analyzed} analyzed · {metrics.ElapsedMilliseconds} ms";
+                LastScanSummary = $"Last scan {DateTimeOffset.Now:g}";
+                ProviderStatuses = BuildSteamOnlyProviderStatuses(games.Count);
+                DiagnosticItems = [];
+                SourceDiagnosticsText = string.Empty;
+                OnPropertyChanged(nameof(SourceDiagnosticsText));
+            }
+            else
+            {
+                LastScanSummary = applicationState.LastScanUtc is { } stamp
+                    ? $"Last scan {stamp.ToLocalTime():g}"
+                    : "No scan yet";
+                ProviderStatuses = BuildConfiguredProviderStatuses();
+            }
             var selectionChangedDuringScan = refreshSelectionGeneration != Volatile.Read(ref selectionGeneration);
-            var targetAppId = selectionChangedDuringScan ? SelectedGame?.AppId : selectedAppId;
-            var restored = targetAppId.HasValue ? games.FirstOrDefault(x => x.AppId == targetAppId.Value) : null;
+            var targetInstallId = selectionChangedDuringScan
+                ? SelectedGame?.EffectiveInstallId
+                : selectedInstallId;
+            var targetAppId = selectionChangedDuringScan
+                ? SelectedGame?.SteamAppId
+                : selectedAppId;
+            var restored = !string.IsNullOrWhiteSpace(targetInstallId)
+                ? games.FirstOrDefault(x => x.EffectiveInstallId == targetInstallId)
+                : targetAppId.HasValue
+                    ? games.FirstOrDefault(x => x.AppId == targetAppId.Value)
+                    : null;
             var next = restored ?? FilteredGames.FirstOrDefault();
             if (next is not null) await SelectAsync(next, cancellationToken);
             else
@@ -843,29 +1365,110 @@ public sealed class MainViewModel : INotifyPropertyChanged
             GlobalStatus = result.Warnings.Count > 0
                 ? $"{games.Count} games found · {result.Warnings.Count} warnings"
                 : previousGames.Count > 0 && added == 0 && removed == 0
-                    ? $"{games.Count} games found · Steam library is up to date"
+                    ? multi is { UsedCache: true }
+                        ? $"{games.Count} games · unchanged sources reused"
+                        : metrics is { CacheHits: > 0 }
+                            ? $"{games.Count} games · incremental refresh ({metrics.CacheHits} cached)"
+                            : $"{games.Count} games found · library is up to date"
                     : $"{games.Count} games found";
         }
         catch (OperationCanceledException) { GlobalStatus = "Scan cancelled"; CurrentState = games.Count == 0 ? UiState.Empty : UiState.Ready; }
-        catch (Exception exception) { SetError("Steam scan failed", exception); }
+        catch (Exception exception) { SetError("Library scan failed", exception); }
         finally { EndBusy(busy); RaiseStateProperties(); }
     }
 
-    private static string GameIdentity(SteamGame game) =>
-        $"{game.AppId}:{Path.GetFullPath(game.GameRoot).TrimEnd(Path.DirectorySeparatorChar)}";
+    private static string FormatSourceDiagnostics(MultiSourceScanResult multi)
+    {
+        var builder = new StringBuilder();
+        foreach (var result in multi.ProviderResults.OrderBy(item => item.ProviderId, StringComparer.Ordinal))
+        {
+            builder.AppendLine(
+                $"{result.ProviderId}: root={(result.Root.Exists ? "ok" : "missing")} " +
+                $"games={result.Games.Count} malformed={result.MalformedRecords.Count} " +
+                $"skipped={result.SkippedRecords.Count} cache={(result.FromCache ? "hit" : "miss")} " +
+                $"duration={result.Duration.TotalMilliseconds:0}ms");
+            if (!string.IsNullOrWhiteSpace(result.Root.SkipReason))
+                builder.AppendLine($"  {result.Root.SkipReason}");
+        }
+
+        foreach (var diagnostic in multi.Diagnostics.Take(40))
+            builder.AppendLine($"{diagnostic.Severity}: [{diagnostic.ProviderId}/{diagnostic.Code}] {diagnostic.Message}");
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string GameIdentity(InstalledGame game) =>
+        $"{game.EffectiveInstallId}:{Path.GetFullPath(game.GameRoot).TrimEnd(Path.DirectorySeparatorChar)}";
+
+    private static InstalledGame? ResolvePreferredGame(IReadOnlyList<InstalledGame> games, UiPreferences preferences)
+    {
+        if (!string.IsNullOrWhiteSpace(preferences.SelectedInstallId))
+        {
+            var byInstall = games.FirstOrDefault(game => game.EffectiveInstallId == preferences.SelectedInstallId);
+            if (byInstall is not null) return byInstall;
+        }
+        if (preferences.SelectedAppId is { } appId)
+        {
+            var byApp = games.FirstOrDefault(game => game.AppId == appId);
+            if (byApp is not null) return byApp;
+        }
+        return null;
+    }
+
+    private async Task RefreshWatchTargetsAsync(CancellationToken cancellationToken)
+    {
+        if (libraryWatchService is null || !Preferences.WatchSteamLibraries)
+        {
+            libraryWatchService?.Stop();
+            return;
+        }
+
+        var enabled = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "steam", "manual" };
+        if (Preferences.ScanAllSources)
+        {
+            if (Preferences.EnableHeroic) enabled.Add("heroic");
+            if (Preferences.EnableLegendary) enabled.Add("legendary");
+            if (Preferences.EnableLutris) enabled.Add("lutris");
+            if (Preferences.EnableBottles) enabled.Add("bottles");
+            if (Preferences.EnableMinigalaxy) enabled.Add("minigalaxy");
+        }
+
+        var customRoots = new List<string>();
+        if (discovery is GameDiscoveryAdapter adapter && adapter.ExtraSteamRoots is not null)
+            customRoots.AddRange(adapter.ExtraSteamRoots);
+        if (!string.IsNullOrWhiteSpace(Preferences.AdditionalSteamLibrary))
+            customRoots.Add(Preferences.AdditionalSteamLibrary);
+
+        var context = SourceRootDiscovery.CreateContext(
+            customRoots: customRoots,
+            enabledProviders: enabled);
+        var providers = watchProviders.Where(provider => enabled.Contains(provider.Id)).ToArray();
+        var targets = await LibraryWatchService.CollectTargetsAsync(context, providers, cancellationToken)
+            .ConfigureAwait(false);
+        libraryWatchService.ReplaceTargets(targets);
+    }
 
     private async Task RefreshArtifactReferencesAsync(
-        IEnumerable<SteamGame> knownGames,
+        IEnumerable<InstalledGame> knownGames,
         CancellationToken cancellationToken)
     {
-        foreach (var game in knownGames.GroupBy(x => x.AppId).Select(group => group.Last()))
+        foreach (var game in knownGames.GroupBy(x => x.EffectiveInstallId).Select(group => group.Last()))
         {
             if (!Directory.Exists(game.GameRoot)) continue;
             try
             {
                 var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot, cancellationToken);
-                if (manifest.Files.Count > 0 && manifest.AppId != game.AppId) continue;
-                applicationState.ArtifactReferencesByAppId[game.AppId] = manifest.Files
+                if (manifest.Files.Count > 0)
+                {
+                    if (!string.IsNullOrWhiteSpace(manifest.InstallId) &&
+                        !string.Equals(manifest.InstallId, game.EffectiveInstallId, StringComparison.Ordinal))
+                        continue;
+                    if (string.IsNullOrWhiteSpace(manifest.InstallId) &&
+                        manifest.SteamAppId is { } manifestSteam &&
+                        game.SteamAppId is { } gameSteam &&
+                        manifestSteam != gameSteam)
+                        continue;
+                }
+                applicationState.ArtifactReferencesByInstallId[game.EffectiveInstallId] = manifest.Files
                     .SelectMany(file => new[] { file.SourceBlobSha256, file.SourceBundleSha256 })
                     .Where(hash => !string.IsNullOrWhiteSpace(hash))
                     .Select(hash => hash!)
@@ -879,7 +1482,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public async Task SelectAsync(SteamGame? game, CancellationToken cancellationToken = default)
+    public async Task SelectAsync(InstalledGame? game, CancellationToken cancellationToken = default)
     {
         if (game is null) return;
         GameSelectionSnapshot? previousSnapshot;
@@ -895,25 +1498,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
             previousSnapshot = activeSnapshot;
         }
         var selectionToken = currentCancellation.Token;
-        var gameChanged = previousSnapshot?.Game.AppId != game.AppId;
-        Preferences.SelectedAppId = game.AppId;
+        var gameChanged = previousSnapshot?.Game.EffectiveInstallId != game.EffectiveInstallId;
+        Preferences.SelectedInstallId = game.EffectiveInstallId;
+        Preferences.SelectedAppId = game.SteamAppId;
         ApplySnapshot(GameSelectionSnapshot.Loading(game, generation, stackStatusProvider is not null), UiState.Loading);
-        SetSelectionStatus($"Detecting {game.Name}…", game.AppId, generation, selectionToken);
-        SetSelectionError(null, game.AppId, generation);
+        SetSelectionStatus($"Detecting {game.Name}…", game.EffectiveInstallId, generation, selectionToken);
+        SetSelectionError(null, game.EffectiveInstallId, generation);
         var timing = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var catalog = new GameProfileCatalog(paths);
+            var target = game.ToDeploymentTarget();
             var statusTask = statusProvider.DetectAsync(game, selectionToken);
-            var profileTask = catalog.MatchAsync(game, selectionToken);
-            var proxyTask = new ProxyDiagnosticsService(catalog).DiagnoseAsync(game, selectionToken);
+            var profileTask = catalog.MatchAsync(target, selectionToken);
+            var proxyTask = new ProxyDiagnosticsService(catalog).DiagnoseAsync(target, selectionToken);
             await Task.WhenAll(statusTask, profileTask, proxyTask);
-            if (!IsCurrentSelection(game.AppId, generation, selectionToken)) return;
+            if (!IsCurrentSelection(game.EffectiveInstallId, generation, selectionToken)) return;
             var localMs = timing.ElapsedMilliseconds;
             var statuses = await statusTask;
             var profile = await profileTask;
             var proxy = await proxyTask;
-            var eligibility = OptiScalerEligibilityService.Evaluate(game, profile, proxy);
+            var eligibility = OptiScalerEligibilityService.Evaluate(target, profile, proxy);
             var cards = CreateComponentCards(statuses, null, gameChanged ? null : previousSnapshot);
             var support = BuildSupportSummary(profile, proxy, null, eligibility, false);
             var proposedAction = DeterminePrimaryAction(statuses, false);
@@ -953,20 +1558,56 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 hdr.Explanation,
                 autoUpdates ? SelectionPhase.CheckingUpdates : SelectionPhase.Idle,
                 $"Local detect {localMs} ms · compatibility from catalog/proxy · updates {(autoUpdates ? "background" : "skipped")}");
-            if (!IsCurrentSelection(game.AppId, generation, selectionToken)) return;
+            if (!IsCurrentSelection(game.EffectiveInstallId, generation, selectionToken)) return;
             var state = cards.Any(x => x.Health == ComponentHealth.Conflicting) ? UiState.Conflict :
                 game.RequiresConfirmation ? UiState.Unsupported : UiState.Ready;
             ApplySnapshot(snapshot, state, selectionToken);
-            SetSelectionStatus(support.Title, game.AppId, generation, selectionToken);
+            UpdateLinuxDiagnostics(game, launch.RequiredOption);
+            SetSelectionStatus(support.Title, game.EffectiveInstallId, generation, selectionToken);
+            if (Preferences.AutomaticallyEvaluateReadiness)
+                _ = EvaluateReadinessForSelectionAsync(game, generation, statuses, proxy, launch.RequiredOption, selectionToken);
         }
         catch (OperationCanceledException) when (selectionToken.IsCancellationRequested) { return; }
         catch (Exception exception)
         {
-            SetSelectionError($"Could not read this game: {exception.Message}", game.AppId, generation, selectionToken, UiState.Error);
+            SetSelectionError($"Could not read this game: {exception.Message}", game.EffectiveInstallId, generation, selectionToken, UiState.Error);
         }
-        if (!IsCurrentSelection(game.AppId, generation, selectionToken)) return;
+        if (!IsCurrentSelection(game.EffectiveInstallId, generation, selectionToken)) return;
         if (stackStatusProvider is not null && Preferences.CheckForUpdatesAutomatically)
             _ = CheckForUpdatesAsync(true, selectionToken);
+    }
+
+    public Task RefreshReadinessAsync(bool force = false, CancellationToken cancellationToken = default)
+    {
+        if (SelectedGame is null || activeSnapshot is null) return Task.CompletedTask;
+        return EvaluateReadinessForSelectionAsync(
+            SelectedGame,
+            activeSnapshot.Generation,
+            null,
+            null,
+            activeSnapshot.RequiredLaunchOption,
+            cancellationToken,
+            force);
+    }
+
+    public void OpenReadinessForInstall(string installId)
+    {
+        var game = games.FirstOrDefault(item => item.EffectiveInstallId == installId);
+        if (game is null) return;
+        Navigate(MainSection.Library);
+        _ = SelectAsync(game);
+    }
+
+    public void FilterLibraryForReadiness(string filter)
+    {
+        LibraryFilter = filter;
+        Navigate(MainSection.Library);
+    }
+
+    public void AttachRecommendedPlanSummary(DeploymentPlan plan)
+    {
+        Readiness.AttachPlanSummary(DeploymentPlanSummary.From(plan));
+        OnPropertyChanged(nameof(Readiness));
     }
 
     public async Task CheckForUpdatesAsync(bool automatic = false, CancellationToken cancellationToken = default)
@@ -979,7 +1620,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, selectionToken);
         linkedCancellation.CancelAfter(MetadataHttp.UpdateCheckBudget);
         var updateToken = linkedCancellation.Token;
-        if (!IsCurrentSelection(game.AppId, generation, updateToken)) return;
+        if (!IsCurrentSelection(game.EffectiveInstallId, generation, updateToken)) return;
         var updateStarted = System.Diagnostics.Stopwatch.StartNew();
         ApplySnapshot(startingSnapshot with
         {
@@ -987,11 +1628,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             UpdateState = UpdateCheckState.Checking,
             Phase = SelectionPhase.CheckingUpdates
         }, CurrentState, updateToken);
-        if (!automatic) SetSelectionStatus("Checking for component updates…", game.AppId, generation, updateToken);
+        if (!automatic) SetSelectionStatus("Checking for component updates…", game.EffectiveInstallId, generation, updateToken);
         try
         {
             var report = await stackStatusProvider.GetAsync(game, true, updateToken, forceRefresh: !automatic);
-            if (!IsCurrentSelection(game.AppId, generation, updateToken)) return;
+            if (!IsCurrentSelection(game.EffectiveInstallId, generation, updateToken)) return;
             var hasUpdates = report.Components.Any(x => x.Health == ComponentHealth.Outdated);
             var updateState = report.ArtifactResolution.MetadataState switch
             {
@@ -1046,17 +1687,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 hdr.Explanation,
                 SelectionPhase.Idle,
                 timing);
-            if (!IsCurrentSelection(game.AppId, generation, updateToken)) return;
+            if (!IsCurrentSelection(game.EffectiveInstallId, generation, updateToken)) return;
             if (!ApplySnapshot(completed, cards.Any(x => x.Health == ComponentHealth.Conflicting) ? UiState.Conflict :
                     game.RequiresConfirmation ? UiState.Unsupported : UiState.Ready, updateToken,
                     preserveOperationStatus: automatic)) return;
-            if (!automatic || !HasActiveOperationStatus(game.AppId, generation, updateToken))
-                SetSelectionStatus(automatic ? SupportTitle : UpdateStatusText, game.AppId, generation, updateToken);
+            if (!automatic || !HasActiveOperationStatus(game.EffectiveInstallId, generation, updateToken))
+                SetSelectionStatus(automatic ? SupportTitle : UpdateStatusText, game.EffectiveInstallId, generation, updateToken);
         }
         catch (OperationCanceledException)
         {
             if (activeSnapshot is { } current &&
-                current.Game.AppId == game.AppId &&
+                current.Game.EffectiveInstallId == game.EffectiveInstallId &&
                 current.Generation == generation)
             {
                 ApplySnapshot(current with
@@ -1073,13 +1714,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
                             : $"update check timed out after {updateStarted.ElapsedMilliseconds} ms")
                 }, CurrentState);
                 if (!automatic && !selectionToken.IsCancellationRequested)
-                    SetSelectionStatus("Could not reach update sources", game.AppId, generation);
+                    SetSelectionStatus("Could not reach update sources", game.EffectiveInstallId, generation);
             }
         }
         catch (HttpRequestException)
         {
             if (activeSnapshot is { } current &&
-                current.Game.AppId == game.AppId &&
+                current.Game.EffectiveInstallId == game.EffectiveInstallId &&
                 current.Generation == generation)
                 ApplySnapshot(current with
                 {
@@ -1091,7 +1732,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         catch (Exception exception)
         {
             if (activeSnapshot is { } current &&
-                current.Game.AppId == game.AppId &&
+                current.Game.EffectiveInstallId == game.EffectiveInstallId &&
                 current.Generation == generation)
             {
                 ApplySnapshot(current with
@@ -1100,13 +1741,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     UpdateState = UpdateCheckState.UnableToCheck,
                     Phase = SelectionPhase.Idle
                 }, CurrentState);
-                if (!automatic) SetSelectionError($"Update check failed: {exception.Message}", game.AppId, generation);
+                if (!automatic) SetSelectionError($"Update check failed: {exception.Message}", game.EffectiveInstallId, generation);
             }
         }
         finally
         {
             if (activeSnapshot is { IsCheckingUpdates: true } current &&
-                current.Game.AppId == game.AppId &&
+                current.Game.EffectiveInstallId == game.EffectiveInstallId &&
                 current.Generation == generation)
                 ApplySnapshot(current with
                 {
@@ -1124,8 +1765,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public async Task SaveOverridesAsync(string? executable, string? deploymentDirectory, CancellationToken cancellationToken = default)
     {
         var game = RequireGame();
-        if (string.IsNullOrWhiteSpace(executable) && string.IsNullOrWhiteSpace(deploymentDirectory)) applicationState.Overrides.Remove(game.AppId);
-        else applicationState.Overrides[game.AppId] = new GameOverride(executable, deploymentDirectory);
+        if (string.IsNullOrWhiteSpace(executable) && string.IsNullOrWhiteSpace(deploymentDirectory))
+            applicationState.Overrides.Remove(game.EffectiveInstallId);
+        else applicationState.Overrides[game.EffectiveInstallId] = new GameOverride(executable, deploymentDirectory);
         await stateStore.SaveAsync(applicationState, cancellationToken);
         GlobalStatus = "Game overrides saved";
         await RefreshAsync(cancellationToken);
@@ -1143,29 +1785,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             var full = Path.GetFullPath(source);
             var artifact = new ComponentArtifact(component, full, Path.GetFileName(full));
+            var target = snapshot.Game.ToDeploymentTarget();
             var result = action == "repair"
-                ? await planner.BuildRepairPlanAsync(snapshot.Game, component, artifact, cancellationToken: token)
-                : await planner.BuildInstallPlanAsync(snapshot.Game, artifact, cancellationToken: token);
+                ? await planner.BuildRepairPlanAsync(target, component, artifact, cancellationToken: token)
+                : await planner.BuildInstallPlanAsync(target, artifact, cancellationToken: token);
             EnsureCurrentSelection(snapshot, token);
-            if (!SetSelectionStatus("Deployment plan ready for review", snapshot.Game.AppId, snapshot.Generation, token, UiState.Ready))
+            if (!SetSelectionStatus("Deployment plan ready for review", snapshot.Game.EffectiveInstallId, snapshot.Generation, token, UiState.Ready))
                 throw new OperationCanceledException("The selected game changed while the plan was being prepared.", token);
             return StampPlan(result, snapshot);
         }
         catch (OperationCanceledException)
         {
-            SetSelectionStatus("Plan cancelled", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Plan cancelled", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         catch
         {
-            SetSelectionStatus("Could not prepare deployment", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Could not prepare deployment", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         finally
         {
             EndBusy(busy);
             if (CurrentState == UiState.Planning)
-                SetSelectionStatus(GlobalStatus, snapshot.Game.AppId, snapshot.Generation, state: UiState.Ready);
+                SetSelectionStatus(GlobalStatus, snapshot.Game.EffectiveInstallId, snapshot.Generation, state: UiState.Ready);
         }
     }
 
@@ -1190,16 +1833,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
             if (planningSnapshot.PrimaryAction == PrimaryActionKind.Repair)
             {
                 var local = await new ComponentDetector().DetectStackAsync(
-                    snapshot.Game, snapshot.Generation, token);
+                    snapshot.Game.ToDeploymentTarget(), snapshot.Generation, token);
                 if ((local.ConcreteDefects is null || local.ConcreteDefects.Count == 0) &&
                     local.Components.All(x => x.State is not ComponentLifecycleState.RepairRequired))
                 {
                     var healthy = new DeploymentPlan
                     {
                         Id = Guid.NewGuid().ToString("N"),
-                        AppId = snapshot.Game.AppId,
+                        InstallId = snapshot.Game.EffectiveInstallId,
+                        SteamAppId = snapshot.Game.SteamAppId,
                         GameRoot = snapshot.Game.GameRoot,
-                        DeploymentDirectory = snapshot.Game.DeploymentDirectory,
+                        DeploymentDirectory = snapshot.Game.DeploymentDirectory ?? snapshot.Game.GameRoot,
                         SelectionGeneration = snapshot.Generation,
                         Action = "repair recommended setup",
                         CompatibilityMessage = "No repair needed. The installed stack is healthy.",
@@ -1213,7 +1857,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                             .Select(x => new ComponentStateExpectation(x.Component, true))
                             .ToList()
                     };
-                    if (!SetSelectionStatus("No repair needed", snapshot.Game.AppId, snapshot.Generation, token, UiState.Ready))
+                    if (!SetSelectionStatus("No repair needed", snapshot.Game.EffectiveInstallId, snapshot.Generation, token, UiState.Ready))
                         throw new OperationCanceledException("The selected game changed while the plan was being prepared.", token);
                     return healthy;
                 }
@@ -1223,25 +1867,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : await recommendedPlanBuilder(snapshot.Game, token);
             EnsureCurrentSelection(snapshot, token);
             var result = StampPlan(ClonePlanWithAction(plan, planningSnapshot.PrimaryAction), snapshot);
-            if (!SetSelectionStatus("Recommended stack ready for review", snapshot.Game.AppId, snapshot.Generation, token, UiState.Ready))
+            if (!SetSelectionStatus("Recommended stack ready for review", snapshot.Game.EffectiveInstallId, snapshot.Generation, token, UiState.Ready))
                 throw new OperationCanceledException("The selected game changed while the plan was being prepared.", token);
             return result;
         }
         catch (OperationCanceledException)
         {
-            SetSelectionStatus("Plan cancelled", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Plan cancelled", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         catch
         {
-            SetSelectionStatus("Could not prepare setup", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Could not prepare setup", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         finally
         {
             EndBusy(busy);
             if (CurrentState == UiState.Planning)
-                SetSelectionStatus(GlobalStatus, snapshot.Game.AppId, snapshot.Generation, state: UiState.Ready);
+                SetSelectionStatus(GlobalStatus, snapshot.Game.EffectiveInstallId, snapshot.Generation, state: UiState.Ready);
         }
     }
 
@@ -1260,7 +1904,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         };
         if (componentAction == PrimaryActionKind.Repair)
         {
-            var local = await new ComponentDetector().DetectStackAsync(snapshot.Game, snapshot.Generation, cancellationToken);
+            var local = await new ComponentDetector().DetectStackAsync(
+                snapshot.Game.ToDeploymentTarget(), snapshot.Generation, cancellationToken);
             var report = local.ReportFor(component);
             var reportHealthy = report is not null &&
                 report.State is (ComponentLifecycleState.InstalledHealthy or
@@ -1274,9 +1919,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 var healthy = new DeploymentPlan
                 {
                     Id = Guid.NewGuid().ToString("N"),
-                    AppId = snapshot.Game.AppId,
+                    InstallId = snapshot.Game.EffectiveInstallId,
+                    SteamAppId = snapshot.Game.SteamAppId,
                     GameRoot = snapshot.Game.GameRoot,
-                    DeploymentDirectory = snapshot.Game.DeploymentDirectory,
+                    DeploymentDirectory = snapshot.Game.DeploymentDirectory ?? snapshot.Game.GameRoot,
                     SelectionGeneration = snapshot.Generation,
                     Action = $"repair {component}",
                     CompatibilityMessage = "No repair needed. The installed stack is healthy.",
@@ -1290,7 +1936,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                         .Select(x => new ComponentStateExpectation(x.Component, true))
                         .ToList()
                 };
-                SetSelectionStatus("No repair needed", snapshot.Game.AppId, snapshot.Generation, state: UiState.Ready);
+                SetSelectionStatus("No repair needed", snapshot.Game.EffectiveInstallId, snapshot.Generation, state: UiState.Ready);
                 return healthy;
             }
         }
@@ -1307,7 +1953,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 : await recommendedPlanBuilder(snapshot.Game, token);
             EnsureCurrentSelection(snapshot, token);
             var result = StampPlan(ClonePlanWithAction(plan, componentAction), snapshot);
-            if (!SetSelectionStatus($"{card.Name} plan ready for review", snapshot.Game.AppId,
+            if (!SetSelectionStatus($"{card.Name} plan ready for review", snapshot.Game.EffectiveInstallId,
                     snapshot.Generation, token, UiState.Ready))
                 throw new OperationCanceledException(
                     "The selected game changed while the plan was being prepared.", token);
@@ -1315,19 +1961,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         catch (OperationCanceledException)
         {
-            SetSelectionStatus("Plan cancelled", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Plan cancelled", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         catch
         {
-            SetSelectionStatus("Could not prepare setup", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Could not prepare setup", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         finally
         {
             EndBusy(busy);
             if (CurrentState == UiState.Planning)
-                SetSelectionStatus(GlobalStatus, snapshot.Game.AppId, snapshot.Generation, state: UiState.Ready);
+                SetSelectionStatus(GlobalStatus, snapshot.Game.EffectiveInstallId, snapshot.Generation, state: UiState.Ready);
         }
     }
 
@@ -1345,28 +1991,28 @@ public sealed class MainViewModel : INotifyPropertyChanged
         GlobalStatus = "Building removal plan…";
         try
         {
-            var result = StampPlan(await planner.BuildRemoveStackPlanAsync(snapshot.Game, linkedCancellation.Token), snapshot);
+            var result = StampPlan(await planner.BuildRemoveStackPlanAsync(snapshot.Game.ToDeploymentTarget(), linkedCancellation.Token), snapshot);
             EnsureCurrentSelection(snapshot, linkedCancellation.Token);
-            if (!SetSelectionStatus("Removal plan ready for review", snapshot.Game.AppId, snapshot.Generation,
+            if (!SetSelectionStatus("Removal plan ready for review", snapshot.Game.EffectiveInstallId, snapshot.Generation,
                     linkedCancellation.Token, UiState.Ready))
                 throw new OperationCanceledException("The selected game changed while the plan was being prepared.", linkedCancellation.Token);
             return result;
         }
         catch (OperationCanceledException)
         {
-            SetSelectionStatus("Plan cancelled", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Plan cancelled", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         catch
         {
-            SetSelectionStatus("Could not prepare removal", snapshot.Game.AppId, snapshot.Generation);
+            SetSelectionStatus("Could not prepare removal", snapshot.Game.EffectiveInstallId, snapshot.Generation);
             throw;
         }
         finally
         {
             EndBusy(busy);
             if (CurrentState == UiState.Planning)
-                SetSelectionStatus(GlobalStatus, snapshot.Game.AppId, snapshot.Generation, state: UiState.Ready);
+                SetSelectionStatus(GlobalStatus, snapshot.Game.EffectiveInstallId, snapshot.Generation, state: UiState.Ready);
         }
     }
 
@@ -1375,7 +2021,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var snapshot = activeSnapshot ?? throw new InvalidOperationException("Select a game first.");
         using var linkedCancellation = CreateSelectionLinkedCancellation(snapshot, cancellationToken);
         var result = StampPlan(
-            await planner.BuildRemovePlanAsync(snapshot.Game, component, cancellationToken: linkedCancellation.Token),
+            await planner.BuildRemovePlanAsync(snapshot.Game.ToDeploymentTarget(), component, cancellationToken: linkedCancellation.Token),
             snapshot);
         EnsureCurrentSelection(snapshot, linkedCancellation.Token);
         return result;
@@ -1385,7 +2031,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         var snapshot = activeSnapshot ?? throw new InvalidOperationException("Select a game first.");
         using var linkedCancellation = CreateSelectionLinkedCancellation(snapshot, cancellationToken);
-        var result = StampPlan(await planner.BuildRestorePlanAsync(snapshot.Game, linkedCancellation.Token), snapshot);
+        var result = StampPlan(await planner.BuildRestorePlanAsync(snapshot.Game.ToDeploymentTarget(), linkedCancellation.Token), snapshot);
         EnsureCurrentSelection(snapshot, linkedCancellation.Token);
         return result;
     }
@@ -1396,7 +2042,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ComponentKind? requestedComponent = null)
     {
         void ReportStage(string stage) =>
-            SetSelectionStatus(stage, snapshot.Game.AppId, snapshot.Generation, cancellationToken, UiState.Planning);
+            SetSelectionStatus(stage, snapshot.Game.EffectiveInstallId, snapshot.Generation, cancellationToken, UiState.Planning);
 
         ReportStage("Checking compatibility");
         var preflight = await Task.Run(() => ManagedArchiveExtractor.ProbeCapabilities(
@@ -1412,7 +2058,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         using var httpClient = new HttpClient();
         var resolver = new OfficialArtifactResolver(httpClient, paths, catalog);
         ReportStage("Resolving official files");
-        var resolution = await resolver.ResolveAsync(snapshot.Game, true, cancellationToken, forceRefresh: true);
+        var resolution = await resolver.ResolveAsync(snapshot.Game.ToDeploymentTarget(), true, cancellationToken, forceRefresh: true);
         var game = ApplyOfficialDeploymentHint(snapshot.Game, resolution);
         var requestReno = (requestedComponent is null or ComponentKind.RenoDx) &&
             (resolution.CanAcquireRenoSetup || resolution.CanAcquireRenoDx) &&
@@ -1466,7 +2112,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 technicalDetail: string.Join('\n', resolution.Warnings));
 
         ReportStage("Preparing installation plan");
-        var proxy = await new ProxyDiagnosticsService(catalog).DiagnoseAsync(game, cancellationToken);
+        var proxy = await new ProxyDiagnosticsService(catalog).DiagnoseAsync(game.ToDeploymentTarget(), cancellationToken);
         ComponentArtifact Required(ComponentKind component)
         {
             var selection = resolution.Artifacts.SingleOrDefault(x => x.Component == component && x.CachedPath is not null)
@@ -1479,7 +2125,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (includeOpti && opti is not null)
             materializedOpti = await CachedArtifactMaterializer.MaterializeOptiScalerAsync(
                 artifactCache, opti, cancellationToken);
-        return await planner.BuildRecommendedStackPlanAsync(game,
+        return await planner.BuildRecommendedStackPlanAsync(game.ToDeploymentTarget(),
             new(includeReShade ? Required(ComponentKind.ReShade) : null,
                 includeReno ? Required(ComponentKind.RenoDx) : null,
                 includeOpti ? materializedOpti?.Main : null,
@@ -1496,7 +2142,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 "The selected game changed before the operation began. No files were changed.");
 
         var operationContext = OperationContext.From(operationSnapshot.Game, operationSnapshot.Generation);
-        var operationAppId = operationContext.AppId;
+        var operationInstallId = operationContext.InstallId.Value;
         var operationGeneration = operationContext.SelectionGeneration;
         var busy = BeginBusy();
         var operationStatus = dryRun ? "Validating operation…" : "Preparing backups";
@@ -1506,9 +2152,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return new ExecutionResult(false, dryRun, false, [],
                 "The selected game changed before the operation began. No files were changed.");
         }
-        SetSelectionStatus(operationStatus, operationAppId, operationGeneration);
+        SetSelectionStatus(operationStatus, operationInstallId, operationGeneration);
         if (!dryRun)
-            SetSelectionStatus("Installing", operationAppId, operationGeneration);
+            SetSelectionStatus("Installing", operationInstallId, operationGeneration);
         var attempted = false;
         var cancelled = false;
         var rescannedCurrentGame = false;
@@ -1518,7 +2164,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             attempted = true;
             result = await executor.ExecuteAsync(plan, dryRun, cancellationToken);
             if (!dryRun && result.Succeeded)
-                SetSelectionStatus("Verifying installation", operationAppId, operationGeneration);
+                SetSelectionStatus("Verifying installation", operationInstallId, operationGeneration);
         }
         catch (OperationCanceledException)
         {
@@ -1536,7 +2182,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            if (attempted && !dryRun && IsCurrentSelection(operationAppId, operationGeneration) && SelectedGame is { } selected)
+            if (attempted && !dryRun && IsCurrentSelection(operationInstallId, operationGeneration) && SelectedGame is { } selected)
             {
                 await SelectAsync(selected);
                 rescannedCurrentGame = activeSnapshot is { } afterScan &&
@@ -1604,7 +2250,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 var succeeded = result.IsSuccessfulOutcome;
                 var completedState = cancelled ? UiState.Ready : succeeded ? UiState.Success : UiState.Error;
                 ApplySnapshot(completedSnapshot with { Progress = string.Empty, PreviousOperationResult = result }, completedState);
-                SetSelectionError(cancelled || succeeded ? null : result.Error, completedSnapshot.Game.AppId, completedSnapshot.Generation);
+                SetSelectionError(cancelled || succeeded ? null : result.Error, completedSnapshot.Game.EffectiveInstallId, completedSnapshot.Generation);
                 SetSelectionStatus(cancelled ? "Operation cancelled" : result.DryRun ? "Validation complete" :
                     succeeded
                         ? (result.State == OperationLifecycleState.SucceededWithWarning
@@ -1613,7 +2259,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
                                 ? "The game files were restored."
                                 : "Changes completed")
                         : "Operation failed",
-                    completedSnapshot.Game.AppId, completedSnapshot.Generation);
+                    completedSnapshot.Game.EffectiveInstallId, completedSnapshot.Generation);
+                if (!dryRun)
+                {
+                    readinessService.Invalidate(completedSnapshot.Game.InstallId);
+                    _ = RefreshReadinessAsync(true);
+                }
             }
             return result;
         }
@@ -1621,7 +2272,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             EndBusy(busy);
             if (activeSnapshot is { } current &&
-                current.Game.AppId == operationAppId &&
+                current.Game.EffectiveInstallId == operationInstallId &&
                 (current.Generation == operationGeneration || rescannedCurrentGame))
                 ApplySnapshot(current with { Progress = string.Empty }, CurrentState);
         }
@@ -1632,6 +2283,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void CancelBackgroundWork()
     {
+        libraryWatchService?.Stop();
         lock (selectionLock)
         {
             selectionCancellation?.Cancel();
@@ -1661,9 +2313,76 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void ApplyFilter()
     {
-        FilteredGames = GameSearch.Rank(games, SearchText);
+        IEnumerable<InstalledGame> source = games;
+        source = LibraryFilter switch
+        {
+            "Steam" => source.Where(game => game.Store == GameStore.Steam || game.Launcher == GameLauncher.Steam),
+            "Epic" => source.Where(game => game.Store == GameStore.Epic),
+            "GOG" => source.Where(game => game.Store == GameStore.Gog),
+            "Amazon" => source.Where(game => game.Store == GameStore.Amazon),
+            "Heroic" => source.Where(game => game.Launcher == GameLauncher.Heroic),
+            "Legendary" => source.Where(game => game.Launcher == GameLauncher.Legendary),
+            "Lutris" => source.Where(game => game.Launcher == GameLauncher.Lutris),
+            "Bottles" => source.Where(game => game.Launcher == GameLauncher.Bottles),
+            "Minigalaxy" => source.Where(game => game.Launcher == GameLauncher.Minigalaxy),
+            "Manual" => source.Where(game => game.Launcher == GameLauncher.Manual),
+            "Windows" => source.Where(game => game.Platform == GameBinaryPlatform.Windows && game.IsActionable),
+            "Native/unsupported" => source.Where(game =>
+                game.Platform == GameBinaryPlatform.Linux || game.IsNativeLinux || !game.IsActionable),
+            "Needs executable confirmation" => source.Where(game =>
+                game.RequiresConfirmation ||
+                game.Executable is null ||
+                game.Confidence is DetectionConfidence.None or DetectionConfidence.Low),
+            "Ready" => source.Where(game =>
+                game.Executable is not null &&
+                game.IsActionable &&
+                !game.IsNativeLinux &&
+                game.InstallState == SteamInstallState.Installed &&
+                !game.RequiresConfirmation),
+            "Not configured" => source.Where(game =>
+                game.Executable is null || game.Confidence is DetectionConfidence.None or DetectionConfidence.Low),
+            "Anti-cheat" => source.Where(game => game.RequiresConfirmation),
+            "Unsupported" => source.Where(game => !game.IsActionable || game.IsNativeLinux || game.Executable is null),
+            "Unreal" => source.Where(game => game.Engine is GameEngine.Unreal or GameEngine.UnrealLegacy),
+            "Unity" => source.Where(game => game.Engine == GameEngine.Unity),
+            "RE Engine" => source.Where(game => game.Engine == GameEngine.ReEngine),
+            "Installing" => source.Where(game => game.InstallState == SteamInstallState.Installing),
+            "Ready games" => source.Where(game =>
+                readinessSummaries.TryGetValue(game.EffectiveInstallId, out var state) &&
+                state is GameReadinessState.Ready or GameReadinessState.ReadyWithWarnings),
+            "Needs attention" => source.Where(game =>
+                readinessSummaries.TryGetValue(game.EffectiveInstallId, out var state) &&
+                state is GameReadinessState.NeedsConfiguration or GameReadinessState.NeedsUserSelection
+                    or GameReadinessState.Error),
+            "Recovery required" => source.Where(game =>
+                DeploymentRecoveryProbe.Probe(game.GameRoot).HasInterruptedTransaction),
+            _ => source
+        };
+        if (!Preferences.ShowUnsupportedNativeGames)
+            source = source.Where(game => !game.IsNativeLinux && game.Platform != GameBinaryPlatform.Linux);
+        FilteredGames = GameSearch.Rank(source, SearchText);
         OnPropertyChanged(nameof(FilteredGameCount));
         RaiseStateProperties();
+    }
+
+    private void RaiseOverviewProperties()
+    {
+        OnPropertyChanged(nameof(OverviewGameCount));
+        OnPropertyChanged(nameof(OverviewWindowsCount));
+        OnPropertyChanged(nameof(OverviewAntiCheatCount));
+        OnPropertyChanged(nameof(OverviewUnsupportedCount));
+        OnPropertyChanged(nameof(OverviewInstallingCount));
+        OnPropertyChanged(nameof(OverviewEnabledSourceCount));
+        OnPropertyChanged(nameof(OverviewReadyCount));
+        OnPropertyChanged(nameof(OverviewNeedsAttentionCount));
+        OnPropertyChanged(nameof(OverviewUnsupportedReadinessCount));
+        OnPropertyChanged(nameof(OverviewUpdateCount));
+        OnPropertyChanged(nameof(OverviewRecoveryCount));
+        OnPropertyChanged(nameof(OverviewSummary));
+        OnPropertyChanged(nameof(OverviewAttentionSummary));
+        OnPropertyChanged(nameof(OverviewSourceSummary));
+        OnPropertyChanged(nameof(OverviewDiagnosticSummary));
+        OnPropertyChanged(nameof(OverviewUpdateSummary));
     }
 
     private IReadOnlyList<ComponentCardViewModel> CreateComponentCards(
@@ -1901,7 +2620,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private static SteamGame ApplyOfficialDeploymentHint(SteamGame game, GameArtifactResolution resolution)
+    private static InstalledGame ApplyOfficialDeploymentHint(InstalledGame game, GameArtifactResolution resolution)
     {
         var relative = resolution.RecommendedDeploymentRelativeDirectory;
         if (string.IsNullOrWhiteSpace(relative)) return game;
@@ -2052,17 +2771,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return true;
     }
 
-    private bool HasActiveOperationStatus(uint appId, long generation, CancellationToken cancellationToken)
+    private bool HasActiveOperationStatus(string installId, long generation, CancellationToken cancellationToken)
     {
         lock (selectionLock)
         {
             return !cancellationToken.IsCancellationRequested &&
-                activeSnapshot?.Game.AppId == appId &&
+                activeSnapshot?.Game.EffectiveInstallId == installId &&
                 activeSnapshot.Generation == generation &&
                 generation == Volatile.Read(ref selectionGeneration) &&
                 (activeSnapshot.PreviousOperationResult is not null ||
                  activeSnapshot.Progress.Length > 0 || currentState == UiState.Deploying);
         }
+    }
+
+    private void UpdateLinuxDiagnostics(InstalledGame game, string? requiredLaunchOption)
+    {
+        var inspection = ProtonInspector.Inspect(game);
+        ProtonSummary = inspection.Summary;
+        var hdr = HdrReadinessDoctor.Evaluate(platformCapabilities);
+        HdrSummary = $"{hdr.Status}: {hdr.Summary}";
+        var composition = LaunchCommandComposer.Compose(
+            null,
+            requiredLaunchOption,
+            enableGameMode: platformCapabilities.HasGameMode,
+            enableMangoHud: false,
+            enableHdr: hdr.Status is HdrReadinessStatus.Ready or HdrReadinessStatus.ReadyWithManualStep,
+            gamescopeArgs: platformCapabilities.HasGamescope ? "-f" : null);
+        LaunchCompositionText = composition.Text;
     }
 
     private void ClearSelection()
@@ -2076,19 +2811,94 @@ public sealed class MainViewModel : INotifyPropertyChanged
             activeSnapshot = null;
         }
         ErrorMessage = null;
+        Readiness.SetResult(null);
         RaiseSelectionProperties();
     }
 
-    private bool IsCurrentSelection(uint? appId, long generation, CancellationToken cancellationToken = default) =>
+    private async Task EvaluateReadinessForSelectionAsync(
+        InstalledGame game,
+        long generation,
+        IReadOnlyList<ComponentStatus>? components,
+        ProxySelectionResult? proxy,
+        string? launchOption,
+        CancellationToken cancellationToken,
+        bool force = false)
+    {
+        if (!IsCurrentSelection(game.EffectiveInstallId, generation, cancellationToken)) return;
+        Readiness.IsLoading = true;
+        try
+        {
+            applicationState.Overrides.TryGetValue(game.EffectiveInstallId, out var manualOverride);
+            var result = await readinessService.EvaluateAsync(
+                game,
+                new GameReadinessEvaluationOptions(
+                    AllowNetwork: false,
+                    ForceRefresh: force,
+                    BuildRecommendedPlan: false,
+                    WarnBeforeAntiCheatDeployments: Preferences.WarnBeforeAntiCheatDeployments,
+                    PreferExistingManagedVersions: Preferences.PreferExistingManagedVersions,
+                    PrefetchedComponents: components,
+                    PrefetchedProxyName: proxy?.SelectedProxy,
+                    PrefetchedLaunchOption: launchOption,
+                    ManualOverride: manualOverride),
+                cancellationToken).ConfigureAwait(false);
+            if (!IsCurrentSelection(game.EffectiveInstallId, generation, cancellationToken)) return;
+            Readiness.SetResult(result);
+            readinessSummaries[game.EffectiveInstallId] = result.State;
+            UpdateComponentUpdatesFromSelection(game, result);
+            RaiseOverviewProperties();
+            OnPropertyChanged(nameof(Readiness));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (!IsCurrentSelection(game.EffectiveInstallId, generation, cancellationToken)) return;
+            Readiness.SetResult(new GameReadinessResult(
+                game.InstallId,
+                GameReadinessState.Error,
+                "Readiness evaluation failed.",
+                "Open Diagnostics",
+                game.ToDeploymentTarget(),
+                components ?? [],
+                [new GameReadinessIssue(
+                    ReadinessIssueCodes.EvaluationFailed,
+                    ReadinessIssueSeverity.Blocking,
+                    "Evaluation failed",
+                    exception.Message,
+                    "open-diagnostics")],
+                null,
+                null,
+                null,
+                DateTimeOffset.UtcNow,
+                Guid.NewGuid().ToString("N")));
+            OnPropertyChanged(nameof(Readiness));
+        }
+    }
+
+    private void UpdateComponentUpdatesFromSelection(InstalledGame game, GameReadinessResult result)
+    {
+        var updates = result.Components
+            .Where(status => status.Health == ComponentHealth.Outdated)
+            .Select(status => new ComponentUpdateItemViewModel(game, status, result.State))
+            .ToArray();
+        ComponentUpdates = updates;
+    }
+
+    private int CountReadiness(params GameReadinessState[] states) =>
+        readinessSummaries.Count(pair => states.Contains(pair.Value));
+
+    private bool IsCurrentSelection(string? installId, long generation, CancellationToken cancellationToken = default) =>
         !cancellationToken.IsCancellationRequested &&
-        appId.HasValue &&
-        activeSnapshot?.Game.AppId == appId.Value &&
+        !string.IsNullOrWhiteSpace(installId) &&
+        activeSnapshot?.Game.EffectiveInstallId == installId &&
         activeSnapshot.Generation == generation &&
         generation == Volatile.Read(ref selectionGeneration);
 
     private bool SetSelectionError(
         string? message,
-        uint? appId,
+        string? installId,
         long generation,
         CancellationToken cancellationToken = default,
         UiState? state = null)
@@ -2097,8 +2907,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         bool stateChanged;
         lock (selectionLock)
         {
-            if (cancellationToken.IsCancellationRequested || !appId.HasValue ||
-                activeSnapshot?.Game.AppId != appId.Value || activeSnapshot.Generation != generation ||
+            if (cancellationToken.IsCancellationRequested || string.IsNullOrWhiteSpace(installId) ||
+                activeSnapshot?.Game.EffectiveInstallId != installId || activeSnapshot.Generation != generation ||
                 generation != Volatile.Read(ref selectionGeneration)) return false;
             errorChanged = errorMessage != message;
             errorMessage = message;
@@ -2120,7 +2930,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private bool SetSelectionStatus(
         string status,
-        uint appId,
+        string installId,
         long generation,
         CancellationToken cancellationToken = default,
         UiState? state = null)
@@ -2129,7 +2939,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         bool stateChanged;
         lock (selectionLock)
         {
-            if (cancellationToken.IsCancellationRequested || activeSnapshot?.Game.AppId != appId ||
+            if (cancellationToken.IsCancellationRequested || activeSnapshot?.Game.EffectiveInstallId != installId ||
                 activeSnapshot.Generation != generation || generation != Volatile.Read(ref selectionGeneration)) return false;
             statusChanged = globalStatus != status;
             globalStatus = status;
@@ -2280,9 +3090,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private static bool PlanMatchesGameIdentity(DeploymentPlan plan, GameSelectionSnapshot snapshot) =>
-        plan.AppId == snapshot.Game.AppId &&
+        plan.InstallId == snapshot.Game.EffectiveInstallId &&
         PathsEqual(plan.GameRoot, snapshot.Game.GameRoot) &&
-        PathsEqual(plan.DeploymentDirectory, snapshot.Game.DeploymentDirectory);
+        PathsEqual(plan.DeploymentDirectory, snapshot.Game.DeploymentDirectory ?? snapshot.Game.GameRoot);
 
     private CancellationTokenSource CreateSelectionLinkedCancellation(
         GameSelectionSnapshot snapshot,
@@ -2290,7 +3100,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         lock (selectionLock)
         {
-            if (!IsCurrentSelection(snapshot.Game.AppId, snapshot.Generation))
+            if (!IsCurrentSelection(snapshot.Game.EffectiveInstallId, snapshot.Generation))
                 throw new OperationCanceledException("The selected game changed while the plan was being prepared.");
             return CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
@@ -2300,15 +3110,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void EnsureCurrentSelection(GameSelectionSnapshot snapshot, CancellationToken cancellationToken)
     {
-        if (!IsCurrentSelection(snapshot.Game.AppId, snapshot.Generation, cancellationToken))
+        if (!IsCurrentSelection(snapshot.Game.EffectiveInstallId, snapshot.Generation, cancellationToken))
             throw new OperationCanceledException("The selected game changed while the plan was being prepared.", cancellationToken);
     }
 
     private static bool PlanMatchesSnapshot(DeploymentPlan plan, GameSelectionSnapshot snapshot) =>
-        plan.AppId == snapshot.Game.AppId &&
+        plan.InstallId == snapshot.Game.EffectiveInstallId &&
         (plan.SelectionGeneration == 0 || plan.SelectionGeneration == snapshot.Generation) &&
         PathsEqual(plan.GameRoot, snapshot.Game.GameRoot) &&
-        PathsEqual(plan.DeploymentDirectory, snapshot.Game.DeploymentDirectory);
+        PathsEqual(plan.DeploymentDirectory, snapshot.Game.DeploymentDirectory ?? snapshot.Game.GameRoot);
 
     private static DeploymentPlan StampPlan(DeploymentPlan plan, GameSelectionSnapshot snapshot)
     {
@@ -2317,7 +3127,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private static async Task<LaunchOptionObservation> ResolveLaunchOptionAsync(
-        SteamGame game,
+        InstalledGame game,
         IReadOnlyList<ComponentStatus> statuses,
         ProxySelectionResult proxy,
         CancellationToken cancellationToken)
@@ -2388,7 +3198,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private static DeploymentPlan ClonePlanWithAction(DeploymentPlan plan, PrimaryActionKind action) => new()
     {
         Id = plan.Id,
-        AppId = plan.AppId,
+        InstallId = plan.InstallId,
+        SteamAppId = plan.SteamAppId,
         GameRoot = plan.GameRoot,
         DeploymentDirectory = plan.DeploymentDirectory,
         SelectionGeneration = plan.SelectionGeneration,
@@ -2416,14 +3227,176 @@ public sealed class MainViewModel : INotifyPropertyChanged
         CurrentState = UiState.Error;
     }
 
-    private SteamGame RequireGame() => SelectedGame ?? throw new InvalidOperationException("Select a game first.");
+    private InstalledGame RequireGame() => SelectedGame ?? throw new InvalidOperationException("Select a game first.");
     private void RaiseSelectionProperties()
     {
-        foreach (var property in new[] { nameof(SelectedGame), nameof(ComponentCards), nameof(HasSelection), nameof(ShowGame), nameof(IsSelectionLoading), nameof(ShowGameLoading), nameof(HasWarnings), nameof(WarningText), nameof(SelectedGameTitle), nameof(SelectedGameSubtitle), nameof(ExecutableDisplay), nameof(ExecutablePath), nameof(DeploymentDisplay), nameof(DeploymentPath), nameof(ProtonPrefixDisplay), nameof(ProtonPrefixPath), nameof(ConfidenceText), nameof(ArchitectureDisplay), nameof(EngineDisplay), nameof(SelectionReason), nameof(Candidates), nameof(LaunchOption), nameof(LaunchOptionStatus), nameof(LaunchOptionStatusText), nameof(LaunchOptionExplanation), nameof(HasLaunchOption), nameof(ShowHdrGuidance), nameof(HdrLaunchOption), nameof(HdrLaunchOptionStatus), nameof(HdrLaunchOptionStatusText), nameof(HdrLaunchOptionExplanation), nameof(HasHdrLaunchOption), nameof(ProfileSummary), nameof(SelectedProxy), nameof(DependencySummary), nameof(TimingDiagnostics), nameof(HasTimingDiagnostics), nameof(SelectionPhase), nameof(SupportTitle), nameof(SupportMessage), nameof(CanInstallRecommendedStack), nameof(CanCheckForUpdates), nameof(IsCheckingUpdates), nameof(UpdateState), nameof(UpdateStatusText), nameof(ShowUpdateStatusChip), nameof(HasUpdates), nameof(PrimaryAction), nameof(PrimaryActionText), nameof(SelectionProgress), nameof(PreviousOperationResult) }) OnPropertyChanged(property);
+        foreach (var property in new[] { nameof(SelectedGame), nameof(ComponentCards), nameof(HasSelection), nameof(ShowGame), nameof(IsSelectionLoading), nameof(ShowGameLoading), nameof(HasWarnings), nameof(WarningText), nameof(SelectedGameTitle), nameof(SelectedGameSubtitle), nameof(ExecutableDisplay), nameof(ExecutablePath), nameof(DeploymentDisplay), nameof(DeploymentPath), nameof(ProtonPrefixDisplay), nameof(ProtonPrefixPath), nameof(ConfidenceText), nameof(ArchitectureDisplay), nameof(EngineDisplay), nameof(SelectionReason), nameof(Candidates), nameof(LaunchOption), nameof(LaunchOptionStatus), nameof(LaunchOptionStatusText), nameof(LaunchOptionExplanation), nameof(HasLaunchOption), nameof(ShowHdrGuidance), nameof(HdrLaunchOption), nameof(HdrLaunchOptionStatus), nameof(HdrLaunchOptionStatusText), nameof(HdrLaunchOptionExplanation), nameof(HasHdrLaunchOption), nameof(ProfileSummary), nameof(SelectedProxy), nameof(DependencySummary), nameof(TimingDiagnostics), nameof(HasTimingDiagnostics), nameof(SelectionPhase), nameof(SupportTitle), nameof(SupportMessage), nameof(CanInstallRecommendedStack), nameof(CanCheckForUpdates), nameof(IsCheckingUpdates), nameof(UpdateState), nameof(UpdateStatusText), nameof(ShowUpdateStatusChip), nameof(HasUpdates), nameof(PrimaryAction), nameof(PrimaryActionText), nameof(SelectionProgress), nameof(PreviousOperationResult), nameof(OutdatedComponents), nameof(OverviewUpdateSummary) }) OnPropertyChanged(property);
+        RaiseUpdatesPageProperties();
     }
     private void RaiseStateProperties()
     {
-        foreach (var property in new[] { nameof(ShowWelcome), nameof(ShowNoGames), nameof(ShowNoMatches), nameof(ShowGame), nameof(HasWarnings), nameof(WarningText), nameof(HasFilteredGames) }) OnPropertyChanged(property);
+        foreach (var property in new[] { nameof(ShowWelcome), nameof(ShowNoGames), nameof(ShowNoMatches), nameof(ShowGame), nameof(ShowGameLoading), nameof(HasWarnings), nameof(WarningText), nameof(HasFilteredGames) }) OnPropertyChanged(property);
+    }
+    private void RaiseUpdatesPageProperties()
+    {
+        foreach (var property in new[]
+                 {
+                     nameof(UpdatesIsLoading), nameof(UpdatesHasAvailable), nameof(UpdatesIsOffline),
+                     nameof(UpdatesIsUnavailable), nameof(UpdatesIsEmpty), nameof(OutdatedComponents),
+                     nameof(OverviewUpdateSummary)
+                 })
+            OnPropertyChanged(property);
+    }
+
+    private static string NormalizeNavigation(string? value) => value switch
+    {
+        "Overview" => "Overview",
+        "Updates" => "Updates",
+        "Diagnostics" => "Diagnostics",
+        "Settings" => "Settings",
+        _ => "Library"
+    };
+
+    private int CountEnabledSources()
+    {
+        var count = 2;
+        if (!Preferences.ScanAllSources) return 1;
+        if (Preferences.EnableHeroic) count++;
+        if (Preferences.EnableLegendary) count++;
+        if (Preferences.EnableLutris) count++;
+        if (Preferences.EnableBottles) count++;
+        if (Preferences.EnableMinigalaxy) count++;
+        return count;
+    }
+
+    private bool IsProviderEnabled(string providerId) => providerId.ToLowerInvariant() switch
+    {
+        "steam" or "manual" => true,
+        "heroic" => Preferences.ScanAllSources && Preferences.EnableHeroic,
+        "legendary" => Preferences.ScanAllSources && Preferences.EnableLegendary,
+        "lutris" => Preferences.ScanAllSources && Preferences.EnableLutris,
+        "bottles" => Preferences.ScanAllSources && Preferences.EnableBottles,
+        "minigalaxy" => Preferences.ScanAllSources && Preferences.EnableMinigalaxy,
+        _ => false
+    };
+
+    private void ApplySourcePanels(MultiSourceScanResult multi)
+    {
+        SourceDiagnosticsText = FormatSourceDiagnostics(multi);
+        OnPropertyChanged(nameof(SourceDiagnosticsText));
+        DiagnosticItems = multi.Diagnostics
+            .OrderByDescending(item => item.Severity)
+            .ThenBy(item => item.ProviderId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Code, StringComparer.OrdinalIgnoreCase)
+            .Select(item => new DiagnosticItemViewModel(item))
+            .ToArray();
+        ProviderStatuses = BuildProviderStatuses(multi);
+        LastScanSummary = $"Last scan {DateTimeOffset.Now:g} · gen {multi.ScanGeneration}";
+        RaiseOverviewProperties();
+    }
+
+    private IReadOnlyList<ProviderStatusRowViewModel> BuildProviderStatuses(MultiSourceScanResult multi)
+    {
+        var rows = new List<ProviderStatusRowViewModel>();
+        foreach (var (id, name) in KnownProviders())
+        {
+            var results = multi.ProviderResults
+                .Where(result => string.Equals(result.ProviderId, id, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var enabled = IsProviderEnabled(id);
+            var detected = results.Any(result => result.Root.Exists);
+            var roots = results.Select(result => result.Root.CanonicalPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            var gamesCount = results.Sum(result => result.Games.Count);
+            var status = !enabled
+                ? "Disabled in Settings"
+                : detected
+                    ? $"{gamesCount} games · {results.Count(result => result.FromCache)} cache hits"
+                    : results.Select(result => result.Root.SkipReason).FirstOrDefault(reason => !string.IsNullOrWhiteSpace(reason))
+                      ?? "Not detected on this system";
+            rows.Add(new ProviderStatusRowViewModel(
+                id,
+                name,
+                enabled,
+                detected,
+                roots.Length,
+                gamesCount,
+                status,
+                roots.FirstOrDefault() ?? string.Empty));
+        }
+
+        return rows;
+    }
+
+    private IReadOnlyList<ProviderStatusRowViewModel> BuildSteamOnlyProviderStatuses(int steamGames) =>
+    [
+        new("steam", "Steam", true, true, steamGames > 0 ? 1 : 0, steamGames,
+            Preferences.ScanAllSources ? "Steam-only scan active until multi-source refresh" : "Steam-only scanning",
+            string.Empty),
+        ..KnownProviders()
+            .Where(provider => provider.Id is not "steam")
+            .Select(provider => new ProviderStatusRowViewModel(
+                provider.Id,
+                provider.Name,
+                IsProviderEnabled(provider.Id),
+                false,
+                0,
+                0,
+                Preferences.ScanAllSources ? "Awaiting multi-source scan" : "Disabled while Steam-only mode is on",
+                string.Empty))
+    ];
+
+    private IReadOnlyList<ProviderStatusRowViewModel> BuildConfiguredProviderStatuses() =>
+        KnownProviders()
+            .Select(provider => new ProviderStatusRowViewModel(
+                provider.Id,
+                provider.Name,
+                IsProviderEnabled(provider.Id),
+                false,
+                0,
+                0,
+                IsProviderEnabled(provider.Id) ? "Not scanned yet" : "Disabled in Settings",
+                string.Empty))
+            .ToArray();
+
+    private static (string Id, string Name)[] KnownProviders() =>
+    [
+        ("steam", "Steam"),
+        ("heroic", "Heroic"),
+        ("legendary", "Legendary"),
+        ("lutris", "Lutris"),
+        ("bottles", "Bottles"),
+        ("minigalaxy", "Minigalaxy"),
+        ("manual", "Manual")
+    ];
+
+    private void ScheduleProviderRefresh()
+    {
+        var generation = Interlocked.Increment(ref providerRefreshGeneration);
+        _ = PersistAndRefreshProvidersAsync(generation);
+    }
+
+    private async Task PersistAndRefreshProvidersAsync(long generation)
+    {
+        try
+        {
+            await SavePreferencesAsync().ConfigureAwait(false);
+            await Task.Delay(250).ConfigureAwait(false);
+            if (generation != Volatile.Read(ref providerRefreshGeneration)) return;
+            await RefreshWatchTargetsAsync(CancellationToken.None).ConfigureAwait(false);
+            if (generation != Volatile.Read(ref providerRefreshGeneration)) return;
+            if (IsBusy) return;
+            await RefreshAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            SetError("Could not apply source settings", exception);
+        }
     }
     private static string ShortenPath(string path)
     {

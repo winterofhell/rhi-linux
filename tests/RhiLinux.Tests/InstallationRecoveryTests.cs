@@ -450,7 +450,8 @@ public sealed class InstallationRecoveryTests
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new GameManifest
         {
-            AppId = game.AppId,
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
             TransactionIds = ["legacy-install"],
             Files = files.ToList()
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));

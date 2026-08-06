@@ -1,0 +1,36 @@
+{
+  "Control": {
+    "app_name": "Control",
+    "title": "Control",
+    "install_path": "@GAMES@/Heroic/Control",
+    "executable": "Control_DX12.exe",
+    "version": "1.0",
+    "platform": "Windows",
+    "is_dlc": false,
+    "needs_verification": false
+  },
+  "ControlDLC": {
+    "app_name": "ControlDLC",
+    "title": "Control Expansion",
+    "install_path": "@GAMES@/Heroic/Control",
+    "executable": "Control_DX12.exe",
+    "platform": "Windows",
+    "is_dlc": true
+  },
+  "ThirdPartyManaged": {
+    "app_name": "ThirdPartyManaged",
+    "title": "Third Party Epic Title",
+    "install_path": "@GAMES@/Heroic/ThirdParty",
+    "executable": "EpicGamesLauncher.exe",
+    "platform": "Windows",
+    "is_dlc": false
+  },
+  "MissingRootGame": {
+    "app_name": "MissingRootGame",
+    "title": "Missing Root",
+    "install_path": "@GAMES@/Heroic/DoesNotExist",
+    "executable": "Missing.exe",
+    "platform": "Windows",
+    "is_dlc": false
+  }
+}

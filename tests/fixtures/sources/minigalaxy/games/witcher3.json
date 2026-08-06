@@ -1,0 +1,8 @@
+{
+  "id": "1207659010",
+  "name": "The Witcher 3",
+  "status": "installed",
+  "platform": "windows",
+  "executable": "bin/x64/witcher3.exe",
+  "install_dir": "@GAMES@/GOG Games/The Witcher 3"
+}

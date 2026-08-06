@@ -1,0 +1,7 @@
+game:
+  exe: bin/Control_DX12.exe
+  prefix: @GAMES@/Lutris/Prefixes/Control
+  working_dir: @GAMES@/Lutris/Control
+wine:
+  prefix: @GAMES@/Lutris/Prefixes/Control
+  version: wine-ge

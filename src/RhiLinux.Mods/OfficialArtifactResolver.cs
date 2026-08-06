@@ -61,8 +61,22 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     private readonly RenoDxDiscussionArtifactResolver discussions = new(httpClient, paths);
     private readonly RenoDxSnapshotReleaseResolver snapshots = new(httpClient, paths);
 
-    public async Task<GameArtifactResolution> ResolveAsync(
+    public Task<GameArtifactResolution> ResolveAsync(
         SteamGame game,
+        bool allowNetwork = true,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false) =>
+        ResolveAsync(game.ToDeploymentTarget(), allowNetwork, cancellationToken, forceRefresh);
+
+    public Task<GameArtifactResolution> ResolveAsync(
+        InstalledGame game,
+        bool allowNetwork = true,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false) =>
+        ResolveAsync(game.ToDeploymentTarget(), allowNetwork, cancellationToken, forceRefresh);
+
+    public async Task<GameArtifactResolution> ResolveAsync(
+        DeploymentTarget game,
         bool allowNetwork = true,
         CancellationToken cancellationToken = default,
         bool forceRefresh = false)
@@ -91,7 +105,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         var reshadeAttempt = await reshadeTask;
         metadataChecked &= reshadeAttempt.Checked;
         var reshade = reshadeAttempt.Selection;
-        reshade ??= await FindCachedAsync(ComponentKind.ReShade, game.AppId, cancellationToken);
+        reshade ??= await FindCachedAsync(ComponentKind.ReShade, game.SteamAppId, cancellationToken);
         if (reshade is not null) selections.Add(await cache.InspectAsync(reshade, cancellationToken));
         else warnings.Add("The official full-addon ReShade release could not be resolved and no valid cached build is available.");
 
@@ -126,11 +140,11 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         if (optiTechnicallyEligible)
         {
             var optiAttempt = allowNetwork
-                ? await TryResolveGitHubAsync(ComponentKind.OptiScaler, game.AppId, cancellationToken, forceRefresh)
+                ? await TryResolveGitHubAsync(ComponentKind.OptiScaler, game.SteamAppId, cancellationToken, forceRefresh)
                 : ((ArtifactSelection?)null, false);
             metadataChecked &= optiAttempt.Item2;
             var opti = optiAttempt.Item1;
-            opti ??= await FindCachedAsync(ComponentKind.OptiScaler, game.AppId, cancellationToken);
+            opti ??= await FindCachedAsync(ComponentKind.OptiScaler, game.SteamAppId, cancellationToken);
             if (opti is not null) selections.Add(await cache.InspectAsync(opti, cancellationToken));
             else warnings.Add("The official OptiScaler release could not be resolved and no valid cached release is available.");
         }
@@ -168,7 +182,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         };
     }
 
-    private static bool IsTechnicallyEligibleForOptiScaler(SteamGame game)
+    private static bool IsTechnicallyEligibleForOptiScaler(DeploymentTarget game)
     {
         if (game.RequiresConfirmation || game.Executable is null ||
             !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
@@ -176,7 +190,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         return SelectedArchitecture(game) == PeArchitecture.X64;
     }
 
-    private static PeArchitecture SelectedArchitecture(SteamGame game)
+    private static PeArchitecture SelectedArchitecture(DeploymentTarget game)
     {
         var candidate = game.Candidates.FirstOrDefault(item => game.Executable is not null &&
             Path.GetFullPath(item.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal)) ??
@@ -191,7 +205,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     }
 
     private async Task<RenoDxResolution> EnrichWithSnapshotAsync(
-        SteamGame game,
+        DeploymentTarget game,
         RenoDxResolution current,
         bool allowNetwork,
         bool forceRefresh,
@@ -276,7 +290,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     }
 
     private async Task<RenoDxResolution> EnrichWithDiscussionAsync(
-        SteamGame game,
+        DeploymentTarget game,
         RenoDxResolution current,
         bool allowNetwork,
         bool forceRefresh,
@@ -397,7 +411,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         };
 
     private RenoDxResolution ResolveRenoDx(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfileMatch profile,
         RemoteManifestCatalog? remote,
         RenoDxWikiCatalog wikiCatalog)
@@ -426,7 +440,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         {
             var builtIn = new ArtifactSelection(ComponentKind.RenoDx, fallbackSource.Version, fallbackSource.Url,
                 fallbackSource.Version, Path.GetFileName(fallbackSource.Url.LocalPath), fallbackSource.Architecture,
-                profile.IsExact ? game.AppId : null, fallbackSource.FileName, null, ArtifactArchiveKind.None,
+                profile.IsExact ? game.SteamAppId : null, fallbackSource.FileName, null, ArtifactArchiveKind.None,
                 GameProfile: profile.Profile.Id, Support: SupportFor(profile), SourceValidatedByOfficialMetadata: true);
             var compatibility = profile.IsFallback
                 ? profile.Profile.Engine == GameEngine.Unity
@@ -449,7 +463,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     }
 
     private static RenoDxResolution ApplySelection(
-        SteamGame game,
+        DeploymentTarget game,
         GameProfileMatch profile,
         RenoDxMatchResult match,
         ArtifactSelection selection,
@@ -527,7 +541,13 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         public IReadOnlyList<string> CompatibilityNotes => Notes ?? [];
     }
 
-    public async Task<GameArtifactResolution> AcquireAsync(SteamGame game, bool allowNetwork = true, CancellationToken cancellationToken = default)
+    public Task<GameArtifactResolution> AcquireAsync(SteamGame game, bool allowNetwork = true, CancellationToken cancellationToken = default) =>
+        AcquireAsync(game.ToDeploymentTarget(), allowNetwork, cancellationToken);
+
+    public Task<GameArtifactResolution> AcquireAsync(InstalledGame game, bool allowNetwork = true, CancellationToken cancellationToken = default) =>
+        AcquireAsync(game.ToDeploymentTarget(), allowNetwork, cancellationToken);
+
+    public async Task<GameArtifactResolution> AcquireAsync(DeploymentTarget game, bool allowNetwork = true, CancellationToken cancellationToken = default)
     {
         var resolution = await ResolveAsync(game, allowNetwork, cancellationToken, forceRefresh: allowNetwork);
         if (!resolution.IsFullyAutomatic)
@@ -630,7 +650,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         InvalidOperationException or NotSupportedException or JsonException or ArtifactPipelineException or
         System.ComponentModel.Win32Exception;
 
-    private async Task<(ArtifactSelection? Selection, bool Checked)> TryResolveReShadeAsync(SteamGame game, CancellationToken cancellationToken)
+    private async Task<(ArtifactSelection? Selection, bool Checked)> TryResolveReShadeAsync(DeploymentTarget game, CancellationToken cancellationToken)
     {
         try
         {
@@ -651,7 +671,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
 
     private async Task<(ArtifactSelection? Selection, bool Checked)> TryResolveGitHubAsync(
         ComponentKind component,
-        uint appId,
+        uint? steamAppId,
         CancellationToken cancellationToken,
         bool forceRefresh)
     {
@@ -683,10 +703,10 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { return (null, false); }
     }
 
-    private async Task<ArtifactSelection?> FindCachedAsync(ComponentKind component, uint appId, CancellationToken cancellationToken)
+    private async Task<ArtifactSelection?> FindCachedAsync(ComponentKind component, uint? steamAppId, CancellationToken cancellationToken)
     {
         var entries = (await cache.ListAsync(cancellationToken)).Where(x => x.IsValid && x.Metadata.Component == component &&
-            (x.Metadata.GameAppId is null || x.Metadata.GameAppId == appId)).OrderByDescending(x => x.Metadata.DownloadedUtc).ToArray();
+            (x.Metadata.GameAppId is null || x.Metadata.GameAppId == steamAppId)).OrderByDescending(x => x.Metadata.DownloadedUtc).ToArray();
         if (entries.Length == 0) return null;
         var entry = entries[0];
         var directory = Path.GetDirectoryName(entry.MetadataPath)!;

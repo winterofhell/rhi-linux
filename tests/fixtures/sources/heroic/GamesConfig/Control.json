@@ -1,0 +1,7 @@
+{
+  "Control": {
+    "winePrefix": "@GAMES@/Heroic/Prefixes/Control",
+    "targetExe": "@GAMES@/Heroic/Control/Control_DX12.exe",
+    "wineVersion": "Wine-GE"
+  }
+}
