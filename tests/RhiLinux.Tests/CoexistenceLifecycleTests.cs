@@ -8,6 +8,25 @@ namespace RhiLinux.Tests;
 public sealed class CoexistenceLifecycleTests
 {
     [Fact]
+    public void AdaptiveLaunchOptionAddsProtonWaylandOnlyForTestedGameProfile()
+    {
+        using var temp = new TestDirectory();
+        var ordinary = Game(temp);
+        var crimsonDesert = ordinary with { Name = "Crimson Desert Enhanced" };
+
+        var ordinaryOption = DeploymentPlanner.GenerateLaunchOption(
+            ordinary.ToDeploymentTarget(), "dxgi.dll", includeRenoDxHdr: true);
+        var crimsonOption = DeploymentPlanner.GenerateLaunchOption(
+            crimsonDesert.ToDeploymentTarget(), "dxgi.dll", includeRenoDxHdr: true);
+        var withoutReno = DeploymentPlanner.GenerateLaunchOption(
+            crimsonDesert.ToDeploymentTarget(), "dxgi.dll", includeRenoDxHdr: false);
+
+        Assert.Equal("DXVK_HDR=1 WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", ordinaryOption);
+        Assert.Equal("PROTON_ENABLE_WAYLAND=1 DXVK_HDR=1 WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", crimsonOption);
+        Assert.Equal("WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", withoutReno);
+    }
+
+    [Fact]
     public async Task StandaloneReShadeAndRenoUseActiveProxyWithoutCoexistenceName()
     {
         using var temp = new TestDirectory();
@@ -380,10 +399,10 @@ public sealed class CoexistenceLifecycleTests
         Assert.DoesNotContain("LD_PRELOAD", composed.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("MANGOHUD", composed.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("WINEDLLOVERRIDES=\"dxgi=n,b\"", composed.Text, StringComparison.Ordinal);
-        Assert.Contains(SteamLaunchOptionService.ProtonEnableWayland, composed.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(SteamLaunchOptionService.ProtonEnableWayland, composed.Text, StringComparison.Ordinal);
         Assert.Contains(SteamLaunchOptionService.DxvkHdr, composed.Text, StringComparison.Ordinal);
         Assert.Equal(
-            $"{SteamLaunchOptionService.ProtonEnableWayland} {SteamLaunchOptionService.DxvkHdr} WINEDLLOVERRIDES=\"dxgi=n,b\" %command%",
+            $"{SteamLaunchOptionService.DxvkHdr} WINEDLLOVERRIDES=\"dxgi=n,b\" %command%",
             composed.Text);
 
         var observed = SteamLaunchOptionService.Observe(

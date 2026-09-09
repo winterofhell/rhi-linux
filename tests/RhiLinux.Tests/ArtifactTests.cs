@@ -64,6 +64,43 @@ public sealed class ArtifactTests
     }
 
     [Fact]
+    public async Task DirectArtifactDownloadRejectsRedirectToUnapprovedHost()
+    {
+        using var temp = new TestDirectory();
+        var paths = new XdgPaths(temp.Path,
+            new Dictionary<string, string?> { ["XDG_CACHE_HOME"] = temp.Combine("cache") });
+        var downloader = new ArtifactDownloader(
+            new HttpClient(new RedirectedArtifactHandler("https://downloads.example.invalid/ReShade64.dll")),
+            paths);
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => downloader.DownloadAsync(
+            new Uri("https://github.com/owner/project/releases/download/v1/ReShade64.dll"),
+            "ReShade64.dll"));
+
+        Assert.Contains("not an approved upstream host", exception.Message, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(paths.AppCacheDirectory, "downloads")) &&
+                     Directory.EnumerateFiles(Path.Combine(paths.AppCacheDirectory, "downloads")).Any());
+    }
+
+    [Fact]
+    public async Task DirectArtifactDownloadAcceptsWhitespaceAroundPublishedDigest()
+    {
+        using var temp = new TestDirectory();
+        var payload = await File.ReadAllBytesAsync(temp.Pe("source/ReShade64.dll"));
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+        var paths = new XdgPaths(temp.Path,
+            new Dictionary<string, string?> { ["XDG_CACHE_HOME"] = temp.Combine("cache") });
+        var downloader = new ArtifactDownloader(new HttpClient(new ArtifactHandler(payload)), paths);
+
+        var downloaded = await downloader.DownloadAsync(
+            new Uri("https://github.com/owner/project/releases/download/v1/ReShade64.dll"),
+            "ReShade64.dll",
+            $"  sha256:{digest}  ");
+
+        Assert.Equal(payload, await File.ReadAllBytesAsync(downloaded));
+    }
+
+    [Fact]
     public async Task StructuredCacheReusesValidatedArtifactWithoutDownloadingAgain()
     {
         using var temp = new TestDirectory(); var pe = await File.ReadAllBytesAsync(temp.Pe("source/addon.addon64"));
@@ -80,6 +117,35 @@ public sealed class ArtifactTests
         Assert.Equal(ArtifactCacheState.Cached, second.CacheState);
         Assert.Equal(first.CachedPath, second.CachedPath);
         Assert.Single(await cache.ListAsync());
+    }
+
+    [Fact]
+    public async Task FailedRefreshReusesTheLastValidatedArtifactInsteadOfReportingDownloadFailure()
+    {
+        using var temp = new TestDirectory();
+        var bytes = await File.ReadAllBytesAsync(temp.PeWithMarker("source/ReShade64.dll", "reshade.me"));
+        var paths = new XdgPaths(temp.Path,
+            new Dictionary<string, string?> { ["XDG_CACHE_HOME"] = temp.Combine("cache") });
+        var cache = new ArtifactCacheService(paths);
+        var selection = new ArtifactSelection(ComponentKind.ReShade, "6.7.3",
+            new("https://reshade.me/ReShade64.dll"), "6.7.3", "ReShade64.dll",
+            PeArchitecture.X64, null, "ReShade64.dll", null, ArtifactArchiveKind.None);
+        var cached = await cache.AcquireAsync(selection, new HttpClient(new ArtifactHandler(bytes)));
+        var refresh = cached with { CacheState = ArtifactCacheState.DownloadRequired };
+        var game = Game(temp, 42, "Fixture", GameEngine.Unknown);
+        var profile = await new GameProfileCatalog(paths).MatchAsync(game);
+        var resolution = new GameArtifactResolution(profile, [refresh], [], true, MetadataCheckState.Online);
+
+        var acquired = await new OfficialArtifactResolver(new HttpClient(new FailingHandler()), paths)
+            .AcquireSelectedAsync(resolution, new HashSet<ComponentKind> { ComponentKind.ReShade });
+
+        var artifact = Assert.Single(acquired.Artifacts);
+        Assert.Equal(ArtifactCacheState.Cached, artifact.CacheState);
+        Assert.Equal(ArtifactValidationState.Valid, artifact.Validation);
+        Assert.Equal(cached.CachedPath, artifact.CachedPath);
+        Assert.True(acquired.IsFullyAutomatic);
+        Assert.DoesNotContain(acquired.Warnings,
+            warning => warning.Contains("acquisition failed", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -221,7 +287,11 @@ public sealed class ArtifactTests
     public async Task CentralResolverSelectsOfficialExactProfileAndDependencies()
     {
         using var temp = new TestDirectory();
-        var game = Game(temp, 1091500, "Cyberpunk 2077", GameEngine.Unknown);
+        var game = Game(temp, 1091500, "Cyberpunk 2077", GameEngine.Unknown) with
+        {
+            ProtonPrefix = string.Empty,
+            HasProtonPrefix = false
+        };
         var paths = new XdgPaths(temp.Path, new Dictionary<string, string?> { ["XDG_CACHE_HOME"] = temp.Combine("cache") });
         var handler = new ResolverHandler();
 
@@ -233,7 +303,28 @@ public sealed class ArtifactTests
         Assert.Contains(result.Components, x => x.Component == ComponentKind.ReShade && x.Version == "6.7.3");
         Assert.Contains(result.Components, x => x.Component == ComponentKind.OptiScaler && x.AssetFileName == "OptiScaler.7z");
         Assert.DoesNotContain(result.Components, x => x.Component == ComponentKind.OptiPatcher);
+        Assert.True(result.CanAcquireOptiScaler);
         Assert.True(result.IsFullyAutomatic);
+    }
+
+    [Fact]
+    public async Task CyberpunkWithoutCreatedPrefixStillOffersRecommendedInstall()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp, 1091500, "Cyberpunk 2077", GameEngine.Unknown, "Cyberpunk2077.exe") with
+        {
+            ProtonPrefix = string.Empty,
+            HasProtonPrefix = false
+        };
+        var paths = new XdgPaths(temp.Path,
+            new Dictionary<string, string?> { ["XDG_CACHE_HOME"] = temp.Combine("cache") });
+
+        var report = await new StackStatusService(new HttpClient(new ResolverHandler()), paths)
+            .GetAsync(game, allowNetwork: true);
+
+        Assert.True(report.OptiScalerEligibility.CanInstall);
+        Assert.True(report.ArtifactResolution.CanAcquireOptiScaler);
+        Assert.True(report.CanInstallRecommendedStack);
     }
 
     [Fact]
@@ -504,6 +595,16 @@ public sealed class ArtifactTests
             RequestCount++;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(content) });
         }
+    }
+
+    private sealed class RedirectedArtifactHandler(string finalUrl) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([1, 2, 3]),
+                RequestMessage = new HttpRequestMessage(HttpMethod.Get, finalUrl)
+            });
     }
 
     private sealed class InterruptedHandler(byte[] content) : HttpMessageHandler

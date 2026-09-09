@@ -31,10 +31,17 @@ internal static class SourceJson
     {
         try
         {
-            var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-            if (!TryParseDocument(text, out var document) || document is null)
-                return (false, null, "JSON could not be parsed.");
+            await using var input = File.OpenRead(path);
+            var document = await JsonDocument.ParseAsync(
+                    input,
+                    DocumentOptions,
+                    cancellationToken)
+                .ConfigureAwait(false);
             return (true, document, null);
+        }
+        catch (JsonException)
+        {
+            return (false, null, "JSON could not be parsed.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

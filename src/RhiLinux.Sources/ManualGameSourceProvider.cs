@@ -16,9 +16,10 @@ public sealed class ManualGameSourceProvider : IGameSourceProvider
     {
         cancellationToken.ThrowIfCancellationRequested();
         var candidates = new List<(string Path, SourceRootKind Kind)>();
-        if (context.CustomRoots.Count > 0)
+        var customRoots = context.RootsForProvider(ProviderId);
+        if (customRoots.Count > 0)
         {
-            foreach (var custom in context.CustomRoots)
+            foreach (var custom in customRoots)
                 candidates.Add((custom, SourceRootKind.Custom));
         }
         else

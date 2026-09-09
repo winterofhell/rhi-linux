@@ -48,6 +48,7 @@ public static class ReadinessIssueCodes
     public const string FilesystemUnsupported = "FilesystemUnsupported";
     public const string PlannerFailed = "PlannerFailed";
     public const string EvaluationFailed = "EvaluationFailed";
+    public const string ProfileNeedsReview = "ProfileNeedsReview";
 }
 
 public sealed record GameReadinessIssue(
@@ -83,8 +84,11 @@ public sealed record DeploymentPlanSummary(
         var filesReplaced = plan.FileDecisions.Count(decision => decision.ReplacesManagedFile) +
             operations.Count(op => op.Type == DeploymentOperationType.Copy && !string.IsNullOrWhiteSpace(op.BackupPath));
         var filesRenamed = operations.Count(op => op.Type == DeploymentOperationType.Move);
-        var backups = operations.Count(op =>
-            op.Type == DeploymentOperationType.Backup || !string.IsNullOrWhiteSpace(op.BackupPath));
+        var backups = operations
+            .Where(op => op.Type == DeploymentOperationType.Backup || !string.IsNullOrWhiteSpace(op.BackupPath))
+            .Select(op => op.BackupPath ?? op.Target)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
         var configChanges = operations.Count(op =>
             op.Type is DeploymentOperationType.WriteIniValue or DeploymentOperationType.ClearConfigurationPatches);
         var highlights = new List<string>();
@@ -174,6 +178,14 @@ public interface IGameReadinessService
     void InvalidateAll();
 }
 
+public interface IRecommendedDeploymentPlanBuilder
+{
+    Task<DeploymentPlan> BuildAsync(
+        InstalledGame game,
+        RecommendedSetupResult recommendation,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed record GameReadinessEvaluationOptions(
     bool AllowNetwork = false,
     bool ForceRefresh = false,
@@ -185,4 +197,5 @@ public sealed record GameReadinessEvaluationOptions(
     string? PrefetchedLaunchOption = null,
     LaunchConfigurationResult? PrefetchedLaunchConfiguration = null,
     string? ArtifactMetadataVersion = null,
-    GameOverride? ManualOverride = null);
+    GameOverride? ManualOverride = null,
+    UserGameProfile? Profile = null);

@@ -180,6 +180,21 @@ public sealed class InterruptedTransactionRecoveryTests
     }
 
     [Fact]
+    public async Task SuccessfulDeploymentIsNotReportedAsInterrupted()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp);
+        var source = temp.File("staging/completed.dll", "completed deployment");
+        var target = temp.Combine("game", "completed.dll");
+
+        var result = await new DeploymentExecutor().ExecuteAsync(
+            CopyPlan(game, "completed-transaction", source, target), false);
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.False(DeploymentRecoveryProbe.Probe(game.GameRoot).HasInterruptedTransaction);
+    }
+
+    [Fact]
     public async Task UncommittedSchemaOneJournalFailsClosed()
     {
         using var temp = new TestDirectory();

@@ -121,6 +121,30 @@ public sealed class ComponentDetectionTests
     }
 
     [Fact]
+    public async Task LegacySteamInstallIdentityForSameAppIdRemainsManagedAndRemovable()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp);
+        await InstallWorkingStackAsync(temp, game);
+        var manifestPath = Path.Combine(game.GameRoot, ".rhi-linux", "manifest.json");
+        var manifest = JsonSerializer.Deserialize<GameManifest>(await File.ReadAllTextAsync(manifestPath),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        manifest.InstallId = GameInstallId.LegacySteam(game.AppId).Value;
+        manifest.SteamAppId = game.AppId;
+        await File.WriteAllTextAsync(manifestPath,
+            JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+        var statuses = await new ComponentDetector().DetectAsync(game);
+        var plan = await new DeploymentPlanner().BuildRemovePlanAsync(game, ComponentKind.RenoDx);
+
+        Assert.All(statuses, status => Assert.NotEqual(ComponentHealth.ForeignInstallation, status.Health));
+        Assert.All(statuses, status => Assert.Equal(ComponentHealth.Installed, status.Health));
+        Assert.Contains(plan.Operations, operation =>
+            operation.Type == DeploymentOperationType.DeleteManagedFile &&
+            operation.Component == ComponentKind.RenoDx);
+    }
+
+    [Fact]
     public async Task OwnershipManifestForAnotherAppIdIsUnknownInstallation()
     {
         using var temp = new TestDirectory();

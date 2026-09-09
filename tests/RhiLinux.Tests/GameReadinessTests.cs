@@ -8,14 +8,13 @@ namespace RhiLinux.Tests;
 public sealed class GameReadinessTests
 {
     [Fact]
-    public async Task ReadySteamGameProducesReadyOrConfigurationState()
+    public async Task ReadySteamGameProducesDeterministicWarningStateWhenPlanBuilderIsMissing()
     {
         using var fixture = GameFixture.Create();
         var service = CreateService();
         var result = await service.EvaluateAsync(fixture.Game, PrefetchAvailable());
 
-        Assert.True(result.State is GameReadinessState.Ready or GameReadinessState.ReadyWithWarnings
-            or GameReadinessState.NeedsConfiguration);
+        Assert.Equal(GameReadinessState.NeedsConfiguration, result.State);
         Assert.Equal(fixture.Game.InstallId, result.InstallId);
         Assert.False(string.IsNullOrWhiteSpace(result.NextAction));
         Assert.NotNull(result.RecommendedSetup);
@@ -56,7 +55,7 @@ public sealed class GameReadinessTests
             WarnBeforeAntiCheatDeployments = true
         });
         Assert.Contains(result.Issues, issue => issue.Code == ReadinessIssueCodes.AntiCheatDetected);
-        Assert.True(result.State is GameReadinessState.Unsupported or GameReadinessState.NeedsConfiguration);
+        Assert.Equal(GameReadinessState.Unsupported, result.State);
     }
 
     [Fact]
@@ -99,6 +98,24 @@ public sealed class GameReadinessTests
     }
 
     [Fact]
+    public async Task InterruptedInstallIsReportedAsAutomaticRecoveryWithoutBlockingSetup()
+    {
+        using var fixture = GameFixture.Create();
+        var transactionDirectory = Path.Combine(fixture.Root, ".rhi-linux", "transactions");
+        Directory.CreateDirectory(transactionDirectory);
+        await File.WriteAllTextAsync(Path.Combine(transactionDirectory, "interrupted.json"),
+            "{\"state\":\"Running\"}");
+
+        var result = await CreateService().EvaluateAsync(fixture.Game, PrefetchAvailable());
+
+        var issue = Assert.Single(result.Issues,
+            item => item.Code == ReadinessIssueCodes.InterruptedDeployment);
+        Assert.Equal(ReadinessIssueSeverity.Warning, issue.Severity);
+        Assert.Contains("automatically", issue.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(result.Issues, item => item.Code == ReadinessIssueCodes.RecoveryRequired);
+    }
+
+    [Fact]
     public void RecommendedSetupOrdersDeterministicallyForReshadeOnly()
     {
         using var fixture = GameFixture.Create();
@@ -113,6 +130,23 @@ public sealed class GameReadinessTests
         Assert.Contains(setup.Options, option => option.Id == "add-renodx" && option.IsSupported);
         Assert.Contains(setup.Options, option => option.Id == "add-optiscaler" && option.IsSupported);
         Assert.False(string.IsNullOrWhiteSpace(setup.PrimaryOptionId));
+    }
+
+    [Fact]
+    public void RecommendedSetupDoesNotOfferBackupRestoreManagement()
+    {
+        using var fixture = GameFixture.Create();
+        var setup = new RecommendedSetupService().Build(
+            fixture.Game,
+            [
+                Status(ComponentKind.ReShade, ComponentHealth.Installed, "6.7.3"),
+                Status(ComponentKind.RenoDx, ComponentHealth.Installed, "snapshot"),
+                Status(ComponentKind.OptiScaler, ComponentHealth.Installed, "v0.9.4")
+            ],
+            null);
+
+        Assert.DoesNotContain(setup.Options, option => option.Id == "restore-backups");
+        Assert.Equal("up-to-date", setup.PrimaryOptionId);
     }
 
     [Theory]
@@ -165,6 +199,34 @@ public sealed class GameReadinessTests
     }
 
     [Fact]
+    public async Task EligibleReadinessBuildsRealDeploymentPlannerPreview()
+    {
+        using var fixture = GameFixture.Create();
+        var artifactDirectory = Directory.CreateDirectory(Path.Combine(fixture.Root, "artifacts")).FullName;
+        var artifact = Path.Combine(artifactDirectory, "ReShade64.dll");
+        File.Copy(fixture.Game.Executable!, artifact);
+        var planBuilder = new RecommendedDeploymentPlanBuilder(
+            new DeploymentPlanner(),
+            (_, _, _) => Task.FromResult(new RecommendedStackArtifacts(
+                new ComponentArtifact(ComponentKind.ReShade, artifact, "ReShade64.dll", "fixture"),
+                null,
+                null)));
+        var service = new GameReadinessService(
+            recommendations: new RecommendedSetupService(),
+            launchConfiguration: new LaunchConfigurationService(),
+            planBuilder: planBuilder);
+
+        var result = await service.EvaluateAsync(fixture.Game, PrefetchAvailable());
+
+        Assert.True(result.RecommendedPlan is not null,
+            string.Join(", ", result.Issues.Select(issue => $"{issue.Code}:{issue.Message}")));
+        Assert.True(result.RecommendedPlan.OperationsCount > 0);
+        Assert.True(result.RecommendedPlan.RequiresConfirmation);
+        Assert.DoesNotContain(result.Issues, issue => issue.Code == ReadinessIssueCodes.PlannerFailed);
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "dxgi.dll")));
+    }
+
+    [Fact]
     public async Task GuiExposesReadinessAfterSelection()
     {
         using var fixture = GameFixture.Create();
@@ -213,6 +275,7 @@ public sealed class GameReadinessTests
     {
         private readonly string root;
         public InstalledGame Game { get; }
+        public string Root => root;
 
         private GameFixture(string root, InstalledGame game)
         {
@@ -224,7 +287,14 @@ public sealed class GameReadinessTests
         {
             var root = Directory.CreateTempSubdirectory("rhi-readiness-").FullName;
             var exe = Path.Combine(root, "game.exe");
-            File.WriteAllBytes(exe, [0x4D, 0x5A, 0x90, 0x00]);
+            var bytes = new byte[512];
+            bytes[0] = (byte)'M';
+            bytes[1] = (byte)'Z';
+            BitConverter.GetBytes(0x80).CopyTo(bytes, 0x3c);
+            bytes[0x80] = (byte)'P';
+            bytes[0x81] = (byte)'E';
+            BitConverter.GetBytes((ushort)0x8664).CopyTo(bytes, 0x84);
+            File.WriteAllBytes(exe, bytes);
             var steam = InstalledGame.FromSteamGame(new SteamGame(
                 10, "Ready Game", Path.Combine(root, "steam"), Path.Combine(root, "library"), root,
                 Path.Combine(root, "pfx"), exe, root, DetectionConfidence.High, "fixture", GameEngine.Unreal, []));

@@ -21,7 +21,7 @@ public sealed class LegendaryGameSourceProvider : IGameSourceProvider
         candidates.Add((Path.Combine(context.ConfigHome, "legendary"), SourceRootKind.Xdg));
         candidates.Add((Path.Combine(context.HomeDirectory, ".config", "legendary"), SourceRootKind.Native));
 
-        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.CustomRoots));
+        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.RootsForProvider(ProviderId), context.HomeDirectory));
     }
 
     public async Task<GameSourceScanResult> ScanAsync(

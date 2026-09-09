@@ -110,10 +110,8 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
         else warnings.Add("The official full-addon ReShade release could not be resolved and no valid cached build is available.");
 
         var renoResolution = ResolveRenoDx(game, profile, manifestCatalog, wikiCatalog);
+        renoResolution = await EnrichWithDiscussionAsync(game, renoResolution, allowNetwork, forceRefresh, cancellationToken);
         renoResolution = await EnrichWithSnapshotAsync(game, renoResolution, allowNetwork, forceRefresh, cancellationToken);
-        if (renoResolution.Selection is null ||
-            renoResolution.Match.Compatibility is RenoDxCompatibilityState.ListedManualDownloadRequired)
-            renoResolution = await EnrichWithDiscussionAsync(game, renoResolution, allowNetwork, forceRefresh, cancellationToken);
         profile = renoResolution.Profile;
         if (renoResolution.Warning is not null) warnings.Add(renoResolution.Warning);
         foreach (var note in renoResolution.CompatibilityNotes)
@@ -185,8 +183,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
     private static bool IsTechnicallyEligibleForOptiScaler(DeploymentTarget game)
     {
         if (game.RequiresConfirmation || game.Executable is null ||
-            !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(game.ProtonPrefix)) return false;
+            !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return false;
         return SelectedArchitecture(game) == PeArchitecture.X64;
     }
 
@@ -220,6 +217,12 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             return current;
 
         var entry = current.Match.Entry;
+        if (current.Selection is null && entry is
+            {
+                SourceSection: RenoDxCatalogSection.ManualOnly,
+                SourceType: RenoDxSourceType.Nexus or RenoDxSourceType.Discord or RenoDxSourceType.Discussion
+            })
+            return current;
         var architecture = current.Match.SelectedArchitecture is PeArchitecture.X86 or PeArchitecture.X64
             ? current.Match.SelectedArchitecture
             : SelectedArchitecture(game);
@@ -324,9 +327,10 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             : SelectedArchitecture(game);
         var discussion = await discussions.ResolveAsync(
             entry.DiscussionUrl, entry, architecture, allowNetwork, cancellationToken, forceRefresh);
+        var officialPageUrl = entry.OfficialPageUrl ?? discussion.OfficialPageUrl;
         var updatedEntry = entry with
         {
-            OfficialPageUrl = discussion.OfficialPageUrl,
+            OfficialPageUrl = officialPageUrl,
             DiscussionUrl = entry.DiscussionUrl,
             ExpectedAddonFileName = discussion.ExpectedFileName ?? entry.ExpectedAddonFileName,
             DeploymentRelativeDirectory = discussion.DeploymentRelativeDirectory ?? entry.DeploymentRelativeDirectory,
@@ -359,7 +363,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             var resolved = ApplySelection(game, current.Profile, match, selection, updatedEntry);
             return resolved with
             {
-                OfficialPageUrl = discussion.OfficialPageUrl,
+                OfficialPageUrl = officialPageUrl,
                 ExpectedAddonFileName = discussion.ExpectedFileName,
                 DeploymentRelativeDirectory = discussion.DeploymentRelativeDirectory,
                 Notes = discussion.CompatibilityWarnings,
@@ -378,7 +382,7 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
                 ReasonCode = discussion.State.ToString()
             },
             Warning = discussion.Warning ?? DescribeCompatibility(compatibility),
-            OfficialPageUrl = discussion.OfficialPageUrl,
+            OfficialPageUrl = officialPageUrl,
             ExpectedAddonFileName = discussion.ExpectedFileName,
             DeploymentRelativeDirectory = discussion.DeploymentRelativeDirectory,
             Notes = discussion.CompatibilityWarnings
@@ -601,6 +605,14 @@ public sealed class OfficialArtifactResolver(HttpClient httpClient, XdgPaths pat
             }
             catch (Exception exception) when (IsRecoverableAcquisitionFailure(exception))
             {
+                var recovered = await cache.InspectAsync(selection, cancellationToken).ConfigureAwait(false);
+                if (recovered.CacheState == ArtifactCacheState.Cached &&
+                    recovered.Validation == ArtifactValidationState.Valid &&
+                    recovered.CachedPath is not null)
+                {
+                    selections[component] = recovered;
+                    return true;
+                }
                 warnings.Add($"{component} acquisition failed: {exception.Message}");
                 return false;
             }

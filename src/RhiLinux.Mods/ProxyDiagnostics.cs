@@ -264,11 +264,18 @@ public sealed class ProxyDiagnosticsService(GameProfileCatalog? profiles = null)
     {
         try
         {
-            var reshade = BinaryMarkerScanner.ContainsAny(path, "reshade.me", "ReShade Add-on");
-            var optiScaler = BinaryMarkerScanner.ContainsAny(path, "OptiScaler", "OptiFG");
-            var injector = BinaryMarkerScanner.ContainsAny(path, "Special K", "Ultimate ASI Loader", "DXVK");
-            var microsoft = BinaryMarkerScanner.ContainsAny(path, "Microsoft Corporation") &&
-                BinaryMarkerScanner.ContainsAny(path, "Debugging Tools for Windows", "Windows Debugger");
+            var markers = BinaryMarkerScanner.ContainsEach(path,
+            [
+                ["reshade.me", "ReShade Add-on"],
+                ["OptiScaler", "OptiFG"],
+                ["Special K", "Ultimate ASI Loader", "DXVK"],
+                ["Microsoft Corporation"],
+                ["Debugging Tools for Windows", "Windows Debugger"]
+            ]);
+            var reshade = markers[0];
+            var optiScaler = markers[1];
+            var injector = markers[2];
+            var microsoft = markers[3] && markers[4];
             var evidence = new List<string>();
             if (reshade) evidence.Add("ReShade-specific binary marker");
             if (optiScaler) evidence.Add("OptiScaler-specific binary marker");

@@ -14,6 +14,7 @@ public sealed class GameReadinessService : IGameReadinessService
     private readonly ProxyDiagnosticsService proxyDiagnostics;
     private readonly IRecommendedSetupService recommendations;
     private readonly ILaunchConfigurationProvider? launchConfiguration;
+    private readonly IRecommendedDeploymentPlanBuilder? planBuilder;
     private readonly ConcurrentDictionary<string, GameReadinessResult> cache = new(StringComparer.Ordinal);
 
     public GameReadinessService(
@@ -21,13 +22,15 @@ public sealed class GameReadinessService : IGameReadinessService
         ComponentDetector? detector = null,
         ProxyDiagnosticsService? proxyDiagnostics = null,
         IRecommendedSetupService? recommendations = null,
-        ILaunchConfigurationProvider? launchConfiguration = null)
+        ILaunchConfigurationProvider? launchConfiguration = null,
+        IRecommendedDeploymentPlanBuilder? planBuilder = null)
     {
         this.stackStatus = stackStatus;
         this.detector = detector ?? new ComponentDetector();
         this.proxyDiagnostics = proxyDiagnostics ?? new ProxyDiagnosticsService();
         this.recommendations = recommendations ?? new RecommendedSetupService();
         this.launchConfiguration = launchConfiguration;
+        this.planBuilder = planBuilder;
     }
 
     public void Invalidate(GameInstallId installId) => cache.TryRemove(installId.Value, out _);
@@ -40,7 +43,11 @@ public sealed class GameReadinessService : IGameReadinessService
         CancellationToken cancellationToken = default)
     {
         options ??= new GameReadinessEvaluationOptions();
-        var fingerprint = BuildFingerprint(game, options);
+        var profileValidation = options.Profile is null
+            ? null
+            : UserGameProfileValidator.Validate(game, options.Profile);
+        var effectiveGame = profileValidation?.EffectiveGame ?? game;
+        var fingerprint = BuildFingerprint(effectiveGame, options);
         if (!options.ForceRefresh &&
             cache.TryGetValue(game.EffectiveInstallId, out var cached) &&
             cached.EvaluationFingerprint == fingerprint)
@@ -48,7 +55,8 @@ public sealed class GameReadinessService : IGameReadinessService
 
         try
         {
-            var result = await EvaluateCoreAsync(game, options, fingerprint, cancellationToken).ConfigureAwait(false);
+            var result = await EvaluateCoreAsync(effectiveGame, options, fingerprint, cancellationToken, profileValidation)
+                .ConfigureAwait(false);
             cache[game.EffectiveInstallId] = result;
             return result;
         }
@@ -91,7 +99,8 @@ public sealed class GameReadinessService : IGameReadinessService
         InstalledGame game,
         GameReadinessEvaluationOptions options,
         string fingerprint,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        UserGameProfileValidation? profileValidation)
     {
         var issues = new List<GameReadinessIssue>();
         var target = game.ToDeploymentTarget();
@@ -107,20 +116,22 @@ public sealed class GameReadinessService : IGameReadinessService
                     .ConfigureAwait(false);
                 components = report.Components;
                 proxy = report.Proxy;
-                launchOption ??= report.Proxy.LaunchOption;
+                launchOption ??= report.Snapshot?.LaunchOptionRequirement ?? report.Proxy.LaunchOption;
             }
             else
             {
                 components = await detector.DetectAsync(target, cancellationToken).ConfigureAwait(false);
                 proxy = await proxyDiagnostics.DiagnoseAsync(target, cancellationToken).ConfigureAwait(false);
-                launchOption ??= proxy.LaunchOption;
+                launchOption ??= proxy.SelectedProxy is { Length: > 0 } selectedProxy
+                    ? DeploymentPlanner.GenerateLaunchOption(target, selectedProxy, IsRenoDxInstalled(components))
+                    : proxy.LaunchOption;
             }
         }
         else
         {
             proxy = await proxyDiagnostics.DiagnoseAsync(target, cancellationToken).ConfigureAwait(false);
             launchOption ??= options.PrefetchedProxyName is { Length: > 0 } proxyName
-                ? DeploymentPlanner.GenerateLaunchOption(proxyName)
+                ? DeploymentPlanner.GenerateLaunchOption(target, proxyName, IsRenoDxInstalled(components))
                 : proxy.LaunchOption;
         }
 
@@ -134,6 +145,17 @@ public sealed class GameReadinessService : IGameReadinessService
         EvaluatePrefix(game, issues);
         EvaluateStale(game, issues);
         EvaluateArtifacts(components, issues);
+        if (profileValidation is { State: UserGameProfileState.NeedsReview })
+        {
+            foreach (var issue in profileValidation.Issues)
+                issues.Add(new(
+                    ReadinessIssueCodes.ProfileNeedsReview,
+                    ReadinessIssueSeverity.Blocking,
+                    "Game profile needs review",
+                    issue,
+                    "review-game-profile",
+                    Context(game)));
+        }
 
         var launch = options.PrefetchedLaunchConfiguration;
         if (launch is null && launchConfiguration is not null && !string.IsNullOrWhiteSpace(launchOption))
@@ -165,6 +187,49 @@ public sealed class GameReadinessService : IGameReadinessService
             proxy,
             options.PreferExistingManagedVersions,
             options.WarnBeforeAntiCheatDeployments);
+        if (profileValidation?.Profile.PreferredRecommendationId is { } savedRecommendation &&
+            setup.Options.All(option => option.Id != savedRecommendation || !option.IsSupported))
+            issues.Add(new(
+                ReadinessIssueCodes.ProfileNeedsReview,
+                ReadinessIssueSeverity.Blocking,
+                "Game profile needs review",
+                "The preferred recommendation is no longer supported.",
+                "review-game-profile",
+                Context(game)));
+        if (profileValidation is
+            {
+                State: UserGameProfileState.Valid,
+                Profile.AutoUseRecommendation: true,
+                Profile.PreferredRecommendationId: { } preferred
+            } &&
+            setup.Options.Any(option => option.Id == preferred && option.IsSupported))
+            setup = setup with { PrimaryOptionId = preferred };
+
+        DeploymentPlanSummary? recommendedPlan = null;
+        if (options.BuildRecommendedPlan && CanBuildPlan(setup, issues))
+        {
+            try
+            {
+                if (planBuilder is null)
+                    throw new InvalidOperationException("No recommended deployment plan builder is configured.");
+                var plan = await planBuilder.BuildAsync(game, setup, cancellationToken).ConfigureAwait(false);
+                recommendedPlan = DeploymentPlanSummary.From(plan);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                issues.Add(new(
+                    ReadinessIssueCodes.PlannerFailed,
+                    ReadinessIssueSeverity.Warning,
+                    "Recommended plan unavailable",
+                    exception.Message,
+                    "refresh-readiness",
+                    Context(game, ("exception", exception.GetType().Name))));
+            }
+        }
 
         var state = ResolveState(game, issues, launch);
         var summary = BuildSummary(game, state, issues);
@@ -179,11 +244,20 @@ public sealed class GameReadinessService : IGameReadinessService
             components,
             issues,
             launch,
-            null,
+            recommendedPlan,
             setup,
             DateTimeOffset.UtcNow,
             fingerprint);
     }
+
+    private static bool IsRenoDxInstalled(IReadOnlyList<ComponentStatus> components) =>
+        components.Any(status =>
+            status.Component == ComponentKind.RenoDx &&
+            (status.Health is ComponentHealth.Installed or ComponentHealth.Outdated or
+                ComponentHealth.PartiallyInstalled or ComponentHealth.Broken ||
+             status.Lifecycle is ComponentLifecycleState.InstalledHealthy or ComponentLifecycleState.InstalledWithWarnings or
+                ComponentLifecycleState.InstalledMetadataIncomplete or ComponentLifecycleState.InstalledUnmanaged or
+                ComponentLifecycleState.UpdateAvailable));
 
     private static void EvaluateInstallRoot(InstalledGame game, List<GameReadinessIssue> issues)
     {
@@ -385,20 +459,15 @@ public sealed class GameReadinessService : IGameReadinessService
         {
             issues.Add(new(
                 ReadinessIssueCodes.InterruptedDeployment,
-                ReadinessIssueSeverity.Blocking,
+                ReadinessIssueSeverity.Warning,
                 "Interrupted deployment",
-                recovery.Message ?? "An interrupted deployment transaction requires recovery before continuing.",
-                "recover-interrupted",
+                $"{recovery.Message ?? "An interrupted deployment transaction was found."} " +
+                "It will be recovered automatically before installation.",
+                "review-recommended-setup",
                 new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["journals"] = string.Join(',', recovery.JournalIds)
                 }));
-            issues.Add(new(
-                ReadinessIssueCodes.RecoveryRequired,
-                ReadinessIssueSeverity.Blocking,
-                "Recovery required",
-                "Run a confirmed recovery or restore operation before applying a new setup.",
-                "restore-backups"));
         }
     }
 
@@ -547,16 +616,86 @@ public sealed class GameReadinessService : IGameReadinessService
             .Append(game.RequiresConfirmation).Append('|')
             .Append(options.WarnBeforeAntiCheatDeployments).Append('|')
             .Append(options.PreferExistingManagedVersions).Append('|')
+            .Append(options.BuildRecommendedPlan).Append('|')
             .Append(options.ArtifactMetadataVersion ?? "").Append('|')
             .Append(options.ManualOverride?.Executable ?? "").Append('|')
             .Append(options.ManualOverride?.DeploymentDirectory ?? "").Append('|');
+        if (options.Profile is { } profile)
+            builder.Append(profile.InstallId.Value).Append('|')
+                .Append(profile.PreferredExecutable ?? "").Append('|')
+                .Append(profile.PreferredDeploymentDirectory ?? "").Append('|')
+                .Append(profile.PreferredRecommendationId ?? "").Append('|')
+                .Append(profile.PreferredProxy ?? "").Append('|')
+                .Append(profile.AutoUseRecommendation).Append('|');
         if (game.Fingerprint is { } fingerprint)
-            builder.Append(fingerprint.CanonicalRoot).Append('|').Append(fingerprint.ScannedAt.UtcTicks)
-                .Append('|').Append(fingerprint.FilesVisited);
+            builder.Append(fingerprint.CanonicalRoot).Append('|')
+                .Append(fingerprint.DirectoryFingerprint.SampleHash).Append('|')
+                .Append(fingerprint.DirectoryFingerprint.TopLevelMtimeUtcTicks).Append('|')
+                .Append(fingerprint.Engine).Append('|')
+                .Append(fingerprint.AntiCheat.Kind).Append('|')
+                .Append(fingerprint.AntiCheat.RequiresConfirmation).Append('|')
+                .Append(fingerprint.AntiCheat.Evidence.Count).Append('|');
+        if (game.Fingerprint is { Components: var componentFingerprint })
+        {
+            builder.Append(componentFingerprint.HasReShade).Append('|')
+                .Append(componentFingerprint.HasRenoDx).Append('|')
+                .Append(componentFingerprint.HasOptiScaler).Append('|')
+                .Append(componentFingerprint.HasOptiPatcher).Append('|');
+        }
+        AppendFileMetadata(builder, game.Executable);
+        if (!string.IsNullOrWhiteSpace(game.DeploymentDirectory) && Directory.Exists(game.DeploymentDirectory))
+        {
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(game.DeploymentDirectory, "*", SearchOption.TopDirectoryOnly)
+                             .Where(path => Path.GetExtension(path).Equals(".dll", StringComparison.OrdinalIgnoreCase) ||
+                                            Path.GetExtension(path).Equals(".addon64", StringComparison.OrdinalIgnoreCase) ||
+                                            Path.GetFileName(path).Equals("OptiScaler.ini", StringComparison.OrdinalIgnoreCase))
+                             .OrderBy(path => path, StringComparer.Ordinal))
+                    AppendFileMetadata(builder, path);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                builder.Append("deployment-unreadable|");
+            }
+        }
+        foreach (var component in options.PrefetchedComponents ?? [])
+            builder.Append(component.Component).Append(':').Append(component.Health).Append(':')
+                .Append(component.Version).Append(':').Append(component.RepairReason).Append('|');
+        if (options.PrefetchedLaunchConfiguration is { } launch)
+            builder.Append(launch.Status).Append('|').Append(launch.CopyValue).Append('|');
         var recovery = DeploymentRecoveryProbe.Probe(game.GameRoot);
         builder.Append('|').Append(recovery.HasInterruptedTransaction).Append('|').Append(recovery.HasManagedBackups);
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static bool CanBuildPlan(
+        RecommendedSetupResult setup,
+        IReadOnlyList<GameReadinessIssue> issues)
+    {
+        if (issues.Any(issue => issue.Severity == ReadinessIssueSeverity.Blocking)) return false;
+        if (setup.PrimaryOptionId is null) return false;
+        return setup.Options.FirstOrDefault(option => option.Id == setup.PrimaryOptionId) is
+        {
+            IsSupported: true,
+            Id: not "up-to-date" and not "keep-current" and not "keep-reshade" and not "inspect"
+        };
+    }
+
+    private static void AppendFileMetadata(StringBuilder builder, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            var info = new FileInfo(path);
+            builder.Append(path).Append(':').Append(info.Exists ? info.Length : -1).Append(':')
+                .Append(info.Exists ? info.LastWriteTimeUtc.Ticks : 0).Append('|');
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            builder.Append(path).Append(":unreadable|");
+        }
     }
 
     private static Dictionary<string, string> Context(InstalledGame game, params (string Key, string Value)[] extra)

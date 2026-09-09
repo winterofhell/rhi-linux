@@ -150,8 +150,9 @@ public sealed class RenoDxDiscussionResolverTests
         var entries = RenoDxWikiClient.ParseCatalog(WikiWithDiscussion("Crimson Desert", 535));
         var entry = Assert.Single(entries, item => item.CanonicalName == "Crimson Desert");
         Assert.Equal(RenoDxCatalogSection.ManualOnly, entry.SourceSection);
-        Assert.Equal(RenoDxSourceType.Discussion, entry.SourceType);
+        Assert.Equal(RenoDxSourceType.Nexus, entry.SourceType);
         Assert.Equal(new Uri("https://github.com/clshortfuse/renodx/discussions/535"), entry.DiscussionUrl);
+        Assert.Equal(new Uri("https://www.nexusmods.com/example/mods/1"), entry.OfficialPageUrl);
         Assert.False(entry.DirectAutomaticDownloadAvailable);
     }
 

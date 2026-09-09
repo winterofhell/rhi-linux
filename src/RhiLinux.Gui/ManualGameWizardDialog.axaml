@@ -1,0 +1,52 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RhiLinux.Gui.ManualGameWizardDialog"
+        Title="Add manual game" Width="760" Height="640" MinWidth="620" MinHeight="520"
+        WindowStartupLocation="CenterOwner" CanResize="True">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="20">
+    <StackPanel Spacing="4">
+      <TextBlock Text="Add game" Classes="pageTitle" />
+      <TextBlock Text="Choose one install directory. RHI scans only that directory and never executes Wine."
+                 Classes="secondary" TextWrapping="Wrap" />
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" Margin="0,16" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="14">
+        <Button Content="Choose install directory" Classes="secondary" HorizontalAlignment="Left" Click="ChooseDirectory_Click" />
+        <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" />
+        <Border Classes="card" IsVisible="{Binding Scan}">
+          <StackPanel Spacing="10">
+            <TextBlock Text="Detected game" Classes="sectionTitle" />
+            <TextBlock Text="{Binding Scan.InstallDirectory}" Classes="secondary" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding Scan.Engine, StringFormat='Engine: {0}'}" />
+            <TextBlock Text="Game name" Classes="secondary" />
+            <TextBox Text="{Binding Name, Mode=TwoWay}" />
+            <TextBlock Text="Executable" Classes="secondary" />
+            <ComboBox ItemsSource="{Binding Scan.Executables}" SelectedItem="{Binding Executable, Mode=TwoWay}">
+              <ComboBox.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel>
+                    <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding RelativePath}" Classes="secondary" />
+                    <TextBlock Text="{Binding Architecture}" Classes="secondary" />
+                    <TextBlock Text="{Binding Reason}" Classes="secondary" TextWrapping="Wrap" />
+                  </StackPanel>
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <TextBlock Text="Deployment directory" Classes="secondary" />
+            <TextBox Text="{Binding DeploymentDirectory, Mode=TwoWay}" />
+            <TextBlock Text="Wine prefix (optional)" Classes="secondary" />
+            <ComboBox ItemsSource="{Binding Scan.PrefixCandidates}" SelectedItem="{Binding Prefix, Mode=TwoWay}" IsEditable="True" />
+            <ItemsControl ItemsSource="{Binding Scan.Components}">
+              <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding Component, StringFormat='Detected: {0}'}" Classes="secondary"/></DataTemplate></ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="Cancel" Classes="secondary" Click="Cancel_Click" />
+      <Button Content="Save game" Classes="primary" IsEnabled="{Binding CanSave}" Click="Save_Click" />
+    </StackPanel>
+  </Grid>
+</Window>

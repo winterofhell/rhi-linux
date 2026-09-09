@@ -70,7 +70,7 @@ public sealed class RenoDxSnapshotReleaseResolverTests
     }
 
     [Fact]
-    public async Task ExactExpectedFilenameBeatsManualDiscussionAndGenericFallback()
+    public async Task NexusOnlyCatalogEntryDoesNotInstallUnlistedSnapshotAsset()
     {
         using var temp = new TestDirectory();
         var pe = File.ReadAllBytes(temp.Pe("payload/renodx-crimsondesert.addon64"));
@@ -103,31 +103,19 @@ public sealed class RenoDxSnapshotReleaseResolverTests
         var resolution = await new OfficialArtifactResolver(http, paths).ResolveAsync(game, allowNetwork: true);
         var report = await new StackStatusService(http, paths).GetAsync(game, allowNetwork: true);
 
-        Assert.True(resolution.CanAcquireRenoDx);
-        Assert.Equal(RenoDxCompatibilityState.ExactAddonAvailableFromOfficialSnapshotRelease, resolution.RenoDxCompatibility);
-        var selection = Assert.Single(resolution.Artifacts, item => item.Component == ComponentKind.RenoDx);
-        Assert.Equal("renodx-crimsondesert.addon64", selection.DeployFileName);
-        Assert.Equal("nightly-snapshot", selection.ReleaseTag);
-        Assert.Equal(digest, Normalize(selection.UpstreamDigest));
-        Assert.False(resolution.RenoDxMatch?.UsedEngineFallback ?? true);
-        Assert.Contains(resolution.CompatibilityNotes, item => item.Contains("Selection reason", StringComparison.OrdinalIgnoreCase) ||
-            item.Contains("unique-derived-slug", StringComparison.OrdinalIgnoreCase) ||
-            item.Contains("exact-expected-filename", StringComparison.OrdinalIgnoreCase) ||
-            item.Contains("snapshot-release", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal("Official RenoDX snapshot release",
-            new ComponentCardViewModel(
-                report.Components.Single(x => x.Component == ComponentKind.RenoDx),
-                resolution.Components.Single(x => x.Component == ComponentKind.RenoDx),
-                officialPageUrl: resolution.OfficialPageUrl,
-                compatibilityNotes: resolution.CompatibilityNotes).SourceProfile);
-        Assert.True(new ComponentCardViewModel(
+        Assert.False(resolution.CanAcquireRenoDx);
+        Assert.True(resolution.RenoDxCompatibility is RenoDxCompatibilityState.OfficialPageAvailableNoDirectAddon or
+            RenoDxCompatibilityState.ListedManualDownloadRequired);
+        Assert.DoesNotContain(resolution.Artifacts, item => item.Component == ComponentKind.RenoDx);
+        Assert.Null(resolution.SnapshotResolution);
+        Assert.Equal("www.nexusmods.com", resolution.OfficialPageUrl?.Host);
+        var card = new ComponentCardViewModel(
             report.Components.Single(x => x.Component == ComponentKind.RenoDx),
             resolution.Components.Single(x => x.Component == ComponentKind.RenoDx),
-            officialPageUrl: resolution.OfficialPageUrl).CanInstall);
-
-        var acquired = await new ArtifactCacheService(paths).AcquireAsync(selection, http);
-        Assert.Equal(ArtifactCacheState.Cached, acquired.CacheState);
-        Assert.Equal(digest, acquired.Sha256);
+            officialPageUrl: resolution.OfficialPageUrl);
+        Assert.False(card.CanInstall);
+        Assert.True(card.CanUseDownloadedArtifact);
+        Assert.Equal("Open Nexus Mods", card.OfficialPageActionText);
     }
 
     [Fact]
@@ -142,7 +130,7 @@ public sealed class RenoDxSnapshotReleaseResolverTests
             # List
             | Name | Maintainer | Links | Status |
             | --- | --- | --- | --- |
-            | Sample Exact Game | Author | [![Nexus Mods](https://img.shields.io/badge/x)](https://www.nexusmods.com/example/mods/1) | :white_check_mark: |
+            | Catalog Anchor | Author | [Snapshot](https://author.github.io/renodx/renodx-anchor.addon64) | :white_check_mark: |
             """);
         var handler = new SnapshotHandler(temp)
         {
@@ -211,7 +199,12 @@ public sealed class RenoDxSnapshotReleaseResolverTests
         var digest = Convert.ToHexString(SHA256.HashData(pe)).ToLowerInvariant();
         var game = Game(temp, 77, "Crimson Desert", "bin64");
         var paths = Paths(temp);
-        var wiki = WikiWithDiscussion("Crimson Desert", 535);
+        var wiki = """
+            # List
+            | Name | Maintainer | Links | Status |
+            | --- | --- | --- | --- |
+            | Catalog Anchor | Author | [Snapshot](https://author.github.io/renodx/renodx-anchor.addon64) | :white_check_mark: |
+            """;
         SeedWiki(paths, wiki);
         var handler = new SnapshotHandler(temp)
         {

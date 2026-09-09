@@ -70,11 +70,12 @@ public sealed class FullStackLifecycleRegressionTests
         foreach (var (path, hash) in beforeRepair)
             Assert.Equal(hash, await ArtifactDownloader.Sha256Async(path));
 
-        Assert.Equal("WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", restarted.LaunchOptionRequirement);
+        Assert.Equal("DXVK_HDR=1 WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", restarted.LaunchOptionRequirement);
         Assert.DoesNotContain("gamemoderun", restarted.LaunchOptionRequirement, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("LD_PRELOAD", restarted.LaunchOptionRequirement, StringComparison.OrdinalIgnoreCase);
         var hdr = SteamLaunchOptionService.GenerateHdrGuidance(restarted.ActiveProxy);
-        Assert.StartsWith("PROTON_ENABLE_WAYLAND=1 DXVK_HDR=1 WINEDLLOVERRIDES=", hdr, StringComparison.Ordinal);
+        Assert.StartsWith("DXVK_HDR=1 WINEDLLOVERRIDES=", hdr, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROTON_ENABLE_WAYLAND", hdr, StringComparison.Ordinal);
         Assert.DoesNotContain("gamemoderun", hdr, StringComparison.OrdinalIgnoreCase);
 
         Assert.True((await executor.ExecuteAsync(await planner.BuildRemovePlanAsync(game, ComponentKind.OptiScaler), false)).Succeeded);
@@ -122,10 +123,9 @@ public sealed class FullStackLifecycleRegressionTests
             Assert.False(card.CanUpdate);
             Assert.Contains("Installed", card.State, StringComparison.OrdinalIgnoreCase);
         });
-        Assert.Equal("WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", viewModel.LaunchOption);
+        Assert.Equal("DXVK_HDR=1 WINEDLLOVERRIDES=\"dxgi=n,b\" %command%", viewModel.LaunchOption);
         Assert.DoesNotContain("gamemoderun", viewModel.LaunchOption ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.True(viewModel.ShowHdrGuidance);
-        Assert.StartsWith("PROTON_ENABLE_WAYLAND=1 DXVK_HDR=1", viewModel.HdrLaunchOption ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROTON_ENABLE_WAYLAND", viewModel.LaunchOption ?? string.Empty, StringComparison.Ordinal);
     }
 
     private static async Task AssertHealthyFullStackAsync(SteamGame game, string reshadeHash, StackSnapshot? snapshot = null)

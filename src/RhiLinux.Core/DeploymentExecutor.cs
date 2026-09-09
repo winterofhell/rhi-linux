@@ -34,12 +34,14 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         ValidatePlan(plan);
         FileStream transactionLock;
         try { transactionLock = AcquireTransactionLock(plan); }
-        catch (IOException exception)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             var metadataPathIsFile = File.Exists(Path.Combine(plan.GameRoot, MetadataDirectoryName));
-            var error = metadataPathIsFile
-                ? $"Deployment metadata cannot be created; no game file was changed. {exception.Message}"
-                : $"Another deployment or recovery is already active for this game: {exception.Message}";
+            var error = exception is UnauthorizedAccessException
+                ? $"The game directory is not writable, so deployment metadata cannot be created; no game file was changed. {exception.Message}"
+                : metadataPathIsFile
+                    ? $"Deployment metadata cannot be created; no game file was changed. {exception.Message}"
+                    : $"Another deployment or recovery is already active for this game: {exception.Message}";
             return new ExecutionResult(false, false, false, [], error);
         }
         await using var heldTransactionLock = transactionLock;
@@ -312,7 +314,7 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         if (!File.Exists(operation.Target)) throw new FileNotFoundException("Final layout verification failed; file is missing.", operation.Target);
         if (string.IsNullOrWhiteSpace(operation.ExpectedSha256)) return;
         var actual = await HashFileAsync(operation.Target, token);
-        var expected = operation.ExpectedSha256.Replace("sha256:", string.Empty, StringComparison.OrdinalIgnoreCase);
+        var expected = NormalizeSha256(operation.ExpectedSha256);
         if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"Final layout verification failed for {operation.Target}.");
     }
@@ -428,6 +430,9 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         if (file.FileClass != ManagedFileClass.Unknown) return file.FileClass;
         var name = Path.GetFileName(file.RelativePath);
         var extension = Path.GetExtension(name);
+        if (file.RelativePath.Contains("/.rhi-linux/backups/", StringComparison.OrdinalIgnoreCase) ||
+            file.RelativePath.StartsWith(".rhi-linux/backups/", StringComparison.OrdinalIgnoreCase))
+            return ManagedFileClass.Backup;
         if (extension.Equals(".ini", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".cfg", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".toml", StringComparison.OrdinalIgnoreCase))
@@ -435,9 +440,6 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
                 name.Equals("fakenvapi.ini", StringComparison.OrdinalIgnoreCase)
                 ? ManagedFileClass.UserEditableConfiguration
                 : ManagedFileClass.MutableConfiguration;
-        if (file.RelativePath.Contains("/.rhi-linux/backups/", StringComparison.OrdinalIgnoreCase) ||
-            file.RelativePath.StartsWith(".rhi-linux/backups/", StringComparison.OrdinalIgnoreCase))
-            return ManagedFileClass.Backup;
         if (extension.Equals(".log", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".cache", StringComparison.OrdinalIgnoreCase))
             return ManagedFileClass.ManagedGeneratedFile;
@@ -457,6 +459,9 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         if (transactionExpectedHash is not null &&
             !originalHash.Equals(transactionExpectedHash, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException($"Backup source changed after the transaction intent was recorded: {operation.Target}");
+        if (!string.IsNullOrWhiteSpace(operation.ExpectedSha256) &&
+            !originalHash.Equals(NormalizeSha256(operation.ExpectedSha256), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"Backup source changed after the removal plan was created: {operation.Target}");
         Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
         if (File.Exists(backup)) throw new IOException($"Backup already exists: {backup}");
         File.Move(operation.Target, backup);
@@ -1123,12 +1128,10 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
                 {
                     var original = File.Exists(operation.Target) ? await File.ReadAllBytesAsync(operation.Target, token) : null;
                     var (section, key, value) = ParseIniValue(operation.Value);
-                    var document = original is null
-                        ? new IniDocument()
-                        : IniDocument.Parse(System.Text.Encoding.UTF8.GetString(original));
+                    var document = original is null ? new IniDocument() : IniDocument.Parse(original);
                     if (value == "<remove>") document.Remove(section, key);
                     else document.Set(section, key, value);
-                    var result = System.Text.Encoding.UTF8.GetBytes(document.ToString());
+                    var result = document.ToUtf8Bytes();
                     states.Add(CreateExpectedFileState(plan, operation.Target, true, HashBytes(result)));
                     if (original is not null && operation.BackupPath is not null && !File.Exists(operation.BackupPath))
                         states.Add(CreateExpectedFileState(plan, operation.BackupPath, true, HashBytes(original)));

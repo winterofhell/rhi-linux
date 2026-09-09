@@ -51,6 +51,20 @@ public readonly record struct GameInstallId(string Value) : IComparable<GameInst
 
     public static GameInstallId LegacySteam(uint steamAppId) => new($"steam:{steamAppId}:legacy");
 
+    public static bool MatchesStoredIdentity(
+        string? storedInstallId,
+        uint? storedSteamAppId,
+        GameInstallId currentInstallId,
+        uint? currentSteamAppId)
+    {
+        if (string.Equals(storedInstallId, currentInstallId.Value, StringComparison.Ordinal)) return true;
+        if (storedSteamAppId is not { } storedSteam || currentSteamAppId is not { } currentSteam ||
+            storedSteam != currentSteam)
+            return false;
+        return string.IsNullOrWhiteSpace(storedInstallId) ||
+            string.Equals(storedInstallId, LegacySteam(currentSteam).Value, StringComparison.Ordinal);
+    }
+
     public static bool TryParse(string? value, out GameInstallId id)
     {
         if (string.IsNullOrWhiteSpace(value))

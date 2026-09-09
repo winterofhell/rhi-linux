@@ -39,6 +39,23 @@ public sealed class OptiScalerEligibilityTests
     }
 
     [Fact]
+    public async Task MissingProtonPrefixDoesNotBlockFileDeployment()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp, PeArchitecture.X64) with
+        {
+            ProtonPrefix = string.Empty,
+            HasProtonPrefix = false
+        };
+        var catalog = new GameProfileCatalog();
+        var eligibility = OptiScalerEligibilityService.Evaluate(game, await catalog.MatchAsync(game),
+            await new ProxyDiagnosticsService(catalog).DiagnoseAsync(game));
+
+        Assert.True(eligibility.CanInstall);
+        Assert.Equal(OptiScalerCompatibilityLevel.Experimental, eligibility.Level);
+    }
+
+    [Fact]
     public void CurrentTemplateSchemaPreservesSettingsAndRejectsUnknownSchema()
     {
         using var temp = new TestDirectory();

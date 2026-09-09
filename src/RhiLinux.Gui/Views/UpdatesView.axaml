@@ -1,0 +1,106 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="using:RhiLinux.Core"
+             x:Class="RhiLinux.Gui.Views.UpdatesView">
+  <ScrollViewer IsVisible="{Binding ShowUpdatesPage}" Classes="pageScroll"
+                IsHitTestVisible="{Binding ShowUpdatesPage}">
+    <StackPanel Spacing="16" MaxWidth="920" Margin="24,20,28,48">
+      <DockPanel LastChildFill="True">
+        <Button DockPanel.Dock="Right" Content="Check for updates" Classes="compact secondary"
+                Margin="12,0,0,0" VerticalAlignment="Top"
+                IsEnabled="{Binding CanCheckForUpdates}" Click="CheckForUpdates_Click"
+                ToolTip.Tip="Check official sources for the selected game" />
+        <StackPanel Spacing="4">
+          <TextBlock Text="Updates" Classes="pageTitle" />
+          <TextBlock Text="Component updates are checked per selected game using official sources."
+                     Classes="secondary" TextWrapping="Wrap" />
+        </StackPanel>
+      </DockPanel>
+
+      <Border Classes="emptyState" IsVisible="{Binding UpdatesIsLoading}">
+        <StackPanel Spacing="12" HorizontalAlignment="Center">
+          <ProgressBar IsIndeterminate="True" Width="220" Height="3" />
+          <TextBlock Text="Checking for updates" Classes="sectionTitle" HorizontalAlignment="Center" />
+          <TextBlock Text="Querying official component sources for the selected game."
+                     Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card" IsVisible="{Binding UpdatesHasAvailable}">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Available updates" Classes="sectionTitle" />
+          <TextBlock Text="{Binding UpdateStatusText}" Classes="secondary" TextWrapping="Wrap" />
+          <ItemsControl ItemsSource="{Binding ComponentUpdates}" IsVisible="{Binding HasComponentUpdates}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="card subtle" Margin="0,0,0,8">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" RowDefinitions="Auto,Auto" RowSpacing="6">
+                    <StackPanel Spacing="2">
+                      <TextBlock Text="{Binding GameName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding ComponentName}" />
+                      <TextBlock Text="{Binding InstalledVersion, StringFormat='Installed: {0}'}" Classes="secondary" FontSize="12" />
+                      <TextBlock Text="{Binding AvailableVersion, StringFormat='Available: {0}'}" Classes="secondary" FontSize="12" />
+                      <TextBlock Text="{Binding ReadinessImpact, StringFormat='Readiness: {0}'}" Classes="secondary" FontSize="12" />
+                    </StackPanel>
+                    <Border Grid.Column="1" Classes="statusBadge update" VerticalAlignment="Top">
+                      <TextBlock Text="{Binding UpdateState}" FontWeight="SemiBold" />
+                    </Border>
+                    <Button Grid.Row="1" Grid.ColumnSpan="2" Content="Review update" Classes="compact secondary"
+                            HorizontalAlignment="Left" IsVisible="{Binding CanReview}"
+                            Click="ReviewComponentUpdate_Click"
+                            Tag="{Binding InstallId}" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <ItemsControl ItemsSource="{Binding OutdatedComponents}" IsVisible="{Binding !HasComponentUpdates}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="card subtle" Margin="0,0,0,8">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Explanation}" Classes="secondary" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <Border Grid.Column="1" Classes="statusBadge update">
+                      <TextBlock Text="{Binding State}" FontWeight="SemiBold" />
+                    </Border>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="emptyState" IsVisible="{Binding UpdatesIsEmpty}">
+        <StackPanel Spacing="8" HorizontalAlignment="Center" MaxWidth="420">
+          <TextBlock Text="No updates available" Classes="sectionTitle" HorizontalAlignment="Center" />
+          <TextBlock Text="Installed components are up to date."
+                     Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="emptyState" IsVisible="{Binding UpdatesIsOffline}">
+        <StackPanel Spacing="12" HorizontalAlignment="Center" MaxWidth="420">
+          <TextBlock Text="Update sources unavailable" Classes="sectionTitle" HorizontalAlignment="Center" />
+          <TextBlock Text="Could not reach official component sources. Check your network connection and try again."
+                     Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+          <Button Content="Retry" Classes="primary" HorizontalAlignment="Center"
+                  IsEnabled="{Binding CanCheckForUpdates}" Click="CheckForUpdates_Click" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="emptyState" IsVisible="{Binding UpdatesIsUnavailable}">
+        <StackPanel Spacing="12" HorizontalAlignment="Center" MaxWidth="420">
+          <TextBlock Text="Unable to check for updates" Classes="sectionTitle" HorizontalAlignment="Center" />
+          <TextBlock Text="Select a game in Library, then check official sources again."
+                     Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+          <Button Content="Open Library" Classes="compact secondary" HorizontalAlignment="Center"
+                  Click="OpenLibrary_Click" />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

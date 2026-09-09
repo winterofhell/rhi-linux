@@ -122,10 +122,11 @@ public static partial class SteamLaunchOptionService
     public static string ComposeSuggestedLaunchOption(
         string? proxyName,
         bool includeHdr,
-        string? existingLaunchOptions = null)
+        string? existingLaunchOptions = null,
+        bool includeProtonWayland = false)
     {
         var composed = Compose(proxyName, includeHdr, existingLaunchOptions, manageHdr: includeHdr,
-            preserveUnrelatedArguments: false);
+            preserveUnrelatedArguments: false, includeProtonWayland: includeProtonWayland);
         return composed.Text;
     }
 
@@ -134,7 +135,8 @@ public static partial class SteamLaunchOptionService
         bool includeHdr,
         string? existingLaunchOptions = null,
         bool manageHdr = false,
-        bool preserveUnrelatedArguments = false)
+        bool preserveUnrelatedArguments = false,
+        bool includeProtonWayland = false)
     {
         var existing = existingLaunchOptions ?? string.Empty;
         var fragments = new List<LaunchOptionFragment>();
@@ -145,9 +147,11 @@ public static partial class SteamLaunchOptionService
 
         if (includeHdr && manageHdr)
         {
-            fragments.Add(new(ProtonEnableWayland, LaunchOptionFragmentOwnership.RhiLinuxManaged));
+            if (includeProtonWayland)
+                fragments.Add(new(ProtonEnableWayland, LaunchOptionFragmentOwnership.RhiLinuxManaged));
             fragments.Add(new(DxvkHdr, LaunchOptionFragmentOwnership.RhiLinuxManaged));
-            if (hadWayland) preserved = ProtonWaylandFragment.Replace(preserved, " ").Trim();
+            if (hadWayland && includeProtonWayland)
+                preserved = ProtonWaylandFragment.Replace(preserved, " ").Trim();
             if (hadHdr) preserved = DxvkHdrFragment.Replace(preserved, " ").Trim();
         }
         else
@@ -222,8 +226,8 @@ public static partial class SteamLaunchOptionService
         return CollapseWhitespace(value);
     }
 
-    public static string GenerateHdrGuidance(string? proxyName) =>
-        ComposeSuggestedLaunchOption(proxyName, includeHdr: true);
+    public static string GenerateHdrGuidance(string? proxyName, bool includeProtonWayland = false) =>
+        ComposeSuggestedLaunchOption(proxyName, includeHdr: true, includeProtonWayland: includeProtonWayland);
 
     private static bool ContainsRequiredFragments(string detected, string required)
     {

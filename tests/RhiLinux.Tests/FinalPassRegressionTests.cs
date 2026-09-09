@@ -49,7 +49,7 @@ public sealed class FinalPassRegressionTests
     }
 
     [Fact]
-    public void ManualInstallWithoutHashMatchShowsNoActionNeeded()
+    public void ManualInstallWithoutHashMatchCanBeRemovedThroughRecovery()
     {
         var report = new ComponentStateReport(
             ComponentKind.OptiScaler,
@@ -78,9 +78,11 @@ public sealed class FinalPassRegressionTests
         Assert.Equal(ComponentLifecycleState.InstalledUnmanaged, updated.State);
         Assert.False(card.CanUpdate);
         Assert.False(card.CanRepair);
-        Assert.True(card.NoActionNeeded);
+        Assert.False(card.NoActionNeeded);
+        Assert.True(card.CanRemove);
         Assert.Equal("Installed manually", card.State);
-        Assert.Equal("No action needed", card.Explanation);
+        Assert.Equal("Remove", card.ActionText);
+        Assert.Contains("recovery plan", card.Explanation, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -266,14 +268,14 @@ public sealed class FinalPassRegressionTests
             existingLaunchOptions: "PROTON_USE_WINED3D=1 gamemoderun %command%",
             manageHdr: true);
 
-        Assert.Contains(SteamLaunchOptionService.ProtonEnableWayland, composed.Text, StringComparison.Ordinal);
         Assert.Contains(SteamLaunchOptionService.DxvkHdr, composed.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(SteamLaunchOptionService.ProtonEnableWayland, composed.Text, StringComparison.Ordinal);
         Assert.Contains("winmm=n,b", composed.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("PROTON_USE_WINED3D=1", composed.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("gamemoderun", composed.Text, StringComparison.OrdinalIgnoreCase);
         Assert.EndsWith("%command%", composed.Text, StringComparison.Ordinal);
         Assert.Equal(
-            $"{SteamLaunchOptionService.ProtonEnableWayland} {SteamLaunchOptionService.DxvkHdr} WINEDLLOVERRIDES=\"winmm=n,b\" %command%",
+            $"{SteamLaunchOptionService.DxvkHdr} WINEDLLOVERRIDES=\"winmm=n,b\" %command%",
             composed.Text);
     }
 
@@ -321,7 +323,7 @@ public sealed class FinalPassRegressionTests
             Lifecycle: ComponentLifecycleState.NotInstalled);
 
         var withReno = SteamLaunchOptionService.GenerateHdrGuidance("dxgi.dll");
-        Assert.Contains("PROTON_ENABLE_WAYLAND=1", withReno, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROTON_ENABLE_WAYLAND=1", withReno, StringComparison.Ordinal);
         Assert.Contains("DXVK_HDR=1", withReno, StringComparison.Ordinal);
         Assert.Contains("dxgi=n,b", withReno, StringComparison.Ordinal);
         Assert.Equal(ComponentHealth.Installed, installed.Health);
@@ -386,13 +388,17 @@ public sealed class FinalPassRegressionTests
             directory = directory.Parent;
         Assert.NotNull(directory);
         var styles = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "Styles.axaml"));
-        var window = File.ReadAllText(Path.Combine(directory.FullName, "src", "RhiLinux.Gui", "MainWindow.axaml"));
+        var window = string.Concat(
+            File.ReadAllText(Path.Combine(directory.FullName, "src", "RhiLinux.Gui", "MainWindow.axaml")),
+            File.ReadAllText(Path.Combine(directory.FullName, "src", "RhiLinux.Gui", "Views", "GameDetailsView.axaml")));
         Assert.Contains("WrapPanel.button-row", styles, StringComparison.Ordinal);
         Assert.Contains("button-row-item", styles, StringComparison.Ordinal);
         Assert.Contains("Margin\" Value=\"0,0,8,8\"", styles, StringComparison.Ordinal);
         Assert.Contains("Classes=\"button-row\"", window, StringComparison.Ordinal);
-        Assert.Contains("ShowHdrGuidance", window, StringComparison.Ordinal);
-        Assert.Contains("Enable HDR through Proton", window, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShowHdrGuidance", window, StringComparison.Ordinal);
+        Assert.DoesNotContain("Enable HDR through Proton", window, StringComparison.Ordinal);
+        Assert.DoesNotContain("LaunchOptionStatus", window, StringComparison.Ordinal);
+        Assert.Equal(1, window.Split("Click=\"CopyLaunch_Click\"", StringSplitOptions.None).Length - 1);
     }
 
     [Fact]

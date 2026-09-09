@@ -153,6 +153,7 @@ public sealed class ArtifactCacheService(XdgPaths paths)
         if (unresolved.SourceUrl.Scheme != Uri.UriSchemeHttps ||
             !ApprovedHosts.Contains(unresolved.SourceUrl.Host) &&
             !(unresolved.SourceValidatedByOfficialMetadata &&
+              IsGitHubOwnedHost(unresolved.SourceUrl.Host) &&
               OfficialArtifactSourcePolicy.IsTrustedOfficialWikiAddon(unresolved.SourceUrl)) &&
             !OfficialArtifactSourcePolicy.IsConstrainedRenoDxAddon(unresolved.SourceUrl))
             throw new InvalidOperationException("Artifact URL is not an approved official upstream source.");
@@ -272,7 +273,16 @@ public sealed class ArtifactCacheService(XdgPaths paths)
         }
         finally
         {
-            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+            try
+            {
+                if (Directory.Exists(staging)) Directory.Delete(staging, true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
     }
 
@@ -552,6 +562,20 @@ public sealed class ArtifactCacheService(XdgPaths paths)
     private static string SafeSegment(string value) => Regex.Replace(value, "[^A-Za-z0-9._-]", "_");
     private static string NormalizeDigest(string value) => value.Replace("sha256:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim().ToLowerInvariant();
 
+    private static bool IsApprovedRedirectTarget(Uri original, Uri finalUrl)
+    {
+        if (finalUrl.Scheme != Uri.UriSchemeHttps) return false;
+        if (finalUrl.Host.Equals(original.Host, StringComparison.OrdinalIgnoreCase)) return true;
+        if (ApprovedHosts.Contains(finalUrl.Host)) return true;
+        return IsGitHubOwnedHost(original.Host) &&
+               finalUrl.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGitHubOwnedHost(string host) =>
+        host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith(".github.io", StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
+
     private static async Task<(string? ETag, DateTimeOffset? LastModified)> DownloadWithRetryAsync(
         HttpClient httpClient,
         ComponentKind component,
@@ -579,6 +603,10 @@ public sealed class ArtifactCacheService(XdgPaths paths)
                     throw new HttpRequestException(
                         $"Transient download failure ({(int)response.StatusCode}) from {sourceUrl.Host}.");
                 response.EnsureSuccessStatusCode();
+                var finalUrl = response.RequestMessage?.RequestUri;
+                if (finalUrl is not null && !IsApprovedRedirectTarget(sourceUrl, finalUrl))
+                    throw new InvalidDataException(
+                        $"The download was redirected to '{finalUrl.Host}', which is not an approved upstream host.");
                 if (response.Content.Headers.ContentLength > ArtifactValidator.MaxDownloadSizeBytes)
                     throw new InvalidDataException("Downloaded artifact exceeds the 2 GiB safety limit.");
                 var totalBytes = response.Content.Headers.ContentLength;

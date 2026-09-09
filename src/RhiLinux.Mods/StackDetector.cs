@@ -61,7 +61,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         var stackLayout = DetermineLayout(reshade, reno, opti, layout);
         var summary = BuildSummary(stackLayout, components, ownership);
         var launch = layout.ActiveProxy is not null
-            ? DeploymentPlanner.GenerateLaunchOption(layout.ActiveProxy)
+            ? DeploymentPlanner.GenerateLaunchOption(game, layout.ActiveProxy, layout.RenoDxFiles.Length > 0)
             : null;
         var defects = components
             .Where(x => x.State is ComponentLifecycleState.RepairRequired or ComponentLifecycleState.Conflict)
@@ -234,25 +234,41 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         var coexistPath = Path.Combine(game.DeploymentDirectory, "ReShade64.dll");
         var managedCoexist = managedReShade.FirstOrDefault(x =>
             Path.GetFullPath(x).Equals(Path.GetFullPath(coexistPath), StringComparison.Ordinal));
-        var recoverableCoexist = File.Exists(coexistPath) && managedCoexist is null && manifest.Files
+        var coexistExists = File.Exists(coexistPath);
+        var missingReShadeHashes = manifest.Files
             .Where(x => x.Component == ComponentKind.ReShade && !File.Exists(Path.Combine(game.GameRoot, x.RelativePath)))
-            .Any(x => Hash(coexistPath).Equals(x.Sha256, StringComparison.OrdinalIgnoreCase));
+            .Select(x => x.Sha256)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var recoverableCoexist = coexistExists && managedCoexist is null && missingReShadeHashes.Count > 0 &&
+            missingReShadeHashes.Contains(Hash(coexistPath));
         var iniPath = Path.Combine(game.DeploymentDirectory, "OptiScaler.ini");
-        var coexistConfigured = IsCoexistenceConfigured(iniPath);
-        var optiIniMalformed = File.Exists(iniPath) && !TryReadOptiScalerPluginFlags(iniPath, out _, out _);
+        var iniExists = File.Exists(iniPath);
+        var iniReadable = TryReadOptiScalerPluginFlags(iniPath, out var loadReShade, out var loadAsiPlugins);
+        var coexistConfigured = iniReadable && loadReShade == true && loadAsiPlugins == true;
+        var optiIniMalformed = iniExists && !iniReadable;
         var optiIniUserChanged = false;
+        var runtimeIdentities = new Dictionary<string, (bool ReShade, bool OptiScaler)>(StringComparer.Ordinal);
+
+        (bool ReShade, bool OptiScaler) RuntimeIdentity(string path)
+        {
+            if (runtimeIdentities.TryGetValue(path, out var cached)) return cached;
+            if (!File.Exists(path)) return runtimeIdentities[path] = (false, false);
+            var markers = BinaryMarkerScanner.ContainsEach(path,
+                [["ReShade", "reshade.me"], ["OptiScaler", "OptiFG"]]);
+            return runtimeIdentities[path] = (markers[0] && !markers[1], markers[1]);
+        }
 
         var reshadeFiles = rootFiles.Where(x =>
                 DeploymentPlanner.SupportedProxyNames.Contains(Path.GetFileName(x), StringComparer.OrdinalIgnoreCase) &&
-                IsRecognizedRuntime(x, ComponentKind.ReShade))
-            .Concat(File.Exists(coexistPath) && IsRecognizedRuntime(coexistPath, ComponentKind.ReShade) ? [coexistPath] : Array.Empty<string>())
+                RuntimeIdentity(x).ReShade)
+            .Concat(coexistExists && RuntimeIdentity(coexistPath).ReShade ? [coexistPath] : Array.Empty<string>())
             .Concat(managedReShade.Where(File.Exists))
             .Distinct(StringComparer.Ordinal).ToArray();
         var optiFiles = rootFiles.Where(x =>
                 DeploymentPlanner.SupportedProxyNames.Contains(Path.GetFileName(x), StringComparer.OrdinalIgnoreCase) &&
-                IsRecognizedRuntime(x, ComponentKind.OptiScaler))
+                RuntimeIdentity(x).OptiScaler)
             .Concat(managedOptiProxies.Where(path =>
-                File.Exists(path) && (IsRecognizedRuntime(path, ComponentKind.OptiScaler) || IsOwnedOptiScalerProxy(manifest, game, path))))
+                File.Exists(path) && (RuntimeIdentity(path).OptiScaler || IsOwnedOptiScalerProxy(manifest, game, path))))
             .Distinct(StringComparer.Ordinal).ToArray();
         var renoFiles = ExistingManaged(manifest, game, ComponentKind.RenoDx)
             .Concat(rootFiles.Where(IsRenoDx))
@@ -264,27 +280,25 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         var activeProxy = activeOpti ?? activeReShade;
         var proxyOwner = activeOpti is not null ? ComponentKind.OptiScaler :
             activeReShade is not null ? ComponentKind.ReShade : (ComponentKind?)null;
-        var reshadeRuntime = File.Exists(coexistPath) &&
-            (IsRecognizedRuntime(coexistPath, ComponentKind.ReShade) || managedCoexist is not null)
+        var reshadeRuntime = coexistExists &&
+            (RuntimeIdentity(coexistPath).ReShade || managedCoexist is not null)
             ? coexistPath
             : activeReShade;
         var expectsChaining = managedCoexist is not null || manifest.Files.Any(file =>
             file.Component == ComponentKind.ReShade &&
             Path.GetFileName(file.RelativePath).Equals("ReShade64.dll", StringComparison.OrdinalIgnoreCase));
-        var hasChaining = File.Exists(coexistPath) &&
-            (IsRecognizedRuntime(coexistPath, ComponentKind.ReShade) || managedCoexist is not null ||
+        var hasChaining = coexistExists &&
+            (RuntimeIdentity(coexistPath).ReShade || managedCoexist is not null ||
              reshadeFiles.Any(path => Path.GetFullPath(path).Equals(Path.GetFullPath(coexistPath), StringComparison.Ordinal)));
-        var stranded = File.Exists(coexistPath) && managedCoexist is not null && managedOptiProxy is null &&
+        var stranded = coexistExists && managedCoexist is not null && managedOptiProxy is null &&
             optiFiles.Length == 0;
-        var foreignCoexist = File.Exists(coexistPath) && managedCoexist is null &&
+        var foreignCoexist = coexistExists && managedCoexist is null &&
             (optiFiles.Length == 0 || !coexistConfigured) && !recoverableCoexist;
 
-        if (activeOpti is not null && hasChaining &&
-            TryReadOptiScalerPluginFlags(iniPath, out var chainReshade, out var chainAsi))
-            optiIniUserChanged = chainReshade != true || chainAsi != true;
-        else if (activeOpti is not null && !hasChaining &&
-                 TryReadOptiScalerPluginFlags(iniPath, out var soloReshade, out var soloAsi))
-            optiIniUserChanged = !IsDisabledOrAutomatic(soloReshade) || !IsDisabledOrAutomatic(soloAsi);
+        if (activeOpti is not null && hasChaining && iniReadable)
+            optiIniUserChanged = loadReShade != true || loadAsiPlugins != true;
+        else if (activeOpti is not null && !hasChaining && iniReadable)
+            optiIniUserChanged = !IsDisabledOrAutomatic(loadReShade) || !IsDisabledOrAutomatic(loadAsiPlugins);
 
         var patcherRecords = manifest.Files.Where(x => x.Component == ComponentKind.OptiPatcher).ToArray();
         var invalidPatcher = patcherRecords.Where(x => !ManagedFileMatches(game, x)).ToArray();
@@ -699,7 +713,7 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         var diagnostic = ownership switch
         {
             OwnershipHealth.Unmanaged =>
-                "Runtime files are recognized, but no RHI Linux ownership record exists. Removal remains disabled until ownership can be established safely.",
+                "Runtime files are recognized without an RHI Linux ownership record. Removal moves only recognized component files to recovery storage.",
             OwnershipHealth.Incomplete or OwnershipHealth.Migrated =>
                 $"Runtime verification succeeded. Ownership metadata differs from disk ({missing.Length} missing record(s), {changedImmutable.Length} immutable hash change(s), {changedMutable.Length} mutable configuration change(s)){(layout.MetadataMigrated ? "; legacy schema was migrated in memory" : string.Empty)}. Mutable configuration drift does not require repair.",
             _ => null
@@ -899,15 +913,21 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
     internal static bool IsRecognizedRuntime(string path, ComponentKind component)
     {
         if (!File.Exists(path)) return false;
-        return component switch
+        switch (component)
         {
-            ComponentKind.OptiScaler => BinaryMarkerScanner.ContainsAny(path, "OptiScaler", "OptiFG"),
-            ComponentKind.ReShade => BinaryMarkerScanner.ContainsAny(path, "ReShade", "reshade.me") &&
-                !BinaryMarkerScanner.ContainsAny(path, "OptiScaler", "OptiFG"),
-            ComponentKind.RenoDx => IsRenoDx(path),
-            ComponentKind.OptiPatcher => Path.GetExtension(path).Equals(".asi", StringComparison.OrdinalIgnoreCase),
-            _ => false
-        };
+            case ComponentKind.OptiScaler:
+                return BinaryMarkerScanner.ContainsAny(path, "OptiScaler", "OptiFG");
+            case ComponentKind.ReShade:
+                var markers = BinaryMarkerScanner.ContainsEach(path,
+                    [["ReShade", "reshade.me"], ["OptiScaler", "OptiFG"]]);
+                return markers[0] && !markers[1];
+            case ComponentKind.RenoDx:
+                return IsRenoDx(path);
+            case ComponentKind.OptiPatcher:
+                return Path.GetExtension(path).Equals(".asi", StringComparison.OrdinalIgnoreCase);
+            default:
+                return false;
+        }
     }
 
     private static string? SelectActiveOptiScalerProxy(
@@ -1015,12 +1035,6 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
         return null;
     }
 
-    private static bool IsCoexistenceConfigured(string iniPath)
-    {
-        if (!TryReadOptiScalerPluginFlags(iniPath, out var loadReshade, out var loadAsiPlugins)) return false;
-        return loadReshade == true && loadAsiPlugins == true;
-    }
-
     private static bool IsDisabledOrAutomatic(bool? value) => value is null or false;
 
     private static bool HasExpectedRenoDxIdentity(
@@ -1063,13 +1077,8 @@ public sealed class StackDetector(GameProfileCatalog? profiles = null, ProxyDiag
     }
 
     private static bool ManifestBelongsToGame(GameManifest manifest, DeploymentTarget game)
-    {
-        if (!string.IsNullOrWhiteSpace(manifest.InstallId))
-            return string.Equals(manifest.InstallId, game.InstallId.Value, StringComparison.Ordinal);
-        if (manifest.SteamAppId is { } manifestSteam && game.SteamAppId is { } gameSteam)
-            return manifestSteam == gameSteam;
-        return false;
-    }
+        => GameInstallId.MatchesStoredIdentity(
+            manifest.InstallId, manifest.SteamAppId, game.InstallId, game.SteamAppId);
 
     private static bool IsPathInsideGame(DeploymentTarget game, string relativePath)
     {

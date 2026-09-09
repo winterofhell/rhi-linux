@@ -6,13 +6,14 @@ public static class SourceRootDiscovery
         string? home = null,
         IReadOnlyDictionary<string, string?>? environment = null,
         IReadOnlyList<string>? customRoots = null,
-        IReadOnlySet<string>? enabledProviders = null)
+        IReadOnlySet<string>? enabledProviders = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? customRootsByProvider = null)
     {
         home ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         environment ??= CaptureEnvironment();
-        var config = ResolveXdg(environment, "XDG_CONFIG_HOME", Path.Combine(home, ".config"));
-        var data = ResolveXdg(environment, "XDG_DATA_HOME", Path.Combine(home, ".local", "share"));
-        var cache = ResolveXdg(environment, "XDG_CACHE_HOME", Path.Combine(home, ".cache"));
+        var config = ResolveXdg(environment, "XDG_CONFIG_HOME", Path.Combine(home, ".config"), home);
+        var data = ResolveXdg(environment, "XDG_DATA_HOME", Path.Combine(home, ".local", "share"), home);
+        var cache = ResolveXdg(environment, "XDG_CACHE_HOME", Path.Combine(home, ".cache"), home);
         return new GameSourceDiscoveryContext(
             home,
             config,
@@ -20,14 +21,17 @@ public static class SourceRootDiscovery
             cache,
             environment,
             customRoots ?? [],
-            enabledProviders);
+            enabledProviders,
+            customRootsByProvider);
     }
 
     public static IReadOnlyList<GameSourceRoot> ResolveCandidates(
         string providerId,
         IEnumerable<(string Path, SourceRootKind Kind)> candidates,
-        IReadOnlyList<string>? customRoots = null)
+        IReadOnlyList<string>? customRoots = null,
+        string? home = null)
     {
+        home ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var ordered = new List<(string Path, SourceRootKind Kind)>();
         if (customRoots is not null)
         {
@@ -41,7 +45,7 @@ public static class SourceRootDiscovery
         var results = new List<GameSourceRoot>();
         foreach (var (original, kind) in ordered)
         {
-            var expanded = Environment.ExpandEnvironmentVariables(original);
+            var expanded = XdgPaths.ExpandHome(original, home);
             string canonical;
             try
             {
@@ -139,21 +143,14 @@ public static class SourceRootDiscovery
         }
     }
 
-    private static long Mix(long hash, string value)
-    {
-        unchecked
-        {
-            return (hash * 31) + StringComparer.Ordinal.GetHashCode(value);
-        }
-    }
+    private static long Mix(long hash, string value) => StableHash.Combine(hash, value);
 
     private static string ResolveXdg(
         IReadOnlyDictionary<string, string?> environment,
         string key,
-        string fallback) =>
-        environment.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
-            ? GameIdentity.NormalizePath(value)
-            : GameIdentity.NormalizePath(fallback);
+        string fallback,
+        string home) =>
+        GameIdentity.NormalizePath(XdgPaths.ReadBaseDirectory(environment, key, home) ?? fallback);
 
     private static IReadOnlyDictionary<string, string?> CaptureEnvironment()
     {

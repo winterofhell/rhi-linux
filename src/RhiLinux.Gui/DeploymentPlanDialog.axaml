@@ -25,7 +25,7 @@
 
         <StackPanel Spacing="8">
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-            <TextBlock Text="Installation plan" Classes="sectionTitle" />
+            <TextBlock Text="{Binding PlanSectionTitle}" Classes="sectionTitle" />
             <TextBlock Grid.Column="1" Text="{Binding SummaryCount}" Classes="secondary" VerticalAlignment="Center" />
           </Grid>
           <ItemsControl ItemsSource="{Binding SummaryOperations}">

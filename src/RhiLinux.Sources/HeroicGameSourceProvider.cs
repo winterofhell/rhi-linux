@@ -22,7 +22,7 @@ public sealed class HeroicGameSourceProvider : IGameSourceProvider
             (SourceRootDiscovery.FlatpakConfig(context.HomeDirectory, "com.heroicgameslauncher.hgl", "heroic"), SourceRootKind.Flatpak)
         };
 
-        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.CustomRoots));
+        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.RootsForProvider(ProviderId), context.HomeDirectory));
     }
 
     public async Task<GameSourceScanResult> ScanAsync(
@@ -47,12 +47,28 @@ public sealed class HeroicGameSourceProvider : IGameSourceProvider
         var gogPath = Path.Combine(root.CanonicalPath, "gog_store", "installed.json");
         var amazonPath = Path.Combine(root.CanonicalPath, "nile_config", "nile", "installed.json");
         var gamesConfigDir = Path.Combine(root.CanonicalPath, "GamesConfig");
-        var metadataFiles = new[] { epicPath, gogPath, amazonPath, gamesConfigDir }
-            .Where(path => File.Exists(path) || Directory.Exists(path))
+        var installedFiles = new[] { epicPath, gogPath, amazonPath };
+        var allConfigFiles = EnumerateConfigFiles(gamesConfigDir);
+        var targetedConfigFiles = context.Documents?
+            .Where(path => GameIdentity.NormalizePath(Path.GetDirectoryName(path) ?? string.Empty)
+                .Equals(GameIdentity.NormalizePath(gamesConfigDir), StringComparison.Ordinal) &&
+                Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase))
+            .Select(GameIdentity.NormalizePath)
+            .ToHashSet(StringComparer.Ordinal);
+        var configChanged = targetedConfigFiles is { Count: > 0 };
+        var parsedInstalledFiles = context.IsTargeted && !configChanged
+            ? installedFiles.Where(context.IncludesDocument).ToArray()
+            : installedFiles;
+        var parsedConfigFiles = configChanged
+            ? allConfigFiles.Where(path => targetedConfigFiles!.Contains(GameIdentity.NormalizePath(path))).ToArray()
+            : allConfigFiles;
+        var metadataFiles = parsedInstalledFiles.Where(File.Exists)
+            .Concat(parsedConfigFiles)
+            .Distinct(StringComparer.Ordinal)
             .ToList();
 
         var fingerprint = SourceRootDiscovery.SourceFingerprint(epicPath, gogPath, amazonPath, gamesConfigDir) + ":v1";
-        if (!context.ForceFullScan &&
+        if (!context.ForceFullScan && !context.IsTargeted &&
             context.PreviousFingerprints.TryGetValue(FingerprintKey(root), out var previous) &&
             string.Equals(previous, fingerprint, StringComparison.Ordinal))
         {
@@ -63,11 +79,19 @@ public sealed class HeroicGameSourceProvider : IGameSourceProvider
         var games = new List<SourceGameRecord>();
         var malformed = new List<SourceGameRecord>();
         var skipped = new List<SourceGameRecord>();
-        var configs = await LoadGamesConfigAsync(gamesConfigDir, cancellationToken).ConfigureAwait(false);
+        var configs = await LoadGamesConfigAsync(parsedConfigFiles, cancellationToken).ConfigureAwait(false);
+        if (targetedConfigFiles is not null)
+        {
+            foreach (var path in targetedConfigFiles.Where(path => !File.Exists(path)))
+                configs[Path.GetFileNameWithoutExtension(path)] = new(null, null, path);
+        }
 
-        await ParseEpicAsync(epicPath, configs, games, malformed, skipped, diagnostics, cancellationToken).ConfigureAwait(false);
-        await ParseGogAsync(gogPath, configs, games, malformed, skipped, diagnostics, cancellationToken).ConfigureAwait(false);
-        await ParseAmazonAsync(amazonPath, configs, games, malformed, diagnostics, cancellationToken).ConfigureAwait(false);
+        if (parsedInstalledFiles.Contains(epicPath, StringComparer.Ordinal))
+            await ParseEpicAsync(epicPath, configs, games, malformed, skipped, diagnostics, cancellationToken).ConfigureAwait(false);
+        if (parsedInstalledFiles.Contains(gogPath, StringComparer.Ordinal))
+            await ParseGogAsync(gogPath, configs, games, malformed, skipped, diagnostics, cancellationToken).ConfigureAwait(false);
+        if (parsedInstalledFiles.Contains(amazonPath, StringComparer.Ordinal))
+            await ParseAmazonAsync(amazonPath, configs, games, malformed, diagnostics, cancellationToken).ConfigureAwait(false);
 
         if (metadataFiles.Count == 0)
         {
@@ -88,21 +112,10 @@ public sealed class HeroicGameSourceProvider : IGameSourceProvider
     public static string FingerprintKey(GameSourceRoot root) => $"{ProviderId}:{root.CanonicalPath}";
 
     private static async Task<Dictionary<string, HeroicGameConfig>> LoadGamesConfigAsync(
-        string directory,
+        IReadOnlyList<string> files,
         CancellationToken cancellationToken)
     {
         var result = new Dictionary<string, HeroicGameConfig>(StringComparer.OrdinalIgnoreCase);
-        if (!Directory.Exists(directory)) return result;
-
-        string[] files;
-        try
-        {
-            files = Directory.GetFiles(directory, "*.json");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return result;
-        }
 
         foreach (var file in files)
         {
@@ -132,6 +145,19 @@ public sealed class HeroicGameSourceProvider : IGameSourceProvider
         }
 
         return result;
+    }
+
+    private static string[] EnumerateConfigFiles(string directory)
+    {
+        if (!Directory.Exists(directory)) return [];
+        try
+        {
+            return Directory.GetFiles(directory, "*.json").Order(StringComparer.Ordinal).ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
     }
 
     private static bool LooksLikeConfig(JsonElement element) =>

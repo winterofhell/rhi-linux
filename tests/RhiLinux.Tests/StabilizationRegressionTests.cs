@@ -164,7 +164,11 @@ public sealed class StabilizationRegressionTests
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "RhiLinux.sln")))
             directory = directory.Parent;
         Assert.NotNull(directory);
-        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "MainWindow.axaml"));
+        var guiDirectory = Path.Combine(directory!.FullName, "src", "RhiLinux.Gui");
+        var source = string.Concat(
+            File.ReadAllText(Path.Combine(guiDirectory, "MainWindow.axaml")),
+            File.ReadAllText(Path.Combine(guiDirectory, "Views", "LibraryView.axaml")),
+            File.ReadAllText(Path.Combine(guiDirectory, "Views", "GameDetailsView.axaml")));
         Assert.Contains("DockPanel", source, StringComparison.Ordinal);
         Assert.Contains("Classes=\"gameList\"", source, StringComparison.Ordinal);
         Assert.Contains("Classes=\"card component\"", source, StringComparison.Ordinal);

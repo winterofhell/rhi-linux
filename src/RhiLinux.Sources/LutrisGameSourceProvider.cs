@@ -22,7 +22,7 @@ public sealed class LutrisGameSourceProvider : IGameSourceProvider
             (SourceRootDiscovery.FlatpakData(context.HomeDirectory, "net.lutris.Lutris", "lutris"), SourceRootKind.Flatpak)
         };
 
-        var roots = SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.CustomRoots).ToList();
+        var roots = SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.RootsForProvider(ProviderId), context.HomeDirectory).ToList();
         foreach (var root in roots.Where(item => item.Exists && item.Readable && !item.Deduplicated).ToArray())
         {
             var configRoot = ResolveConfigRoot(context, root);
@@ -67,7 +67,7 @@ public sealed class LutrisGameSourceProvider : IGameSourceProvider
         if (File.Exists(walPath)) metadataFiles.Add(walPath);
 
         var fingerprint = SourceRootDiscovery.SourceFingerprint(pgaPath, walPath, gamesYamlRoot) + ":v1";
-        if (!context.ForceFullScan &&
+        if (!context.ForceFullScan && !context.IsTargeted &&
             context.PreviousFingerprints.TryGetValue(FingerprintKey(root), out var previous) &&
             string.Equals(previous, fingerprint, StringComparison.Ordinal))
         {
@@ -96,12 +96,22 @@ public sealed class LutrisGameSourceProvider : IGameSourceProvider
         try
         {
             var rows = await ReadInstalledGamesAsync(pgaPath, cancellationToken).ConfigureAwait(false);
+            var targetedYaml = context.Documents?
+                .Where(path => Path.GetExtension(path) is ".yml" or ".yaml")
+                .Select(GameIdentity.NormalizePath)
+                .ToHashSet(StringComparer.Ordinal);
+            if (targetedYaml is { Count: > 0 } && !context.IncludesDocument(pgaPath))
+                rows = rows.Where(row => MatchesTargetYaml(row, gamesYamlRoot, targetedYaml)).ToArray();
             foreach (var row in rows)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var record = BuildRecord(row, gamesYamlRoot, pgaPath, diagnostics, malformed, skipped);
                 if (record is not null)
+                {
                     games.Add(record);
+                    if (record.ConfigurationPath is { } configurationPath && File.Exists(configurationPath))
+                        metadataFiles.Add(configurationPath);
+                }
             }
         }
         catch (SqliteException exception) when (exception.SqliteErrorCode is 5 or 6)
@@ -473,6 +483,21 @@ public sealed class LutrisGameSourceProvider : IGameSourceProvider
             recordDiagnostics,
             isActionable: actionable,
             unsupportedReason: unsupported);
+    }
+
+    private static bool MatchesTargetYaml(
+        LutrisRow row,
+        string gamesYamlRoot,
+        IReadOnlySet<string> targetedYaml)
+    {
+        if (string.IsNullOrWhiteSpace(row.ConfigPath)) return false;
+        var candidate = row.ConfigPath.EndsWith(".yml", StringComparison.OrdinalIgnoreCase) ||
+                        row.ConfigPath.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase)
+            ? Path.IsPathRooted(row.ConfigPath)
+                ? row.ConfigPath
+                : Path.Combine(gamesYamlRoot, row.ConfigPath)
+            : Path.Combine(gamesYamlRoot, row.ConfigPath + ".yml");
+        return targetedYaml.Contains(GameIdentity.NormalizePath(candidate));
     }
 
     private static GameStore MapService(string? service) =>

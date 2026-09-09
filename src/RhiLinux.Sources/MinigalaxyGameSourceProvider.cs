@@ -21,7 +21,7 @@ public sealed class MinigalaxyGameSourceProvider : IGameSourceProvider
             (SourceRootDiscovery.FlatpakConfig(context.HomeDirectory, "io.github.sharkwouter.Minigalaxy", "minigalaxy"), SourceRootKind.Flatpak)
         };
 
-        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.CustomRoots));
+        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.RootsForProvider(ProviderId), context.HomeDirectory));
     }
 
     public async Task<GameSourceScanResult> ScanAsync(
@@ -44,15 +44,21 @@ public sealed class MinigalaxyGameSourceProvider : IGameSourceProvider
 
         var configPath = Path.Combine(root.CanonicalPath, "config.json");
         var gamesDir = Path.Combine(root.CanonicalPath, "games");
-        var gameFiles = Directory.Exists(gamesDir)
+        var allGameFiles = Directory.Exists(gamesDir)
             ? Directory.GetFiles(gamesDir, "*.json").Order(StringComparer.Ordinal).ToArray()
             : [];
         var fingerprintInputs = new List<string?> { configPath };
-        fingerprintInputs.AddRange(gameFiles);
+        fingerprintInputs.AddRange(allGameFiles);
         var fingerprint = SourceRootDiscovery.SourceFingerprint(fingerprintInputs.ToArray()) + ":v1";
-        var metadataFiles = fingerprintInputs.Where(path => path is not null && File.Exists(path)).Cast<string>().ToList();
+        var configChanged = context.IsTargeted && context.IncludesDocument(configPath);
+        var gameFiles = context.IsTargeted && !configChanged
+            ? allGameFiles.Where(context.IncludesDocument).ToArray()
+            : allGameFiles;
+        var metadataFiles = new List<string>();
+        if (File.Exists(configPath)) metadataFiles.Add(configPath);
+        metadataFiles.AddRange(gameFiles);
 
-        if (!context.ForceFullScan &&
+        if (!context.ForceFullScan && !context.IsTargeted &&
             context.PreviousFingerprints.TryGetValue(FingerprintKey(root), out var previous) &&
             string.Equals(previous, fingerprint, StringComparison.Ordinal))
         {

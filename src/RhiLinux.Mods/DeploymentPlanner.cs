@@ -99,6 +99,7 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         var managedCoexist = ManagedAt(manifest, game, coexist, ComponentKind.ReShade) && File.Exists(coexist);
         var finalOpti = managedOptiProxy || artifacts.OptiScaler is not null;
         var finalReShade = managedReShadeProxy || managedCoexist || artifacts.ReShade is not null;
+        var finalRenoDx = artifacts.RenoDx is not null || HasValidManagedFile(manifest, game, ComponentKind.RenoDx);
 
         if (finalOpti)
         {
@@ -176,7 +177,9 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         AddFinalLayoutVerification(plan, game, artifacts, proxy, coexist, finalOpti, finalReShade);
         if (finalReShade)
             ReShadePresetService.ConfigureFreshInstallation(plan, manifest, game);
-        plan.LaunchOption = finalOpti || finalReShade ? GenerateLaunchOption(proxyName) : null;
+        plan.LaunchOption = finalOpti || finalReShade
+            ? GenerateLaunchOption(game, proxyName, finalRenoDx)
+            : null;
         SetExpectation(plan, ComponentKind.ReShade, finalReShade);
         SetExpectation(plan, ComponentKind.RenoDx,
             artifacts.RenoDx is not null || HasValidManagedFile(manifest, game, ComponentKind.RenoDx));
@@ -326,8 +329,14 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             artifact.Component == ComponentKind.RenoDx && HasValidManagedFile(manifest, game, ComponentKind.ReShade) ||
             artifact.Component == ComponentKind.OptiScaler && HasValidManagedFile(manifest, game, ComponentKind.ReShade))
             ReShadePresetService.ConfigureFreshInstallation(plan, manifest, game);
-        plan.LaunchOption = artifact.Component is ComponentKind.ReShade or ComponentKind.OptiScaler
-            ? GenerateLaunchOption(proxyName) : null;
+        var launchProxy = artifact.Component == ComponentKind.RenoDx
+            ? RemainingManagedProxyName(manifest, game, [])
+            : artifact.Component is ComponentKind.ReShade or ComponentKind.OptiScaler
+                ? proxyName
+                : null;
+        var finalRenoDx = artifact.Component == ComponentKind.RenoDx ||
+            HasValidManagedFile(manifest, game, ComponentKind.RenoDx);
+        plan.LaunchOption = launchProxy is null ? null : GenerateLaunchOption(game, launchProxy, finalRenoDx);
         SetExpectation(plan, artifact.Component, true);
         if (artifact.Component == ComponentKind.OptiScaler)
         {
@@ -339,6 +348,37 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                 SetExpectation(plan, ComponentKind.RenoDx, true);
         }
         AddManifest(plan, game);
+        return plan;
+    }
+
+    public Task<DeploymentPlan> BuildUpdatePlanAsync(
+        SteamGame game,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildUpdatePlanAsync(game.ToDeploymentTarget(), artifact, proxyName, cancellationToken);
+
+    public Task<DeploymentPlan> BuildUpdatePlanAsync(
+        InstalledGame game,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default) =>
+        BuildUpdatePlanAsync(game.ToDeploymentTarget(), artifact, proxyName, cancellationToken);
+
+    public async Task<DeploymentPlan> BuildUpdatePlanAsync(
+        DeploymentTarget game,
+        ComponentArtifact artifact,
+        string proxyName = "dxgi.dll",
+        CancellationToken cancellationToken = default)
+    {
+        var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot, cancellationToken);
+        EnsureManifestBelongsToGame(manifest, game);
+        if (!manifest.Files.Any(file => file.Component == artifact.Component))
+            throw new InvalidOperationException(
+                $"{artifact.Component} is not managed by RHI Linux for this game. Use install for a new deployment.");
+
+        var plan = await BuildInstallPlanAsync(game, artifact, proxyName, cancellationToken);
+        plan.Action = $"update {artifact.Component}";
         return plan;
     }
 
@@ -365,18 +405,25 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         ValidateProxy(proxyName);
         var manifest = await ComponentDetector.LoadManifestAsync(game.GameRoot, cancellationToken);
         EnsureManifestBelongsToGame(manifest, game);
+        var snapshot = await new ComponentDetector().DetectStackAsync(game, cancellationToken: cancellationToken);
         var plan = NewPlan(game, $"remove {component}");
         var optiProxyRecord = manifest.Files.FirstOrDefault(x => x.Component == ComponentKind.OptiScaler &&
             SupportedProxyNames.Contains(Path.GetFileName(x.RelativePath), StringComparer.OrdinalIgnoreCase));
-        var actualProxyName = optiProxyRecord is null ? proxyName : Path.GetFileName(optiProxyRecord.RelativePath);
+        var actualProxyName = optiProxyRecord is not null
+            ? Path.GetFileName(optiProxyRecord.RelativePath)
+            : snapshot.ProxyOwner == ComponentKind.OptiScaler && snapshot.ActiveProxy is not null
+                ? snapshot.ActiveProxy
+                : proxyName;
         var proxy = Path.Combine(game.DeploymentDirectory, actualProxyName);
         var coexist = Path.Combine(game.DeploymentDirectory, "ReShade64.dll");
-        var optiRemains = component != ComponentKind.OptiScaler && optiProxyRecord is not null;
+        var optiRemains = component != ComponentKind.OptiScaler &&
+            (optiProxyRecord is not null || IsComponentPresent(snapshot, ComponentKind.OptiScaler));
 
         var componentsToRemove = component switch
         {
             ComponentKind.OptiScaler => new[] { ComponentKind.OptiScaler, ComponentKind.OptiPatcher },
-            ComponentKind.ReShade when manifest.Files.Any(x => x.Component == ComponentKind.RenoDx) =>
+            ComponentKind.ReShade when manifest.Files.Any(x => x.Component == ComponentKind.RenoDx) ||
+                                             IsComponentPresent(snapshot, ComponentKind.RenoDx) =>
                 new[] { ComponentKind.ReShade, ComponentKind.RenoDx },
             _ => new[] { component }
         };
@@ -405,6 +452,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             }
         }
 
+        AddRecognizedRemoval(plan, manifest, game, snapshot, componentsToRemove);
+
         if (component == ComponentKind.OptiScaler)
             plan.Operations.Add(new(DeploymentOperationType.ClearConfigurationPatches,
                 Path.Combine(game.GameRoot, ".rhi-linux", "manifest.json"), Component: ComponentKind.OptiScaler));
@@ -418,6 +467,19 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
                     Description: $"Restore direct ReShade loading as {actualProxyName}"));
                 plan.Operations.Add(new(DeploymentOperationType.VerifyFileState, proxy, Value: "exists"));
                 plan.Operations.Add(new(DeploymentOperationType.VerifyFileState, coexist, Value: "absent"));
+            }
+            else if (snapshot.ProxyOwner == ComponentKind.OptiScaler &&
+                     File.Exists(coexist) && StackDetector.IsRecognizedRuntime(coexist, ComponentKind.ReShade))
+            {
+                plan.Operations.Add(new(DeploymentOperationType.Move, proxy, coexist,
+                    Component: ComponentKind.ReShade,
+                    Description: $"Restore the recognized ReShade runtime as {actualProxyName}"));
+                plan.Operations.Add(new(DeploymentOperationType.VerifyFileState, proxy, Value: "exists"));
+                plan.Operations.Add(new(DeploymentOperationType.VerifyFileState, coexist, Value: "absent"));
+                plan.FileDecisions.Add(new(ComponentKind.ReShade, DeploymentFileRequirement.Required,
+                    DeploymentFileAction.MoveManaged,
+                    "The recognized ReShade chain remains installed and must become the active proxy after OptiScaler is removed.",
+                    null, Path.GetFileName(coexist), proxy, true, false, false, []));
             }
         }
         else if ((component is ComponentKind.ReShade or ComponentKind.RenoDx) && optiRemains)
@@ -437,11 +499,24 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
         }
         if (component == ComponentKind.OptiScaler && HasValidManagedFile(manifest, game, ComponentKind.ReShade))
             SetExpectation(plan, ComponentKind.ReShade, true);
+        else if (component == ComponentKind.OptiScaler &&
+                 snapshot.ReportFor(ComponentKind.ReShade)?.Evidence.DetectedFiles.Count > 0)
+            SetExpectation(plan, ComponentKind.ReShade, true);
         if (component is ComponentKind.ReShade or ComponentKind.RenoDx && optiRemains)
             SetExpectation(plan, ComponentKind.OptiScaler, true);
 
         var remainingProxy = RemainingManagedProxyName(manifest, game, componentsToRemove);
-        plan.LaunchOption = remainingProxy is null ? null : GenerateLaunchOption(remainingProxy);
+        if (remainingProxy is null && snapshot.ActiveProxy is not null &&
+            snapshot.ProxyOwner is { } owner && !componentsToRemove.Contains(owner))
+            remainingProxy = snapshot.ActiveProxy;
+        if (remainingProxy is null && component == ComponentKind.OptiScaler &&
+            snapshot.ReportFor(ComponentKind.ReShade)?.Evidence.DetectedFiles.Count > 0)
+            remainingProxy = actualProxyName;
+        var renoDxRemains = !componentsToRemove.Contains(ComponentKind.RenoDx) &&
+            IsComponentPresent(snapshot, ComponentKind.RenoDx);
+        plan.LaunchOption = remainingProxy is null
+            ? null
+            : GenerateLaunchOption(game, remainingProxy, renoDxRemains);
         AddManifest(plan, game);
         return plan;
     }
@@ -594,6 +669,31 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     {
         ValidateProxy(proxyName);
         return $"WINEDLLOVERRIDES=\"{Path.GetFileNameWithoutExtension(proxyName)}=n,b\" %command%";
+    }
+
+    public static string GenerateLaunchOption(
+        DeploymentTarget game,
+        string proxyName,
+        bool includeRenoDxHdr)
+    {
+        ValidateProxy(proxyName);
+        var fragments = new List<string>();
+        if (includeRenoDxHdr)
+        {
+            if (RecommendProtonWayland(game)) fragments.Add("PROTON_ENABLE_WAYLAND=1");
+            fragments.Add("DXVK_HDR=1");
+        }
+        fragments.Add($"WINEDLLOVERRIDES=\"{Path.GetFileNameWithoutExtension(proxyName)}=n,b\"");
+        fragments.Add("%command%");
+        return string.Join(' ', fragments);
+    }
+
+    public static bool RecommendProtonWayland(DeploymentTarget game)
+    {
+        var normalizedName = string.Join(' ', game.Name
+            .Split([' ', '-', '_', ':'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .ToLowerInvariant();
+        return normalizedName is "crimson desert enhanced";
     }
 
     private static void ConfigureOptiScaler(
@@ -1047,6 +1147,97 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
             hasTrustedBackup ? ["Restore the original game-owned backup"] : []));
     }
 
+    private static void AddRecognizedRemoval(
+        DeploymentPlan plan,
+        GameManifest manifest,
+        DeploymentTarget game,
+        StackSnapshot snapshot,
+        IReadOnlyList<ComponentKind> componentsToRemove)
+    {
+        var recovered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var component in componentsToRemove.Where(value => value != ComponentKind.OptiPatcher))
+        {
+            var report = snapshot.ReportFor(component);
+            if (report is null) continue;
+            var recognizedRuntime = report.Evidence.DetectedFiles
+                .Where(File.Exists)
+                .Where(path => StackDetector.IsRecognizedRuntime(path, component))
+                .Where(path => IsContainedPath(game.GameRoot, path))
+                .ToArray();
+            foreach (var path in recognizedRuntime)
+                AddDetectedRecoveryMove(plan, manifest, game, component, path, recovered);
+
+            if (recognizedRuntime.Length == 0) continue;
+            foreach (var fileName in RecognizedConfigurationFiles(component))
+            {
+                var path = Path.Combine(game.DeploymentDirectory, fileName);
+                if (File.Exists(path))
+                    AddDetectedRecoveryMove(plan, manifest, game, component, path, recovered);
+            }
+        }
+
+        if (recovered.Count == 0) return;
+        plan.CompatibilityMessage =
+            "Recognized files from an earlier or manual installation will be moved to recovery storage before removal.";
+        plan.Warnings.Add(
+            "Files without RHI Linux ownership metadata are preserved in recovery storage. Unknown DLLs and unrelated files are not changed.");
+    }
+
+    private static void AddDetectedRecoveryMove(
+        DeploymentPlan plan,
+        GameManifest manifest,
+        DeploymentTarget game,
+        ComponentKind component,
+        string path,
+        ISet<string> recovered)
+    {
+        var fullPath = Path.GetFullPath(path);
+        if (!recovered.Add(fullPath) ||
+            manifest.Files.Any(file => Path.GetFullPath(Path.Combine(game.GameRoot, file.RelativePath))
+                .Equals(fullPath, StringComparison.Ordinal)) ||
+            plan.Operations.Any(operation =>
+                (operation.Type is DeploymentOperationType.DeleteManagedFile or DeploymentOperationType.Backup or
+                    DeploymentOperationType.DeleteVerifiedFile) &&
+                Path.GetFullPath(operation.Target).Equals(fullPath, StringComparison.Ordinal)))
+            return;
+
+        var relativePath = Path.GetRelativePath(game.GameRoot, fullPath);
+        var recoveryPath = Path.Combine(game.GameRoot, ".rhi-linux", "recovery", plan.Id,
+            "detected", relativePath);
+        var hash = HashPath(fullPath);
+        plan.Operations.Add(new(DeploymentOperationType.Backup, fullPath, recoveryPath,
+            ExpectedSha256: hash, Component: component,
+            Description: $"Move recognized {component} file to recovery storage: {relativePath}"));
+        plan.FileDecisions.Add(new(component, DeploymentFileRequirement.ObsoleteManaged,
+            DeploymentFileAction.PreserveExisting,
+            "The file is positively identified as part of the selected component but has no ownership record, so removal preserves it in recovery storage.",
+            null, relativePath, fullPath, false, true, true,
+            [$"Recover the preserved file from {Path.GetRelativePath(game.GameRoot, recoveryPath)}"]));
+    }
+
+    private static IReadOnlyList<string> RecognizedConfigurationFiles(ComponentKind component) => component switch
+    {
+        ComponentKind.ReShade => ["ReShade.ini", "ReShadePreset.ini", "ReShade.log"],
+        ComponentKind.OptiScaler => ["OptiScaler.ini", "OptiScaler.log", "fakenvapi.ini"],
+        _ => []
+    };
+
+    private static bool IsContainedPath(string rootPath, string candidatePath)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
+        var candidate = Path.GetFullPath(candidatePath);
+        return candidate.Equals(root, StringComparison.Ordinal) ||
+            candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    }
+
+    private static bool IsComponentPresent(StackSnapshot snapshot, ComponentKind component) =>
+        snapshot.ReportFor(component) is { } report &&
+        (report.Evidence.DetectedFiles.Count > 0 ||
+         report.State is ComponentLifecycleState.InstalledHealthy or ComponentLifecycleState.InstalledWithWarnings or
+             ComponentLifecycleState.InstalledUnmanaged or ComponentLifecycleState.InstalledMetadataIncomplete or
+             ComponentLifecycleState.UpdateAvailable or ComponentLifecycleState.RepairRequired or
+             ComponentLifecycleState.RepairRecommended);
+
     public static RemovalPathOwnership ClassifyRemovalOwnership(
         ManagedFile file,
         ComponentKind selectedComponent,
@@ -1386,13 +1577,8 @@ public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier
     }
 
     private static bool ManifestBelongsToGame(GameManifest manifest, DeploymentTarget game)
-    {
-        if (!string.IsNullOrWhiteSpace(manifest.InstallId))
-            return string.Equals(manifest.InstallId, game.InstallId.Value, StringComparison.Ordinal);
-        if (manifest.SteamAppId is { } manifestSteam && game.SteamAppId is { } gameSteam)
-            return manifestSteam == gameSteam;
-        return false;
-    }
+        => GameInstallId.MatchesStoredIdentity(
+            manifest.InstallId, manifest.SteamAppId, game.InstallId, game.SteamAppId);
 
     private static string ResolveGamePath(DeploymentTarget game, string relativePath)
     {

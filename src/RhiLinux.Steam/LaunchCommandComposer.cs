@@ -61,6 +61,7 @@ public static partial class LaunchCommandComposer
         bool enableGameMode = false,
         bool enableMangoHud = false,
         bool enableHdr = false,
+        bool enableProtonWayland = false,
         string? gamescopeArgs = null,
         string? extraArguments = null)
     {
@@ -86,7 +87,7 @@ public static partial class LaunchCommandComposer
                     required.Contains('=') ? required[(required.IndexOf('=') + 1)..] : required));
         }
 
-        SetEnvironment(tokens, "PROTON_ENABLE_WAYLAND", enableHdr ? "1" : null, conflicts);
+        SetEnvironment(tokens, "PROTON_ENABLE_WAYLAND", enableProtonWayland ? "1" : null, conflicts);
         SetEnvironment(tokens, "DXVK_HDR", enableHdr ? "1" : null, conflicts);
 
         SetWrapper(tokens, "gamemoderun", enableGameMode);

@@ -237,6 +237,114 @@ public sealed class SourceProviderTests
     }
 
     [Fact]
+    public async Task Bottles_TargetedScanParsesOnlyChangedBottleMetadata()
+    {
+        using var temp = new TestDirectory();
+        var bottlesRoot = MaterializeTree(temp, Path.Combine("data", "bottles", "bottles"),
+            Path.Combine(FixturesRoot, "bottles"));
+        foreach (var bottle in Directory.GetDirectories(bottlesRoot))
+            RewritePlaceholders(bottle, temp.Combine("games"), bottle);
+        var target = Directory.GetFiles(bottlesRoot, "bottle.yml", SearchOption.AllDirectories).First();
+        var root = new GameSourceRoot("bottles", bottlesRoot, bottlesRoot, bottlesRoot,
+            SourceRootKind.Xdg, true, true, false, null);
+
+        var result = await new BottlesGameSourceProvider().ScanAsync(
+            root,
+            new(new Dictionary<string, string>(), false, 1,
+                new HashSet<string>([GameIdentity.NormalizePath(target)], StringComparer.Ordinal), root.CanonicalPath));
+
+        Assert.Equal([target], result.MetadataFiles);
+        Assert.All(result.Games.Concat(result.SkippedRecords), record => Assert.Equal(target, record.MetadataPath));
+    }
+
+    [Fact]
+    public async Task Lutris_TargetedScanParsesOnlyChangedYamlRecord()
+    {
+        using var temp = new TestDirectory();
+        var data = temp.Directory("data", "lutris");
+        var gamesYaml = temp.Directory("config", "lutris", "games");
+        var target = Path.Combine(gamesYaml, "control-wine.yml");
+        CopyFile(Path.Combine(FixturesRoot, "lutris", "games", "control-wine.yml"), target);
+        CopyFile(Path.Combine(FixturesRoot, "lutris", "games", "gog-game.yml"), Path.Combine(gamesYaml, "gog-game.yml"));
+        RewritePlaceholders(temp.Combine("config", "lutris"), temp.Combine("games"), null);
+        var pga = Path.Combine(data, "pga.db");
+        await CreateLutrisDbAsync(pga, includeOptionalColumns: true);
+        var root = new GameSourceRoot("lutris", data, data, data, SourceRootKind.Xdg,
+            true, true, false, null,
+            new Dictionary<string, string>
+            {
+                ["pgaPath"] = pga,
+                ["gamesYamlRoot"] = gamesYaml
+            });
+
+        var result = await new LutrisGameSourceProvider().ScanAsync(
+            root,
+            new(new Dictionary<string, string>(), false, 1,
+                new HashSet<string>([GameIdentity.NormalizePath(target)], StringComparer.Ordinal), root.CanonicalPath));
+
+        var game = Assert.Single(result.Games);
+        Assert.Equal("Control", game.Name);
+        Assert.Equal(target, game.ConfigurationPath);
+        Assert.DoesNotContain(result.Games, item => item.Name == "GOG Game");
+    }
+
+    [Fact]
+    public async Task Steam_TargetedScanParsesOnlyChangedManifest()
+    {
+        using var temp = new TestDirectory();
+        AddSteamGame(temp, "steam", 42, "First", "First", "First.exe");
+        AddSteamGame(temp, "steam", 84, "Second", "Second", "Second.exe");
+        var steam = temp.Combine("steam");
+        var target = temp.Combine("steam", "steamapps", "appmanifest_84.acf");
+        var root = new GameSourceRoot("steam", steam, steam, steam, SourceRootKind.Xdg,
+            true, true, false, null);
+
+        var result = await new SteamGameSourceProvider().ScanAsync(
+            root,
+            new(new Dictionary<string, string>(), false, 1,
+                new HashSet<string>([GameIdentity.NormalizePath(target)], StringComparer.Ordinal), root.CanonicalPath));
+
+        Assert.Equal("84", Assert.Single(result.Games).ExternalId);
+        Assert.Equal([target], result.MetadataFiles);
+    }
+
+    [Fact]
+    public async Task Steam_ExternalLibraryManifestKeepsStableDocumentIdentityForTargetedRefresh()
+    {
+        using var temp = new TestDirectory();
+        var steam = temp.Directory("steam");
+        var external = temp.Directory("external");
+        var externalPath = external.Replace("\\", "\\\\", StringComparison.Ordinal);
+        temp.File("steam/steamapps/libraryfolders.vdf",
+            "\"libraryfolders\"\n{\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"" + externalPath + "\"\n\t}\n}\n");
+        var manifest = temp.File("external/steamapps/appmanifest_84.acf",
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"84\"\n\t\"name\"\t\t\"External\"\n" +
+            "\t\"installdir\"\t\t\"External\"\n\t\"StateFlags\"\t\t\"4\"\n}\n");
+        temp.Pe("external/steamapps/common/External/External.exe");
+        var root = new GameSourceRoot("steam", steam, steam, steam, SourceRootKind.Xdg,
+            true, true, false, null);
+        var provider = new SteamGameSourceProvider();
+
+        var full = await provider.ScanAsync(root, new(new Dictionary<string, string>(), true, 1));
+        var first = Assert.Single(full.Games);
+        Assert.Equal(GameIdentity.NormalizePath(manifest), first.MetadataPath);
+        Assert.Contains(GameIdentity.NormalizePath(manifest), full.MetadataFiles);
+
+        await File.WriteAllTextAsync(manifest,
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"84\"\n\t\"name\"\t\t\"External Updated\"\n" +
+            "\t\"installdir\"\t\t\"External\"\n\t\"StateFlags\"\t\t\"4\"\n}\n");
+        var targeted = await provider.ScanAsync(root, new(
+            new Dictionary<string, string> { [SteamGameSourceProvider.FingerprintKey(root)] = full.SourceFingerprint },
+            false,
+            1,
+            new HashSet<string>([GameIdentity.NormalizePath(manifest)], StringComparer.Ordinal),
+            root.CanonicalPath));
+
+        Assert.Equal("External Updated", Assert.Single(targeted.Games).Name);
+        Assert.Equal([GameIdentity.NormalizePath(manifest)], targeted.MetadataFiles);
+    }
+
+    [Fact]
     public async Task Reconciliation_MergesHeroicAndLegendaryDuplicates()
     {
         using var temp = new TestDirectory();

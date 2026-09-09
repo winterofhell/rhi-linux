@@ -36,10 +36,9 @@ public static class OptiScalerEligibilityService
                 "Installation is blocked because anti-cheat files require an explicit compatibility decision.");
 
         if (game.Executable is null ||
-            !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(game.ProtonPrefix))
+            !Path.GetExtension(game.Executable).Equals(".exe", StringComparison.OrdinalIgnoreCase))
             return new(OptiScalerCompatibilityLevel.Unsupported, false, false,
-                "A Windows executable running through Proton is required.");
+                "A Windows executable is required.");
 
         var architecture = SelectedArchitecture(game);
         if (architecture != PeArchitecture.X64)

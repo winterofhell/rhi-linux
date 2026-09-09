@@ -26,6 +26,30 @@ public sealed class DeploymentTests
     }
 
     [Fact]
+    public async Task UpdateRequiresManagedInstallationAndProducesUpdatePlan()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp);
+        var planner = new DeploymentPlanner();
+        var executor = new DeploymentExecutor();
+        var first = new ComponentArtifact(ComponentKind.ReShade,
+            temp.PeWithMarker("staging/v1/ReShade64.dll", "reshade.me v1"), "ReShade64.dll", "1");
+        var second = new ComponentArtifact(ComponentKind.ReShade,
+            temp.PeWithMarker("staging/v2/ReShade64.dll", "reshade.me v2"), "ReShade64.dll", "2");
+
+        var missing = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            planner.BuildUpdatePlanAsync(game, second));
+        Assert.Contains("Use install", missing.Message, StringComparison.Ordinal);
+
+        Assert.True((await executor.ExecuteAsync(await planner.BuildInstallPlanAsync(game, first), false)).Succeeded);
+        var update = await planner.BuildUpdatePlanAsync(game, second);
+
+        Assert.Equal("update ReShade", update.Action);
+        Assert.Contains(update.Operations, operation => operation.Type == DeploymentOperationType.Backup);
+        Assert.True((await executor.ExecuteAsync(update, false)).Succeeded);
+    }
+
+    [Fact]
     public async Task PlannerRejectsReShadeArchitectureMismatchBeforeCreatingAPlan()
     {
         using var temp = new TestDirectory();
@@ -106,6 +130,37 @@ public sealed class DeploymentTests
         var record = Assert.Single(Assert.IsType<GameManifest>(manifest).Files);
         Assert.Equal(Path.GetRelativePath(game.GameRoot, backup), record.BackupRelativePath);
         Assert.Equal(originalHash, record.BackupSha256);
+    }
+
+    [Fact]
+    public async Task ConfigurationWritePreservesAnExistingUtf8ByteOrderMark()
+    {
+        using var temp = new TestDirectory();
+        var game = Game(temp);
+        var ini = Path.Combine(game.GameRoot, "OptiScaler.ini");
+        await File.WriteAllBytesAsync(ini, [.. System.Text.Encoding.UTF8.GetPreamble(),
+            .. System.Text.Encoding.UTF8.GetBytes("[Plugins]\nLoadReshade=false\n")]);
+        var plan = new DeploymentPlan
+        {
+            Id = "ini-byte-order-mark",
+            InstallId = game.EffectiveInstallId,
+            SteamAppId = game.SteamAppId,
+            GameRoot = game.GameRoot,
+            DeploymentDirectory = game.DeploymentDirectory,
+            Action = "test byte order mark round trip",
+            Operations =
+            {
+                new(DeploymentOperationType.WriteIniValue, ini, Value: "Plugins:LoadReshade=true"),
+                new(DeploymentOperationType.VerifyIniValue, ini, Value: "Plugins:LoadReshade=true")
+            }
+        };
+
+        var result = await new DeploymentExecutor().ExecuteAsync(plan, false);
+
+        Assert.True(result.Succeeded, result.Error);
+        var written = await File.ReadAllBytesAsync(ini);
+        Assert.Equal(System.Text.Encoding.UTF8.GetPreamble(), written[..3]);
+        Assert.Equal("true", IniDocument.Parse(written).Get("Plugins", "LoadReshade"));
     }
 
     [Fact]

@@ -23,6 +23,7 @@ internal static class CliApplication
             var xdg = new XdgPaths();
             if (command == "cache") return await HandleCache(cacheAction, options, xdg);
             if (command == "sources") return await HandleSources(sourcesAction, options, xdg);
+            if (command == "doctor") return await HandleDoctor(options, xdg);
             var statePath = options.Value("state") ?? xdg.StateFile;
             IStateStore store = new JsonStateStore(statePath);
             var state = await store.LoadAsync();
@@ -30,9 +31,8 @@ internal static class CliApplication
                 new ExecutableDetector(),
                 libraryIndexStore: options.Has("no-index") ? null : new JsonLibraryIndexStore(xdg.LibraryIndexFile));
             var multiSource = new MultiSourceLibraryService(
-                MultiSourceLibraryService.CreateDefaultProviders(discovery),
+                MultiSourceLibraryService.CreateDefaultProviders(new SteamDiscoveryService(new ExecutableDetector())),
                 new GameAnalyzer(),
-                options.Has("no-index") ? null : new JsonLibraryIndexStore(xdg.LibraryIndexFile),
                 new JsonSourceIndexStore(xdg.SourceIndexFile));
 
             if (command == "scan")
@@ -137,7 +137,11 @@ internal static class CliApplication
                     Write(game.CandidateList, options.Has("json"), value => PrintCandidates(game, value));
                     return 0;
                 case "launch-option":
-                    var launchOption = DeploymentPlanner.GenerateLaunchOption(options.Value("proxy") ?? "dxgi.dll");
+                    var detectedStack = await new ComponentDetector().DetectStackAsync(target);
+                    var selectedProxy = options.Value("proxy") ?? detectedStack.ActiveProxy ?? "dxgi.dll";
+                    var includeRenoDxHdr = detectedStack.ReportFor(ComponentKind.RenoDx) is { } renoDx &&
+                        renoDx.Evidence.DetectedFiles.Count > 0;
+                    var launchOption = DeploymentPlanner.GenerateLaunchOption(target, selectedProxy, includeRenoDxHdr);
                     if (options.Has("json")) Console.WriteLine(JsonSerializer.Serialize(new { installId = game.EffectiveInstallId, steamAppId = game.SteamAppId, launchOption }, JsonOptions)); else Console.WriteLine(launchOption);
                     return 0;
                 case "plan":
@@ -147,8 +151,6 @@ internal static class CliApplication
                     return await HandleInstallLike(command, game, options, state, store);
                 case "remove":
                     return await HandleRemove(game, options, state, store);
-                case "restore":
-                    return await ExecutePlan(await new DeploymentPlanner().BuildRestorePlanAsync(target), options, state, store);
                 default: throw new ArgumentException($"Unknown command '{command}'. Run 'help' for usage.");
             }
         }
@@ -212,7 +214,7 @@ internal static class CliApplication
         if (action == "scan")
         {
             var enabled = ParseProviders(options.Value("provider"));
-            var service = new MultiSourceLibraryService(providers, new GameAnalyzer(), null,
+            var service = new MultiSourceLibraryService(providers, new GameAnalyzer(),
                 new JsonSourceIndexStore(xdg.SourceIndexFile));
             var multi = await service.ScanAsync(new MultiSourceScanRequest(
                 EnabledProviders: enabled,
@@ -223,6 +225,69 @@ internal static class CliApplication
         }
 
         throw new ArgumentException("Unknown sources action. Use 'sources list' or 'sources scan'.");
+    }
+
+    private static async Task<int> HandleDoctor(Options options, XdgPaths paths)
+    {
+        var state = await new JsonStateStore(options.Value("state") ?? paths.StateFile).LoadAsync();
+        var games = ToInstalledGames(state.DiscoveredGames);
+        var providers = MultiSourceLibraryService.CreateDefaultProviders();
+        var context = SourceRootDiscovery.CreateContext();
+        var providerRows = new List<DoctorProviderRow>();
+        foreach (var provider in providers)
+        {
+            var roots = await provider.DiscoverRootsAsync(context);
+            providerRows.Add(new(provider.Id, provider.DisplayName,
+                roots.Any(root => root.Exists && root.Readable && !root.Deduplicated),
+                roots.Count(root => root.Exists && root.Readable && !root.Deduplicated)));
+        }
+        var recovery = games.Count(game => DeploymentRecoveryProbe.Probe(game.GameRoot).HasInterruptedTransaction);
+        var report = new
+        {
+            configPath = TroubleshootingReportService.PrivacyPath(paths.AppConfigDirectory),
+            dataPath = TroubleshootingReportService.PrivacyPath(paths.AppDataDirectory),
+            cachePath = TroubleshootingReportService.PrivacyPath(paths.AppCacheDirectory),
+            database = File.Exists(paths.LibraryDatabaseFile) ? "available" : "not created",
+            databaseSchema = SqliteLibraryIndex.SchemaVersion,
+            providers = providerRows,
+            watcherSupport = OperatingSystem.IsLinux(),
+            recoveryPending = recovery,
+            cacheWritable = DirectoryWritable(paths.AppCacheDirectory),
+            backupRootsWritable = games.Count == 0 || games.All(game => DirectoryWritable(game.GameRoot)),
+            games = games.Count
+        };
+        if (options.Has("json")) Console.WriteLine(JsonSerializer.Serialize(report, JsonOptions));
+        else
+        {
+            Console.WriteLine($"Data: {report.dataPath}");
+            Console.WriteLine($"Cache: {report.cachePath} ({(report.cacheWritable ? "writable" : "not writable")})");
+            Console.WriteLine($"Library DB: {report.database}; schema {report.databaseSchema}");
+            Console.WriteLine($"Cached games: {report.games}; recovery pending: {report.recoveryPending}");
+            foreach (var provider in providerRows)
+                Console.WriteLine($"{provider.DisplayName,-12} {(provider.Detected ? "detected" : "not detected")}");
+        }
+        return recovery > 0 || !report.cacheWritable ? 3 : 0;
+    }
+
+    private static bool DirectoryWritable(string path)
+    {
+        var current = Path.GetFullPath(path);
+        while (!Directory.Exists(current))
+        {
+            var parent = Path.GetDirectoryName(current);
+            if (parent is null) return false;
+            current = parent;
+        }
+        if (!OperatingSystem.IsLinux()) return true;
+        try
+        {
+            var mode = File.GetUnixFileMode(current);
+            return (mode & (UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static IReadOnlySet<string>? ParseProviders(string? raw)
@@ -305,9 +370,13 @@ internal static class CliApplication
         if (!options.Has("dry-run") && options.Has("apply")) ArtifactValidator.ValidatePe(source);
         var planner = new DeploymentPlanner();
         var targetGame = game.ToDeploymentTarget();
-        var plan = command == "repair"
-            ? await planner.BuildRepairPlanAsync(targetGame, component, artifact, options.Value("proxy") ?? "dxgi.dll")
-            : await planner.BuildInstallPlanAsync(targetGame, artifact, options.Value("proxy") ?? "dxgi.dll");
+        var proxyName = options.Value("proxy") ?? "dxgi.dll";
+        var plan = command switch
+        {
+            "repair" => await planner.BuildRepairPlanAsync(targetGame, component, artifact, proxyName),
+            "update" => await planner.BuildUpdatePlanAsync(targetGame, artifact, proxyName),
+            _ => await planner.BuildInstallPlanAsync(targetGame, artifact, proxyName)
+        };
         return await ExecutePlan(plan, options, state, store);
     }
 
@@ -706,7 +775,7 @@ internal static class CliApplication
         _ => "selected official deployment file"
     };
     private static void PrintHelp() => Console.WriteLine("""
-        RHI Linux — Steam Proton mod deployment manager
+        RHI Linux — Windows game compatibility mod deployment manager
 
         Commands:
           scan [--steam-root PATH] [--all-sources] [--provider steam,heroic,lutris] [--force] [--diagnostics] [--json] [--no-save] [--state PATH]
@@ -723,9 +792,9 @@ internal static class CliApplication
           plan --game GAME --recommended [--offline]
           plan|install|update|repair --game GAME --component NAME (--source FILE | --source-url URL) [--proxy NAME]
           remove --game GAME --component NAME [--proxy NAME]
-          restore --game GAME
           launch-option --game GAME [--proxy NAME]
           cache list|verify|clean [--json]
+          doctor [--json]
 
         File-changing commands are dry runs unless both --apply and --yes are supplied.
         Use --allow-anti-cheat for games where anti-cheat markers were detected.
@@ -737,6 +806,12 @@ internal static class CliApplication
         DeploymentPlan? RecommendedPlan,
         string RecommendedPlanStatus,
         bool ArtifactDownloadRequested);
+
+    private sealed record DoctorProviderRow(
+        string Id,
+        string DisplayName,
+        bool Detected,
+        int AvailableRoots);
 
     private sealed class Options(Dictionary<string, List<string>> values)
     {

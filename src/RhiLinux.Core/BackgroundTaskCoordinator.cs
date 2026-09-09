@@ -33,6 +33,10 @@ public sealed class BackgroundTaskCoordinator : IBackgroundTaskCoordinator, IAsy
     private readonly SemaphoreSlim stateWrite = new(1, 1);
     private readonly Dictionary<string, SemaphoreSlim> gameLocks = new(StringComparer.Ordinal);
     private readonly object gate = new();
+    private readonly CancellationTokenSource lifetime = new();
+    private TaskCompletionSource completion = Completed();
+    private int activeOperations;
+    private bool disposed;
 
     public Task RunAsync(
         BackgroundTaskLane lane,
@@ -51,23 +55,50 @@ public sealed class BackgroundTaskCoordinator : IBackgroundTaskCoordinator, IAsy
         Func<CancellationToken, Task<T>> work,
         CancellationToken cancellationToken = default)
     {
+        BeginOperation();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        var token = linked.Token;
         var laneLock = Lane(lane);
-        await laneLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var laneAcquired = false;
         SemaphoreSlim? gameLock = null;
+        var gameAcquired = false;
         try
         {
+            await laneLock.WaitAsync(token).ConfigureAwait(false);
+            laneAcquired = true;
             if (!string.IsNullOrWhiteSpace(gameKey))
             {
                 gameLock = GetGameLock(gameKey);
-                await gameLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await gameLock.WaitAsync(token).ConfigureAwait(false);
+                gameAcquired = true;
             }
 
-            return await work(cancellationToken).ConfigureAwait(false);
+            return await work(token).ConfigureAwait(false);
         }
         finally
         {
-            if (gameLock is not null) gameLock.Release();
-            laneLock.Release();
+            if (gameAcquired) gameLock!.Release();
+            if (laneAcquired) laneLock.Release();
+            EndOperation();
+        }
+    }
+
+    private void BeginOperation()
+    {
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (activeOperations++ == 0)
+                completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    private void EndOperation()
+    {
+        lock (gate)
+        {
+            activeOperations--;
+            if (activeOperations == 0) completion.TrySetResult();
         }
     }
 
@@ -97,6 +128,15 @@ public sealed class BackgroundTaskCoordinator : IBackgroundTaskCoordinator, IAsy
 
     public async ValueTask DisposeAsync()
     {
+        Task pending;
+        lock (gate)
+        {
+            if (disposed) return;
+            disposed = true;
+            pending = completion.Task;
+        }
+        lifetime.Cancel();
+        await pending.ConfigureAwait(false);
         scan.Dispose();
         metadata.Dispose();
         download.Dispose();
@@ -105,6 +145,13 @@ public sealed class BackgroundTaskCoordinator : IBackgroundTaskCoordinator, IAsy
         SemaphoreSlim[] locks;
         lock (gate) locks = gameLocks.Values.ToArray();
         foreach (var item in locks) item.Dispose();
-        await Task.CompletedTask.ConfigureAwait(false);
+        lifetime.Dispose();
+    }
+
+    private static TaskCompletionSource Completed()
+    {
+        var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.SetResult();
+        return source;
     }
 }

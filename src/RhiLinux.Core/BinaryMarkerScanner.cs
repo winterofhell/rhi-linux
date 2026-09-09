@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 
 namespace RhiLinux.Core;
@@ -9,99 +10,148 @@ public static class BinaryMarkerScanner
     public static bool ContainsAny(string path, params string[] markers)
     {
         if (markers.Length == 0 || !File.Exists(path)) return false;
+        return ContainsEach(path, [markers])[0];
+    }
+
+    public static bool ContainsAny(Stream stream, params string[] markers) =>
+        ContainsEach(stream, [markers])[0];
+
+    public static bool ContainsAscii(string path, string marker, long maximumLength = long.MaxValue)
+    {
+        if (string.IsNullOrEmpty(marker) || !File.Exists(path)) return false;
         try
         {
             using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return ContainsAny(stream, markers);
+            if (stream.Length > maximumLength) return false;
+            return ContainsNeedle(stream, Encoding.ASCII.GetBytes(marker));
         }
-        catch (IOException) { return false; }
-        catch (UnauthorizedAccessException) { return false; }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
-    public static bool ContainsAny(Stream stream, params string[] markers)
+    public static IReadOnlyList<bool> ContainsEach(string path, IReadOnlyList<IReadOnlyList<string>> markerGroups)
     {
-        if (markers.Length == 0) return false;
-        var asciiNeedles = markers
-            .Where(marker => !string.IsNullOrEmpty(marker))
-            .Select(marker => Encoding.ASCII.GetBytes(marker))
-            .Where(bytes => bytes.Length > 0)
-            .ToArray();
-        var unicodeNeedles = markers
-            .Where(marker => !string.IsNullOrEmpty(marker))
-            .Select(marker => Encoding.Unicode.GetBytes(marker))
-            .Where(bytes => bytes.Length > 0)
-            .ToArray();
-        if (asciiNeedles.Length == 0 && unicodeNeedles.Length == 0) return false;
-
-        var overlap = Math.Max(
-            asciiNeedles.Length == 0 ? 0 : asciiNeedles.Max(x => x.Length),
-            unicodeNeedles.Length == 0 ? 0 : unicodeNeedles.Max(x => x.Length));
-        if (overlap > 0) overlap -= 1;
-
-        var buffer = new byte[ChunkSize];
-        var carry = Array.Empty<byte>();
-        while (true)
+        var absent = new bool[markerGroups.Count];
+        if (markerGroups.Count == 0 || !File.Exists(path)) return absent;
+        try
         {
-            var read = stream.Read(buffer, 0, buffer.Length);
-            if (read == 0) break;
-            var window = carry.Length == 0
-                ? buffer.AsSpan(0, read)
-                : Concat(carry, buffer.AsSpan(0, read));
-            if (ContainsInsensitive(window, asciiNeedles) || ContainsInsensitive(window, unicodeNeedles))
-                return true;
-            if (overlap == 0 || window.Length == 0)
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return ContainsEach(stream, markerGroups);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return absent;
+        }
+    }
+
+    public static IReadOnlyList<bool> ContainsEach(Stream stream, IReadOnlyList<IReadOnlyList<string>> markerGroups)
+    {
+        var found = new bool[markerGroups.Count];
+        var groups = markerGroups.Select(BuildNeedles).ToArray();
+        var pending = 0;
+        for (var index = 0; index < groups.Length; index++)
+            if (groups[index].Length > 0) pending++;
+        if (pending == 0) return found;
+
+        var overlap = groups.SelectMany(group => group).Max(needle => needle.Length) - 1;
+        var buffer = ArrayPool<byte>.Shared.Rent(ChunkSize + overlap);
+        try
+        {
+            var carried = 0;
+            while (pending > 0)
             {
-                carry = [];
-                continue;
+                var read = stream.ReadAtLeast(buffer.AsSpan(carried, ChunkSize), ChunkSize, throwOnEndOfStream: false);
+                if (read == 0) break;
+                FoldAscii(buffer.AsSpan(carried, read));
+                var window = buffer.AsSpan(0, carried + read);
+                for (var index = 0; index < groups.Length; index++)
+                {
+                    if (found[index] || groups[index].Length == 0) continue;
+                    if (!ContainsAnyNeedle(window, groups[index])) continue;
+                    found[index] = true;
+                    pending--;
+                }
+
+                if (overlap <= 0)
+                {
+                    carried = 0;
+                    continue;
+                }
+
+                var keep = Math.Min(overlap, window.Length);
+                window[^keep..].CopyTo(buffer);
+                carried = keep;
             }
 
-            var keep = Math.Min(overlap, window.Length);
-            carry = window.Slice(window.Length - keep).ToArray();
+            return found;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static byte[][] BuildNeedles(IReadOnlyList<string> markers)
+    {
+        var needles = new List<byte[]>(markers.Count * 2);
+        foreach (var marker in markers)
+        {
+            if (string.IsNullOrEmpty(marker)) continue;
+            Add(Encoding.ASCII.GetBytes(marker));
+            Add(Encoding.Unicode.GetBytes(marker));
         }
 
-        return false;
+        return needles.ToArray();
+
+        void Add(byte[] needle)
+        {
+            if (needle.Length == 0) return;
+            FoldAscii(needle);
+            if (!needles.Any(existing => existing.AsSpan().SequenceEqual(needle))) needles.Add(needle);
+        }
     }
 
-    private static ReadOnlySpan<byte> Concat(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
-    {
-        var combined = new byte[left.Length + right.Length];
-        left.CopyTo(combined);
-        right.CopyTo(combined.AsSpan(left.Length));
-        return combined;
-    }
-
-    private static bool ContainsInsensitive(ReadOnlySpan<byte> haystack, IReadOnlyList<byte[]> needles)
+    private static bool ContainsAnyNeedle(ReadOnlySpan<byte> haystack, byte[][] needles)
     {
         foreach (var needle in needles)
-        {
-            if (IndexOfInsensitive(haystack, needle) >= 0) return true;
-        }
-
+            if (haystack.IndexOf(needle) >= 0) return true;
         return false;
     }
 
-    private static int IndexOfInsensitive(ReadOnlySpan<byte> haystack, ReadOnlySpan<byte> needle)
+    private static bool ContainsNeedle(Stream stream, ReadOnlySpan<byte> needle)
     {
-        if (needle.Length == 0 || haystack.Length < needle.Length) return -1;
-        var last = haystack.Length - needle.Length;
-        for (var i = 0; i <= last; i++)
+        var overlap = needle.Length - 1;
+        var buffer = ArrayPool<byte>.Shared.Rent(ChunkSize + overlap);
+        try
         {
-            var matched = true;
-            for (var j = 0; j < needle.Length; j++)
+            var carried = 0;
+            while (true)
             {
-                if (AsciiFold(haystack[i + j]) != AsciiFold(needle[j]))
-                {
-                    matched = false;
-                    break;
-                }
+                var read = stream.ReadAtLeast(
+                    buffer.AsSpan(carried, ChunkSize),
+                    ChunkSize,
+                    throwOnEndOfStream: false);
+                if (read == 0) return false;
+
+                var window = buffer.AsSpan(0, carried + read);
+                if (window.IndexOf(needle) >= 0) return true;
+
+                var keep = Math.Min(overlap, window.Length);
+                window[^keep..].CopyTo(buffer);
+                carried = keep;
             }
-
-            if (matched) return i;
         }
-
-        return -1;
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
-    private static byte AsciiFold(byte value) =>
-        value is >= (byte)'A' and <= (byte)'Z' ? (byte)(value + 32) : value;
+    private static void FoldAscii(Span<byte> value)
+    {
+        for (var index = 0; index < value.Length; index++)
+            if (value[index] is >= (byte)'A' and <= (byte)'Z') value[index] += 32;
+    }
 }

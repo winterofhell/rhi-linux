@@ -6,7 +6,11 @@ namespace RhiLinux.Gui;
 
 public sealed partial class App : Application
 {
-    public override void Initialize() => AvaloniaXamlLoader.Load(this);
+    public override void Initialize()
+    {
+        SmoothScrolling.Initialize();
+        AvaloniaXamlLoader.Load(this);
+    }
 
     public override void OnFrameworkInitializationCompleted()
     {

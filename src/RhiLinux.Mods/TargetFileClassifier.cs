@@ -201,14 +201,20 @@ public sealed class TargetFileClassifier(GameProfileCatalog? profiles = null)
 
         try
         {
-            bool HasBinary(params string[] markers) => BinaryMarkerScanner.ContainsAny(path, markers);
+            var binary = BinaryMarkerScanner.ContainsEach(path,
+            [
+                ["reshade.me", "ReShade Add-on"],
+                ["OptiScaler", "OptiFG"],
+                ["RenoDX"],
+                ["Advanced Micro Devices", "AMD FidelityFX", "FidelityFX SDK"]
+            ]);
             bool HasMeta(string value) =>
                 company.Contains(value, StringComparison.OrdinalIgnoreCase) ||
                 product.Contains(value, StringComparison.OrdinalIgnoreCase);
-            var reshade = HasBinary("reshade.me", "ReShade Add-on") || HasMeta("reshade.me") || HasMeta("ReShade");
-            var optiScaler = HasBinary("OptiScaler", "OptiFG") || HasMeta("OptiScaler") || HasMeta("OptiFG");
-            var renoDx = HasBinary("RenoDX") || HasMeta("RenoDX");
-            var gameVendor = HasBinary("Advanced Micro Devices", "AMD FidelityFX", "FidelityFX SDK") ||
+            var reshade = binary[0] || HasMeta("reshade.me") || HasMeta("ReShade");
+            var optiScaler = binary[1] || HasMeta("OptiScaler") || HasMeta("OptiFG");
+            var renoDx = binary[2] || HasMeta("RenoDX");
+            var gameVendor = binary[3] ||
                 HasMeta("Advanced Micro Devices") || HasMeta("AMD FidelityFX") || HasMeta("FidelityFX SDK");
             if (reshade) evidence.Add("ReShade binary/product marker");
             if (optiScaler) evidence.Add("OptiScaler binary/product marker");

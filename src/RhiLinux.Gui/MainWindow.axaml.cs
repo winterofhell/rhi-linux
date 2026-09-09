@@ -4,10 +4,8 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
-using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using RhiLinux.Core;
-using RhiLinux.Mods;
 
 namespace RhiLinux.Gui;
 
@@ -20,10 +18,9 @@ public sealed partial class MainWindow : Window
     private bool closeRequested;
     private Grid Workspace => this.FindControl<Grid>("WorkspaceGrid") ?? throw new InvalidOperationException("Workspace grid was not loaded.");
     private ComboBox ThemeBox => this.FindControl<ComboBox>("ThemeSelector") ?? throw new InvalidOperationException("Theme selector was not loaded.");
-    private ListBox? GamesList => this.FindControl<ListBox>("GameList");
-    private Button CopyButton => this.FindControl<Button>("CopyLaunchButton") ?? throw new InvalidOperationException("Copy button was not loaded.");
-    private TextBlock CopyStatus => this.FindControl<TextBlock>("CopyFeedback") ?? throw new InvalidOperationException("Copy feedback was not loaded.");
     private TextBox SearchInput => this.FindControl<TextBox>("SearchBox") ?? throw new InvalidOperationException("Search box was not loaded.");
+    private Views.GameDetailsView Details => this.FindControl<Views.GameDetailsView>("GameDetails") ?? throw new InvalidOperationException("Game details view was not loaded.");
+    private Views.LibraryView LibraryControl => this.FindControl<Views.LibraryView>("Library") ?? throw new InvalidOperationException("Library view was not loaded.");
 
     public MainWindow() : this(new MainViewModel()) { }
 
@@ -42,20 +39,36 @@ public sealed partial class MainWindow : Window
     {
         operationCancellation = new CancellationTokenSource();
         await viewModel.InitializeAsync(operationCancellation.Token);
-        Width = Math.Clamp(viewModel.Preferences.WindowWidth, MinWidth, 3840);
-        Height = Math.Clamp(viewModel.Preferences.WindowHeight, MinHeight, 2160);
+        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        var maximumWidth = screen is null ? 3840 : screen.WorkingArea.Width / screen.Scaling;
+        var maximumHeight = screen is null ? 2160 : screen.WorkingArea.Height / screen.Scaling;
+        Width = Math.Clamp(viewModel.Preferences.WindowWidth, MinWidth, Math.Max(MinWidth, maximumWidth));
+        Height = Math.Clamp(viewModel.Preferences.WindowHeight, MinHeight, Math.Max(MinHeight, maximumHeight));
+        if (viewModel.Preferences.WindowMaximized) WindowState = WindowState.Maximized;
         UpdateWorkspaceColumns();
         ThemeBox.SelectedIndex = viewModel.Preferences.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         ApplyTheme(viewModel.Preferences.Theme);
-        if (GamesList is not null)
-            GamesList.SelectedItem = viewModel.SelectedGame;
+        LibraryControl.SyncSelection(viewModel.SelectedGame);
         initialized = true;
+        if (!viewModel.Preferences.OnboardingCompleted)
+        {
+            var result = await new FirstRunDialog(viewModel).ShowDialog<FirstRunResult>(this);
+            result ??= new(false, new Dictionary<string, bool>(StringComparer.Ordinal));
+            await viewModel.CompleteOnboardingAsync(result.ProviderPreferences);
+            if (result.AddManualGame)
+            {
+                var saved = await new ManualGameWizardDialog(viewModel.ManualGameWizard).ShowDialog<bool>(this);
+                if (saved) await RefreshViewAsync();
+            }
+        }
     }
 
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
     {
         if (eventArgs.PropertyName is nameof(MainViewModel.ShowLibraryPage) or nameof(MainViewModel.SelectedNavigation))
             UpdateWorkspaceColumns();
+        if (eventArgs.PropertyName is nameof(MainViewModel.FilteredGames) or nameof(MainViewModel.SelectedGame))
+            LibraryControl.SyncSelection(viewModel.SelectedGame);
     }
 
     private void UpdateWorkspaceColumns()
@@ -77,6 +90,12 @@ public sealed partial class MainWindow : Window
         if (closeRequested) return;
 
         eventArgs.Cancel = true;
+        if (viewModel.HasActiveWriteOperation)
+        {
+            await MessageDialog.ShowAsync(this, "Operation in progress",
+                "An operation is currently modifying game files. Wait for it to reach a safe state before closing.");
+            return;
+        }
         closeRequested = true;
 
         selectionChangeCancellation?.Cancel();
@@ -89,6 +108,7 @@ public sealed partial class MainWindow : Window
 
         viewModel.Preferences.WindowWidth = Width;
         viewModel.Preferences.WindowHeight = Height;
+        viewModel.Preferences.WindowMaximized = WindowState == WindowState.Maximized;
         if (viewModel.ShowLibraryPage && Workspace.ColumnDefinitions[1].ActualWidth > 0)
             viewModel.Preferences.SidebarWidth = Workspace.ColumnDefinitions[1].ActualWidth;
         viewModel.Preferences.SelectedAppId = viewModel.SelectedGame?.AppId;
@@ -105,6 +125,7 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            await viewModel.DisposeAsync();
             Closing -= OnClosing;
             if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
                 ReferenceEquals(desktop.MainWindow, this))
@@ -123,63 +144,19 @@ public sealed partial class MainWindow : Window
         await RefreshViewAsync();
     }
 
-    private void OpenOverview_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.Navigate(MainSection.Overview);
-
-    private void OpenLibrary_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.Navigate(MainSection.Library);
-
-    private void OpenUpdates_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.Navigate(MainSection.Updates);
-
-    private void OpenDiagnostics_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.Navigate(MainSection.Diagnostics);
-
-    private void OpenSettings_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.Navigate(MainSection.Settings);
-
-    private void OpenReadyGames_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.FilterLibraryForReadiness("Ready games");
-
-    private void OpenNeedsAttention_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.FilterLibraryForReadiness("Needs attention");
-
-    private void OpenRecoveryItems_Click(object? sender, RoutedEventArgs eventArgs) =>
-        viewModel.FilterLibraryForReadiness("Recovery required");
-
-    private async void RefreshReadiness_Click(object? sender, RoutedEventArgs eventArgs) =>
-        await viewModel.RefreshReadinessAsync(true);
-
-    private async void CopyReadinessLaunch_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        var value = viewModel.Readiness.LaunchCopyValue;
-        if (string.IsNullOrWhiteSpace(value)) return;
-        var clipboard = GetTopLevel(this)?.Clipboard;
-        if (clipboard is null) return;
-        await clipboard.SetTextAsync(value);
-        viewModel.Readiness.MarkCopied();
-    }
-
-    private void ReviewComponentUpdate_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (sender is not Button { Tag: string installId }) return;
-        viewModel.OpenReadinessForInstall(installId);
-    }
-
     private async Task RefreshViewAsync()
     {
         operationCancellation?.Cancel();
         operationCancellation?.Dispose();
         operationCancellation = new CancellationTokenSource();
         await viewModel.RefreshAsync(operationCancellation.Token);
-        if (GamesList is not null)
-            GamesList.SelectedItem = viewModel.SelectedGame;
+        LibraryControl.SyncSelection(viewModel.SelectedGame);
     }
 
-    private void GameList_SelectionChanged(object? sender, SelectionChangedEventArgs eventArgs)
+    private async void GameList_SelectionChanged(object? sender, Views.GameSelectionRequestedEventArgs eventArgs)
     {
-        if (!initialized || sender is not ListBox { SelectedItem: InstalledGame game } ||
-            DataContext is not MainViewModel currentViewModel ||
+        var game = eventArgs.Game;
+        if (!initialized || DataContext is not MainViewModel currentViewModel ||
             string.Equals(game.EffectiveInstallId, currentViewModel.SelectedGame?.EffectiveInstallId, StringComparison.Ordinal))
             return;
 
@@ -187,7 +164,7 @@ public sealed partial class MainWindow : Window
         selectionChangeCancellation?.Dispose();
         var cancellation = new CancellationTokenSource();
         selectionChangeCancellation = cancellation;
-        _ = ChangeSelectedGameAsync(currentViewModel, game, cancellation);
+        await ChangeSelectedGameAsync(currentViewModel, game, cancellation);
     }
 
     private async Task ChangeSelectedGameAsync(
@@ -198,10 +175,7 @@ public sealed partial class MainWindow : Window
         var cancellationToken = cancellation.Token;
         try
         {
-            if (this.FindControl<ScrollViewer>("GameContentScroll") is { } contentScroll)
-                contentScroll.Offset = default;
-            ResetWorkspaceExpanders();
-            currentViewModel.CollapseComponentDetails();
+            Details.ResetPresentation();
             await currentViewModel.SelectAsync(game, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -229,19 +203,13 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ThemeSelector_SelectionChanged(object? sender, SelectionChangedEventArgs eventArgs)
+    private async void ThemeSelector_SelectionChanged(object? sender, SelectionChangedEventArgs eventArgs)
     {
         if (ThemeBox.SelectedItem is not ComboBoxItem item || item.Content is not string theme) return;
         viewModel.Preferences.Theme = theme;
         ApplyTheme(theme);
-        _ = viewModel.SavePreferencesAsync();
-    }
-
-    private void ResetWorkspaceExpanders()
-    {
-        foreach (var name in new[] { "CompatibilityDetails", "AdvancedGameDetails", "AdvancedExecutableDetails", "ApplicationSettings" })
-            if (this.FindControl<Expander>(name) is { } expander)
-                expander.IsExpanded = false;
+        try { await viewModel.SavePreferencesAsync(); }
+        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not save theme", exception.Message); }
     }
 
     private static void ApplyTheme(string theme)
@@ -255,275 +223,42 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private async void ChangeExecutable_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (viewModel.SelectedGame is not { } game) return;
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = "Choose the primary Windows game executable",
-            AllowMultiple = false,
-            SuggestedStartLocation = await TryFolderAsync(game.DeploymentDirectory ?? game.GameRoot),
-            FileTypeFilter = [new FilePickerFileType("Windows executable") { Patterns = ["*.exe"] }]
-        });
-        var path = files.FirstOrDefault()?.TryGetLocalPath();
-        if (path is null) return;
-        await viewModel.SaveOverridesAsync(path, game.DeploymentDirectory);
-        if (GamesList is not null)
-            GamesList.SelectedItem = viewModel.SelectedGame;
-    }
-
-    private async void ChangeDeploymentFolder_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (viewModel.SelectedGame is not { } game) return;
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-        {
-            Title = "Choose the game folder for compatibility files",
-            AllowMultiple = false,
-            SuggestedStartLocation = await TryFolderAsync(game.DeploymentDirectory ?? game.GameRoot)
-        });
-        var path = folders.FirstOrDefault()?.TryGetLocalPath();
-        if (path is null) return;
-        await viewModel.SaveOverridesAsync(game.Executable, path);
-        if (GamesList is not null)
-            GamesList.SelectedItem = viewModel.SelectedGame;
-    }
-
-    private async void OpenExecutableFolder_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (viewModel.SelectedGame?.Executable is not { } executable) return;
-        var directory = Path.GetDirectoryName(executable);
-        if (directory is not null) await Launcher.LaunchDirectoryInfoAsync(new DirectoryInfo(directory));
-    }
-
-    private async void ComponentAction_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
-        if (card.ActionText == "Remove" || card.ActionText.StartsWith("Remove ", StringComparison.Ordinal))
-        {
-            try { await ShowPlanAsync(await viewModel.BuildRemovePlanAsync(card.Component)); }
-            catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build removal plan", exception.Message); }
-            return;
-        }
-        await BuildAutomaticComponentPlanAsync(card.Component);
-    }
-
-    private async void ComponentRemove_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
-        try { await ShowPlanAsync(await viewModel.BuildRemovePlanAsync(card.Component)); }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build removal plan", exception.Message); }
-    }
-
-    private async void ComponentSecondary_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
-        if (card.CanShowFiles)
-        {
-            await MessageDialog.ShowAsync(this, $"{card.Name} files",
-                card.Files.Length == 0 ? "No detected files." : card.Files);
-            return;
-        }
-        if (card.CanCheckAgain)
-            await viewModel.CheckForUpdatesAsync(false);
-    }
-
-    private void OpenOfficialPage_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
-        viewModel.OpenOfficialPage(card);
-    }
-
-    private async Task BuildAutomaticComponentPlanAsync(ComponentKind component)
-    {
-        operationCancellation?.Cancel();
-        operationCancellation?.Dispose();
-        operationCancellation = new CancellationTokenSource();
-        try
-        {
-            await ShowPlanAsync(await viewModel.BuildAutomaticComponentPlanAsync(
-                component, operationCancellation.Token));
-        }
-        catch (OperationCanceledException) { }
-        catch (DeploymentConflictException exception)
-        {
-            await MessageDialog.ShowAsync(this, "Installation blocked", exception.Message, exception.TechnicalDetails);
-        }
-        catch (ArtifactPipelineException exception)
-        {
-            await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.UserSummary,
-                exception.TechnicalDetail ?? exception.ToString());
-        }
-        catch (Exception exception)
-        {
-            await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.Message);
-        }
-    }
-
-    private async Task BuildAutomaticPlanAsync()
-    {
-        operationCancellation?.Cancel();
-        operationCancellation?.Dispose();
-        operationCancellation = new CancellationTokenSource();
-        try { await ShowPlanAsync(await viewModel.BuildRecommendedStackPlanAsync(operationCancellation.Token)); }
-        catch (OperationCanceledException) { }
-        catch (DeploymentConflictException exception)
-        {
-            await MessageDialog.ShowAsync(this, "Installation blocked", exception.Message, exception.TechnicalDetails);
-        }
-        catch (ArtifactPipelineException exception)
-        {
-            await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.UserSummary,
-                exception.TechnicalDetail ?? exception.ToString());
-        }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build installation plan", exception.Message); }
-    }
-
-    private async void UseLocalArtifact_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        if (sender is not Button { DataContext: ComponentCardViewModel card }) return;
-        var patterns = card.Component switch
-        {
-            ComponentKind.RenoDx => new[] { "*.addon64", "*.addon32" },
-            _ => new[] { "*.dll" }
-        };
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title = $"Advanced troubleshooting: choose local {card.Name} file",
-            AllowMultiple = false,
-            FileTypeFilter = [new FilePickerFileType($"{card.Name} artifact") { Patterns = patterns }]
-        });
-        var path = files.FirstOrDefault()?.TryGetLocalPath();
-        if (path is null) return;
-        try
-        {
-            var plan = await viewModel.BuildInstallPlanAsync(card.Component, path, "install");
-            await ShowPlanAsync(plan);
-        }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build plan", exception.Message); }
-    }
-
-    private async void Restore_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        try { await ShowPlanAsync(await viewModel.BuildRestorePlanAsync()); }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build restore plan", exception.Message); }
-    }
-
-    private async void InstallRecommended_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        operationCancellation?.Cancel();
-        operationCancellation?.Dispose();
-        operationCancellation = new CancellationTokenSource();
-        try { await ShowPlanAsync(await viewModel.BuildPrimaryActionPlanAsync(operationCancellation.Token)); }
-        catch (OperationCanceledException) { }
-        catch (DeploymentConflictException exception)
-        {
-            await MessageDialog.ShowAsync(this, "Installation blocked", exception.Message, exception.TechnicalDetails);
-        }
-        catch (ArtifactPipelineException exception)
-        {
-            await MessageDialog.ShowAsync(this, "Could not build recommended setup", exception.UserSummary,
-                exception.TechnicalDetail ?? exception.ToString());
-        }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Could not build recommended setup", exception.Message); }
-    }
-
-    private async void CheckForUpdates_Click(object? sender, RoutedEventArgs eventArgs) => await viewModel.CheckForUpdatesAsync();
-    private void OpenCacheFolder_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        try { viewModel.OpenCacheFolder(); }
-        catch (Exception exception) { _ = MessageDialog.ShowAsync(this, "Could not open cache folder", exception.Message); }
-    }
-    private async void VerifyCache_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        try { await viewModel.VerifyCacheAsync(); }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Cache verification failed", exception.Message); }
-    }
-    private async void RefreshRenoDxCatalog_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        try { await viewModel.RefreshRenoDxCatalogAsync(); }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "RenoDX catalog refresh failed", exception.Message); }
-    }
-    private async void ClearCache_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        try { await viewModel.ClearUnusedCacheAsync(); }
-        catch (Exception exception) { await MessageDialog.ShowAsync(this, "Cache cleanup failed", exception.Message); }
-    }
-
-    private async void ResetSettings_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        viewModel.ResetSettingsToDefaults();
-        ThemeBox.SelectedIndex = 0;
-        ApplyTheme("System");
-        await MessageDialog.ShowAsync(this, "Settings reset",
-            "Defaults were restored for cache limit, motion, automatic update checks, and the additional Steam library path.");
-    }
-
-    private async Task ShowPlanAsync(DeploymentPlan plan)
-    {
-        if (!viewModel.IsPlanForCurrentSelection(plan))
-        {
-            await MessageDialog.ShowAsync(this, "Game selection changed",
-                "The plan was discarded because a different game or installation folder is now selected. No files were changed.");
-            return;
-        }
-        viewModel.AttachRecommendedPlanSummary(plan);
-        var dialog = new DeploymentPlanDialog(viewModel, plan);
-        await dialog.ShowDialog(this);
-    }
-
-    private async void CopyLaunch_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        var clipboard = GetTopLevel(this)?.Clipboard;
-        if (clipboard is null) return;
-        await clipboard.SetTextAsync(viewModel.LaunchOption);
-        CopyButton.Content = "Copied";
-        CopyStatus.IsVisible = true;
-        await Task.Delay(1800);
-        if (!IsVisible) return;
-        CopyButton.Content = "Copy";
-        CopyStatus.IsVisible = false;
-    }
-
-    private async void CopyHdrLaunch_Click(object? sender, RoutedEventArgs eventArgs)
-    {
-        var clipboard = GetTopLevel(this)?.Clipboard;
-        if (clipboard is null) return;
-        await clipboard.SetTextAsync(viewModel.HdrLaunchOption);
-        if (this.FindControl<Button>("CopyHdrLaunchButton") is { } button)
-        {
-            button.Content = "Copied";
-            await Task.Delay(1800);
-            if (!IsVisible) return;
-            button.Content = "Copy";
-        }
-    }
-
     private void Cancel_Click(object? sender, RoutedEventArgs eventArgs) => operationCancellation?.Cancel();
     private void DismissError_Click(object? sender, RoutedEventArgs eventArgs) => viewModel.DismissError();
 
+    private async void Library_AddManualGameRequested(object? sender, EventArgs eventArgs)
+    {
+        var saved = await new ManualGameWizardDialog(viewModel.ManualGameWizard).ShowDialog<bool>(this);
+        if (saved) await RefreshViewAsync();
+    }
+
     private async void Window_KeyDown(object? sender, KeyEventArgs eventArgs)
     {
+        var editingText = eventArgs.Source is TextBox;
         if (eventArgs.Key == Key.F5)
         {
             eventArgs.Handled = true;
             await RefreshViewAsync();
         }
-        else if (eventArgs.Key == Key.L && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        else if (eventArgs.Key == Key.F && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             eventArgs.Handled = true;
             SearchInput.Focus();
             SearchInput.SelectAll();
         }
-        else if (eventArgs.Key == Key.R && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control) && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Shift) && viewModel.SelectedGame is not null)
+        else if (!editingText && eventArgs.Key == Key.Enter && viewModel.ShowLibraryPage &&
+                 viewModel.SelectedGame is { } selected)
         {
             eventArgs.Handled = true;
-            await ShowPlanAsync(await viewModel.BuildRestorePlanAsync());
+            viewModel.OpenReadinessForInstall(selected.EffectiveInstallId);
+        }
+        else if (!editingText && eventArgs.Key == Key.R && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                 !eventArgs.KeyModifiers.HasFlag(KeyModifiers.Shift))
+        {
+            eventArgs.Handled = true;
+            await RefreshViewAsync();
         }
     }
 
-    private async Task<IStorageFolder?> TryFolderAsync(string path)
-    {
-        try { return await StorageProvider.TryGetFolderFromPathAsync(new Uri(path)); }
-        catch (UriFormatException) { return null; }
-    }
+
 }

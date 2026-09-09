@@ -6,12 +6,26 @@ namespace RhiLinux.Gui;
 
 public static class GameSearch
 {
-    public static IReadOnlyList<InstalledGame> Rank(IEnumerable<InstalledGame> games, string? query)
+    private static readonly HashSet<string> RecognizedKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "store", "launcher", "status", "engine", "has"
+    };
+
+    public static IReadOnlyList<InstalledGame> Rank(
+        IEnumerable<InstalledGame> games,
+        string? query,
+        IReadOnlyDictionary<string, GameReadinessState>? readiness = null,
+        IReadOnlySet<GameInstallId>? updateable = null)
     {
         if (string.IsNullOrWhiteSpace(query))
             return games.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
 
-        var normalizedQuery = Normalize(query);
+        var parsed = Parse(query);
+        var normalizedFilters = parsed.Filters
+            .Select(filter => (filter.Key, Value: Normalize(filter.Value)))
+            .ToArray();
+        games = games.Where(game => MatchesFilters(game, normalizedFilters, readiness, updateable));
+        var normalizedQuery = Normalize(string.Join(' ', parsed.Text));
         if (normalizedQuery.Length == 0)
             return games.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToArray();
 
@@ -23,6 +37,63 @@ public static class GameSearch
             .ThenBy(x => x.Game.Name, StringComparer.OrdinalIgnoreCase)
             .Select(x => x.Game)
             .ToArray();
+    }
+
+    public static (IReadOnlyList<(string Key, string Value)> Filters, IReadOnlyList<string> Text) Parse(string query)
+    {
+        var filters = new List<(string Key, string Value)>();
+        var text = new List<string>();
+        foreach (var token in query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separator = token.IndexOf(':');
+            if (separator > 0 && separator < token.Length - 1 &&
+                RecognizedKeys.Contains(token[..separator]))
+                filters.Add((token[..separator].ToLowerInvariant(), token[(separator + 1)..].ToLowerInvariant()));
+            else
+                text.Add(token);
+        }
+        return (filters, text);
+    }
+
+    private static bool MatchesFilters(
+        InstalledGame game,
+        IReadOnlyList<(string Key, string Value)> filters,
+        IReadOnlyDictionary<string, GameReadinessState>? readiness,
+        IReadOnlySet<GameInstallId>? updateable)
+    {
+        foreach (var (key, value) in filters)
+        {
+            var matches = key switch
+            {
+                "store" => Normalize(game.StoreBadge) == value ||
+                           Normalize(game.Store.ToString()) == value,
+                "launcher" => Normalize(game.LauncherBadge) == value,
+                "engine" => Normalize(game.Engine.ToString()) == value ||
+                            game.Engine == GameEngine.UnrealLegacy && value == "unreal",
+                "has" when value == "update" => updateable?.Contains(game.InstallId) == true,
+                "status" => MatchesStatus(game, value, readiness),
+                _ => true
+            };
+            if (!matches) return false;
+        }
+        return true;
+    }
+
+    private static bool MatchesStatus(
+        InstalledGame game,
+        string value,
+        IReadOnlyDictionary<string, GameReadinessState>? readiness)
+    {
+        if (readiness is null || !readiness.TryGetValue(game.EffectiveInstallId, out var state)) return false;
+        return value switch
+        {
+            "ready" => state == GameReadinessState.Ready,
+            "warning" or "warnings" => state == GameReadinessState.ReadyWithWarnings,
+            "blocked" => state is GameReadinessState.NeedsConfiguration or GameReadinessState.NeedsUserSelection,
+            "unsupported" => state is GameReadinessState.Unsupported or GameReadinessState.Unavailable,
+            "failed" => state == GameReadinessState.Error,
+            _ => false
+        };
     }
 
     public static int Score(InstalledGame game, string normalizedQuery, IReadOnlyList<string>? tokens = null)

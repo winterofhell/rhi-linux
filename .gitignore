@@ -1,7 +1,5 @@
-# Original RHI reference repository
 /.reference/
 
-# .NET build output
 **/bin/
 **/obj/
 **/TestResults/
@@ -10,19 +8,16 @@
 /dist/
 /release/
 
-# Coverage
 **/coverage/
 *.coverage
 *.coveragexml
 coverage.json
 coverage.info
 
-# NuGet packages
 *.nupkg
 *.snupkg
 packages/
 
-# IDE files
 .vs/
 .idea/
 .vscode/
@@ -31,14 +26,12 @@ packages/
 *.userosscache
 *.sln.docstates
 
-# Local environment and secrets
 .env
 .env.*
 !.env.example
 appsettings.Local.json
 secrets.json
 
-# Logs and temporary files
 *.log
 *.tmp
 *.temp
@@ -49,22 +42,18 @@ secrets.json
 *.orig
 *.rej
 
-# Crash dumps
 core
 core.*
 *.dmp
 
-# Generated packages
 *.AppImage
 *.pkg.tar.*
 *.tar.zst
 AppDir/
 
-# OS files
 .DS_Store
 Thumbs.db
 
-# Downloaded binaries and archives
 *.dll
 *.exe
 *.pdb
@@ -74,6 +63,5 @@ Thumbs.db
 *.src.tar.*
 /pkg/
 
-# Explicitly allowed test fixtures
 !tests/fixtures/**/*.dll
 !tests/fixtures/**/*.exe

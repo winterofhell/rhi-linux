@@ -1,0 +1,44 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RhiLinux.Gui.FirstRunDialog"
+        Title="Welcome to RHI Linux" Width="620" Height="560" MinWidth="520" MinHeight="440"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="8">
+      <TextBlock Text="Welcome to RHI Linux" Classes="pageTitle" />
+      <TextBlock Text="Choose the local game sources RHI should keep up to date. No account or network connection is required."
+                 Classes="secondary" TextWrapping="Wrap" />
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" Margin="0,20,0,16" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="10">
+        <TextBlock Text="Detected sources" Classes="sectionTitle" />
+        <ItemsControl ItemsSource="{Binding Sources}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="card subtle" Margin="0,0,0,8">
+                <Grid ColumnDefinitions="Auto,140,*,Auto" ColumnSpacing="12">
+                  <CheckBox IsChecked="{Binding Enabled, Mode=TwoWay}"
+                            AutomationProperties.Name="{Binding EnableAutomationName}" />
+                  <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="2" Text="{Binding Status}" Classes="secondary" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="3" Text="{Binding GameCountText}" Classes="secondary" VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <Border Classes="emptyState" IsVisible="{Binding NothingDetected}" Padding="18">
+          <StackPanel Spacing="6">
+            <TextBlock Text="No supported game installations were found" FontWeight="SemiBold" />
+            <TextBlock Text="Add a game manually, add a custom source location in Settings, or refresh detection later."
+                       Classes="secondary" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+      <Button Grid.Column="1" Content="Add a game manually" Classes="secondary" Click="AddManual_Click" />
+      <Button Grid.Column="2" Content="Continue" Classes="primary" Click="Continue_Click" />
+    </Grid>
+  </Grid>
+</Window>

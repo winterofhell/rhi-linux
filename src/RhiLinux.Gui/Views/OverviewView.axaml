@@ -1,0 +1,101 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="using:RhiLinux.Core"
+             x:Class="RhiLinux.Gui.Views.OverviewView">
+  <ScrollViewer IsVisible="{Binding ShowOverviewPage}" Classes="pageScroll"
+                IsHitTestVisible="{Binding ShowOverviewPage}">
+    <StackPanel Spacing="16" MaxWidth="920" Margin="24,20,28,48">
+      <TextBlock Text="Overview" Classes="pageTitle" />
+      <TextBlock Text="{Binding OverviewSummary}" Classes="secondary" TextWrapping="Wrap" />
+
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Library summary" Classes="sectionTitle" />
+          <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="12">
+            <StackPanel Spacing="2">
+              <TextBlock Text="{Binding OverviewReadyCount}" FontSize="24" FontWeight="SemiBold" />
+              <TextBlock Text="Ready games" Classes="secondary" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="2">
+              <TextBlock Text="{Binding OverviewNeedsAttentionCount}" FontSize="24" FontWeight="SemiBold" />
+              <TextBlock Text="Need attention" Classes="secondary" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="2">
+              <TextBlock Text="{Binding OverviewUnsupportedReadinessCount}" FontSize="24" FontWeight="SemiBold" />
+              <TextBlock Text="Unsupported" Classes="secondary" />
+            </StackPanel>
+            <StackPanel Grid.Row="1" Spacing="2">
+              <TextBlock Text="{Binding OverviewUpdateCount}" FontSize="24" FontWeight="SemiBold" />
+              <TextBlock Text="Component updates" Classes="secondary" />
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
+              <TextBlock Text="{Binding OverviewRecoveryCount}" FontSize="24" FontWeight="SemiBold" />
+              <TextBlock Text="Recoveries required" Classes="secondary" />
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="2" Spacing="2">
+              <TextBlock Text="{Binding OverviewEnabledSourceCount}" FontSize="24" FontWeight="SemiBold" />
+              <TextBlock Text="Enabled sources" Classes="secondary" />
+            </StackPanel>
+            <TextBlock Grid.Row="2" Grid.ColumnSpan="3" Text="{Binding OverviewAttentionSummary}"
+                       Classes="secondary" TextWrapping="Wrap" />
+          </Grid>
+          <WrapPanel Orientation="Horizontal" Classes="button-row">
+            <Button Content="Open ready games" Classes="compact secondary button-row-item"
+                    Click="OpenReadyGames_Click" />
+          </WrapPanel>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Profiles and activity" Classes="sectionTitle" />
+          <TextBlock Text="{Binding ProfilesNeedingReviewCount, StringFormat='{}{0} profiles need review'}" Classes="secondary" />
+          <TextBlock Text="{Binding OverviewRecentOperationCount, StringFormat='{}{0} recent operations'}" Classes="secondary" />
+          <ItemsControl ItemsSource="{Binding RecentOperations}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto" Margin="0,4" ColumnSpacing="8">
+                  <TextBlock Text="{Binding Timestamp, StringFormat='{}{0:g}'}" Classes="secondary" />
+                  <TextBlock Grid.Column="1" Text="{Binding GameName}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Grid.Column="2" Text="{Binding Outcome}" Classes="secondary" />
+                  <WrapPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Classes="button-row" Margin="0,4,0,0">
+                    <Button Content="View result" Classes="compact quiet button-row-item" Click="ViewActivityResult_Click" />
+                    <Button Content="View files" Classes="compact quiet button-row-item" IsVisible="{Binding HasFiles}"
+                            Click="ViewActivityFiles_Click" />
+                    <Button Content="Copy launch configuration" Classes="compact quiet button-row-item"
+                            IsVisible="{Binding HasLaunchConfiguration}" Click="CopyActivityLaunch_Click" />
+                  </WrapPanel>
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Source status" Classes="sectionTitle" />
+          <TextBlock Text="{Binding OverviewSourceSummary}" Classes="secondary" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Components and updates" Classes="sectionTitle" />
+          <TextBlock Text="{Binding OverviewUpdateSummary}" Classes="secondary" TextWrapping="Wrap" />
+          <Button Content="Open Updates" Classes="compact secondary" HorizontalAlignment="Left"
+                  Click="OpenUpdates_Click" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Recent diagnostics" Classes="sectionTitle" />
+          <TextBlock Text="{Binding OverviewDiagnosticSummary}" Classes="secondary" TextWrapping="Wrap" />
+          <Button Content="Open Diagnostics" Classes="compact secondary" HorizontalAlignment="Left"
+                  Click="OpenDiagnostics_Click" />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

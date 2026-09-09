@@ -87,14 +87,17 @@ public sealed class StackStatusService(HttpClient httpClient, XdgPaths paths)
         var canInstallRenoSetup = (artifacts.CanAcquireRenoSetup || artifacts.CanAcquireRenoDx) &&
             IsUsable(ComponentKind.ReShade) && IsUsable(ComponentKind.RenoDx) &&
             artifacts.Artifacts.Any(x => x.Component == ComponentKind.RenoDx);
+        var canInstallReShade = artifacts.Artifacts.Any(x =>
+                x.Component == ComponentKind.ReShade && x.Support != ArtifactSupportKind.Unavailable) &&
+            IsUsable(ComponentKind.ReShade);
         var canInstallOptiScaler = eligibility.CanInstall && artifacts.CanAcquireOptiScaler &&
             IsUsable(ComponentKind.OptiScaler);
         var canInstall = proxy.HasSafeProxy && !ownershipUnavailable &&
-            (canInstallRenoSetup || canInstallOptiScaler);
+            (canInstallRenoSetup || canInstallReShade || canInstallOptiScaler);
         var summary = !proxy.HasSafeProxy ? proxy.Reason : !artifacts.IsFullyAutomatic && !artifacts.CanAcquireRenoDx
             ? "One or more required official files could not be found."
             : ownershipUnavailable ? "Ownership metadata could not be verified, so changes are blocked."
-            : !canInstallRenoSetup && !canInstallOptiScaler
+            : !canInstallRenoSetup && !canInstallReShade && !canInstallOptiScaler
                 ? "No safe automatic setup is available right now."
             : adjusted.Any(x => x.Lifecycle == ComponentLifecycleState.RepairRequired ||
                 x.Health is ComponentHealth.Broken or ComponentHealth.PartiallyInstalled or

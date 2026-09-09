@@ -29,7 +29,6 @@
           <SolidColorBrush x:Key="BadgeUpdateBrush" Color="#FFE8F0FF" />
           <SolidColorBrush x:Key="BadgeRepairBrush" Color="#FFFFF4CE" />
           <SolidColorBrush x:Key="BadgeBlockedBrush" Color="#FFFDEBEC" />
-          <!-- Override Fluent expander/header resources that default to near-black -->
           <SolidColorBrush x:Key="ExpanderHeaderBackground" Color="#FFEBEEF3" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPointerOver" Color="#FFDFE4EC" />
           <SolidColorBrush x:Key="ExpanderHeaderBackgroundPressed" Color="#FFD3DAE4" />
@@ -115,6 +114,17 @@
   <Style Selector="Border.card.subtle">
     <Setter Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
   </Style>
+  <Style Selector="Border.providerChip">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="10" />
+    <Setter Property="Padding" Value="8,3" />
+  </Style>
+  <Style Selector="Border.providerChip > TextBlock">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+  </Style>
   <Style Selector="Border.card.component">
     <Setter Property="Padding" Value="16" />
     <Setter Property="MinHeight" Value="220" />
@@ -152,7 +162,6 @@
     <Setter Property="TextWrapping" Value="Wrap" />
   </Style>
 
-  <!-- Buttons: force ContentPresenter fills so Fluent black defaults never show -->
   <Style Selector="Button">
     <Setter Property="Background" Value="{DynamicResource ControlBrush}" />
     <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
@@ -206,7 +215,6 @@
   <Style Selector="Button.secondary /template/ ContentPresenter#PART_ContentPresenter">
     <Setter Property="Background" Value="{DynamicResource ControlBrush}" />
   </Style>
-
   <Style Selector="Button.quiet">
     <Setter Property="Background" Value="Transparent" />
     <Setter Property="BorderThickness" Value="0" />
@@ -241,7 +249,6 @@
     <Setter Property="Margin" Value="0,0,8,8" />
   </Style>
 
-  <!-- Expander headers (Advanced buttons): theme charcoal via Fluent resource overrides + ToggleButton#ExpanderHeader -->
   <Style Selector="Expander">
     <Setter Property="Background" Value="Transparent" />
     <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
@@ -277,7 +284,6 @@
     <Setter Property="Padding" Value="12,6" />
   </Style>
 
-  <!-- ComboBox: match control surface -->
   <Style Selector="ComboBox">
     <Setter Property="Background" Value="{DynamicResource ControlBrush}" />
     <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
@@ -315,7 +321,15 @@
     <Setter Property="MinHeight" Value="28" />
   </Style>
 
-  <!-- Modern thin scrollbars -->
+  <Style Selector="ScrollViewer">
+    <Setter Property="IsScrollInertiaEnabled" Value="True" />
+    <Setter Property="IsDeferredScrollingEnabled" Value="False" />
+  </Style>
+  <Style Selector="ScrollViewer.pageScroll">
+    <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+    <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+  </Style>
+
   <Style Selector="ScrollBar">
     <Setter Property="AllowAutoHide" Value="True" />
     <Setter Property="Opacity" Value="0.72" />
@@ -380,7 +394,6 @@
     <Setter Property="Background" Value="{DynamicResource ScrollBarThumbHoverBrush}" />
   </Style>
 
-  <!-- Sidebar game list: reserve scrollbar gutter so thumbs never sit on items -->
   <Style Selector="ListBox.gameList">
     <Setter Property="Background" Value="Transparent" />
     <Setter Property="BorderThickness" Value="0" />
@@ -439,7 +452,7 @@
                 Padding="12,10"
                 MinHeight="38"
                 ClipToBounds="True">
-          <ContentPresenter Name="PART_ContentPresenter"
+          <ContentPresenter Name="NavContentPresenter"
                             Content="{TemplateBinding Content}"
                             ContentTemplate="{TemplateBinding ContentTemplate}"
                             HorizontalContentAlignment="Left"
@@ -501,7 +514,7 @@
                 MinHeight="30"
                 ClipToBounds="True"
                 HorizontalAlignment="Left">
-          <ContentPresenter Name="PART_ContentPresenter"
+          <ContentPresenter Name="ChipContentPresenter"
                             Content="{TemplateBinding Content}"
                             ContentTemplate="{TemplateBinding ContentTemplate}"
                             HorizontalContentAlignment="Center"

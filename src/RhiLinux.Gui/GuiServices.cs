@@ -30,6 +30,8 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
     private readonly IReadOnlyList<string>? steamRoots;
     private readonly MultiSourceLibraryService? multiSource;
     private readonly XdgPaths paths;
+    private readonly LibraryCoordinator? coordinator;
+    private readonly string homeDirectory;
 
     public GameDiscoveryAdapter(
         SteamDiscoveryService service,
@@ -43,27 +45,75 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
         this.multiSource = multiSource;
         LibraryIndexStore = libraryIndexStore;
         this.paths = paths ?? new XdgPaths();
+        homeDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    public GameDiscoveryAdapter(
+        LibraryCoordinator coordinator,
+        XdgPaths paths,
+        IReadOnlyList<string>? steamRoots = null,
+        string? homeDirectory = null)
+    {
+        this.coordinator = coordinator;
+        this.paths = paths;
+        this.steamRoots = steamRoots;
+        service = new SteamDiscoveryService();
+        this.homeDirectory = homeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     }
 
     public IReadOnlyList<string>? ExtraSteamRoots { get; set; }
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? CustomRootsByProvider { get; set; }
     public ILibraryIndexStore? LibraryIndexStore { get; set; }
     public bool ForceFullAnalysis { get; set; }
     public bool UseAllSources { get; set; } = true;
     public IReadOnlySet<string>? EnabledProviders { get; set; }
     public IncrementalScanMetrics? LastMetrics => service.LastMetrics;
     public MultiSourceScanResult? LastMultiSourceResult { get; private set; }
+    public LibrarySnapshot? LastSnapshot { get; private set; }
     public IReadOnlyList<SourceDiagnostic> LastSourceDiagnostics { get; private set; } = [];
+    public bool WatchSources { get; set; } = true;
+
+    public async Task RebuildCacheAsync(CancellationToken cancellationToken = default)
+    {
+        if (coordinator is null) throw new InvalidOperationException("The SQLite library coordinator is not configured.");
+        LastSnapshot = (await coordinator.RebuildCacheAsync(cancellationToken).ConfigureAwait(false)).Snapshot;
+        LastSourceDiagnostics = LastSnapshot.Diagnostics;
+    }
 
     public async Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken)
     {
+        if (coordinator is not null)
+        {
+            var customRoots = new List<string>();
+            if (steamRoots is not null) customRoots.AddRange(steamRoots);
+            if (ExtraSteamRoots is not null) customRoots.AddRange(ExtraSteamRoots);
+            var context = SourceRootDiscovery.CreateContext(
+                homeDirectory,
+                enabledProviders: EnabledProviders,
+                customRootsByProvider: BuildCustomRoots(customRoots));
+            coordinator.Configure(context, EnabledProviders, overrides);
+            coordinator.SetWatchingEnabled(WatchSources);
+            var refresh = await coordinator.RefreshAsync(
+                LibraryRefreshScope.Full(ForceFullAnalysis ? "Forced GUI refresh" : "GUI refresh", ForceFullAnalysis),
+                cancellationToken).ConfigureAwait(false);
+            LastSnapshot = refresh.Snapshot;
+            LastSourceDiagnostics = refresh.Snapshot.Diagnostics;
+            var warnings = refresh.Snapshot.Diagnostics
+                .Where(diagnostic => diagnostic.Severity is SourceDiagnosticSeverity.Warning or SourceDiagnosticSeverity.Error)
+                .Select(diagnostic => diagnostic.Message)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return new(refresh.Snapshot.Games, [], [], warnings);
+        }
+
         if (UseAllSources && multiSource is not null)
         {
             var customRoots = new List<string>();
             if (steamRoots is not null) customRoots.AddRange(steamRoots);
             if (ExtraSteamRoots is not null) customRoots.AddRange(ExtraSteamRoots);
             var discoveryContext = SourceRootDiscovery.CreateContext(
-                customRoots: customRoots,
-                enabledProviders: EnabledProviders);
+                enabledProviders: EnabledProviders,
+                customRootsByProvider: BuildCustomRoots(customRoots));
             var multi = await multiSource.ScanAsync(
                 new MultiSourceScanRequest(
                     DiscoveryContext: discoveryContext,
@@ -104,6 +154,15 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
         return result with { Games = ApplyOverrides(result.Games, overrides) };
     }
 
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> BuildCustomRoots(IReadOnlyList<string> steamRoots)
+    {
+        var result = CustomRootsByProvider is null
+            ? new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+            : CustomRootsByProvider.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        if (steamRoots.Count > 0) result[SteamGameSourceProvider.ProviderId] = steamRoots;
+        return result;
+    }
+
     private static IReadOnlyDictionary<uint, GameOverride>? ToSteamAppOverrides(
         IReadOnlyDictionary<string, GameOverride> overrides)
     {
@@ -139,6 +198,7 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
             {
                 Executable = executable,
                 DeploymentDirectory = deployment,
+                Prefix = gameOverride.Prefix ?? game.Prefix,
                 SelectionReason = gameOverride.Executable is not null
                     ? "Selected because a persistent manual executable override is configured."
                     : game.SelectionReason,

@@ -218,7 +218,7 @@ public sealed class GameProfileCatalog
         new(
             "steam-1091500-cyberpunk-2077", 1091500, "Cyberpunk 2077", ["Cyberpunk2077"],
             "bin/x64/Cyberpunk2077.exe", "bin/x64", GameEngine.Unknown, "DirectX 12",
-            ["version.dll", "winmm.dll", "dxgi.dll", "d3d12.dll", "winhttp.dll", "wininet.dll", "dbghelp.dll"],
+            ["dxgi.dll", "winmm.dll", "version.dll", "d3d12.dll", "winhttp.dll", "wininet.dll", "dbghelp.dll"],
             ["dbghelp.dll"],
             [
                 "amd_ags_x64.dll",

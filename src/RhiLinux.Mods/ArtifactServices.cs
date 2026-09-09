@@ -360,6 +360,10 @@ public sealed class ArtifactDownloader(HttpClient httpClient, XdgPaths paths)
         {
             using var response = await httpClient.GetAsync(source, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
+            var finalUrl = response.RequestMessage?.RequestUri;
+            if (finalUrl is not null && !IsApprovedRedirectTarget(source, finalUrl))
+                throw new InvalidDataException(
+                    $"The download was redirected to '{finalUrl.Host}', which is not an approved upstream host.");
             if (response.Content.Headers.ContentLength > ArtifactValidator.MaxDownloadSizeBytes)
                 throw new InvalidDataException("Downloaded artifact exceeds the 2 GiB safety limit.");
             await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
@@ -368,7 +372,7 @@ public sealed class ArtifactDownloader(HttpClient httpClient, XdgPaths paths)
             if (!string.IsNullOrWhiteSpace(expectedSha256))
             {
                 var actual = await Sha256Async(temporary, cancellationToken);
-                if (!actual.Equals(expectedSha256.Replace("sha256:", string.Empty, StringComparison.OrdinalIgnoreCase), StringComparison.OrdinalIgnoreCase))
+                if (!actual.Equals(expectedSha256.Replace("sha256:", string.Empty, StringComparison.OrdinalIgnoreCase).Trim(), StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Downloaded artifact checksum does not match the upstream digest.");
             }
             File.Move(temporary, target, true);
@@ -382,6 +386,20 @@ public sealed class ArtifactDownloader(HttpClient httpClient, XdgPaths paths)
         await using var input = File.OpenRead(path);
         return Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken)).ToLowerInvariant();
     }
+
+    private static bool IsApprovedRedirectTarget(Uri original, Uri finalUrl)
+    {
+        if (finalUrl.Scheme != Uri.UriSchemeHttps) return false;
+        if (finalUrl.Host.Equals(original.Host, StringComparison.OrdinalIgnoreCase)) return true;
+        if (AllowedHosts.Contains(finalUrl.Host)) return true;
+        return IsGitHubOwnedHost(original.Host) &&
+               finalUrl.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGitHubOwnedHost(string host) =>
+        host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith(".github.io", StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
 }
 
 public static class ArtifactValidator

@@ -40,9 +40,9 @@ public static class HdrReadinessDoctor
         {
             return new HdrReadinessReport(
                 HdrReadinessStatus.ReadyWithManualStep,
-                "HDR may work with Gamescope and Proton Wayland variables after display HDR is enabled.",
+                "HDR may work with Gamescope after display HDR is enabled. Proton Wayland is recommended only for tested game profiles.",
                 evidence,
-                [SteamLaunchOptionService.ProtonEnableWayland, SteamLaunchOptionService.DxvkHdr]);
+                [SteamLaunchOptionService.DxvkHdr]);
         }
 
         if (!capabilities.HasGamescope)
@@ -51,7 +51,7 @@ public static class HdrReadinessDoctor
                 HdrReadinessStatus.MissingGamescope,
                 "Gamescope was not found. Install gamescope before using HDR launch presets.",
                 evidence,
-                [SteamLaunchOptionService.ProtonEnableWayland, SteamLaunchOptionService.DxvkHdr]);
+                [SteamLaunchOptionService.DxvkHdr]);
         }
 
         if (capabilities.SessionType.Equals("x11", StringComparison.OrdinalIgnoreCase))
@@ -76,6 +76,6 @@ public static class HdrReadinessDoctor
             HdrReadinessStatus.DriverCapabilityUnknown,
             "HDR capability could not be confirmed from local evidence alone.",
             evidence,
-            [SteamLaunchOptionService.ProtonEnableWayland, SteamLaunchOptionService.DxvkHdr]);
+            [SteamLaunchOptionService.DxvkHdr]);
     }
 }

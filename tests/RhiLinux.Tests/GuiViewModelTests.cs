@@ -20,6 +20,8 @@ public sealed class GuiViewModelTests
         var viewModel = Create(discovery);
         await viewModel.InitializeAsync();
 
+        Assert.Equal("Steam", viewModel.Games.Single(game => game.AppId == 10).IdentitySummary);
+
         viewModel.LibraryFilter = "Heroic";
         Assert.Equal("Heroic Epic", Assert.Single(viewModel.FilteredGames).Name);
         viewModel.LibraryFilter = "Legendary";
@@ -75,6 +77,54 @@ public sealed class GuiViewModelTests
         Assert.True(discovery.ScanCount > scansAfterInit);
         Assert.False(viewModel.ShowWelcome);
         Assert.False(viewModel.ShowNoGames);
+    }
+
+    [Fact]
+    public async Task OverviewEvaluatesReadinessAcrossEntireLibrary()
+    {
+        var ready = Game(10, "Ready");
+        var attention = Game(20, "Attention");
+        var unsupported = Game(30, "Unsupported");
+        var readiness = new FixedReadinessService(new Dictionary<uint, GameReadinessState>
+        {
+            [ready.AppId] = GameReadinessState.Ready,
+            [attention.AppId] = GameReadinessState.NeedsConfiguration,
+            [unsupported.AppId] = GameReadinessState.Unsupported
+        });
+        var viewModel = Create(new FakeDiscovery([ready, attention, unsupported]), readinessService: readiness);
+
+        await viewModel.InitializeAsync();
+        await WaitUntilAsync(() => viewModel.OverviewReadinessPendingCount == 0);
+
+        Assert.Equal(1, viewModel.OverviewReadyCount);
+        Assert.Equal(1, viewModel.OverviewNeedsAttentionCount);
+        Assert.Equal(1, viewModel.OverviewUnsupportedReadinessCount);
+        Assert.Equal(3, readiness.EvaluationCount);
+    }
+
+    [Fact]
+    public async Task SwitchingGamesClearsPreviousGamesUpdateRowsImmediately()
+    {
+        var first = Game(10, "First");
+        var second = Game(20, "Second");
+        var secondResult = new TaskCompletionSource<GameReadinessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readiness = new FixedReadinessService(new Dictionary<uint, GameReadinessState>
+        {
+            [first.AppId] = GameReadinessState.Ready
+        }, new Dictionary<uint, Task<GameReadinessResult>>
+        {
+            [second.AppId] = secondResult.Task
+        }, outdatedAppId: first.AppId);
+        var viewModel = Create(new FakeDiscovery([first, second]), readinessService: readiness);
+        await viewModel.InitializeAsync();
+        await WaitUntilAsync(() => viewModel.ComponentUpdates.Count > 0);
+
+        await viewModel.SelectAsync(second);
+
+        Assert.Empty(viewModel.ComponentUpdates);
+        Assert.Null(viewModel.Readiness.Result);
+        secondResult.SetResult(ReadinessResult(second, GameReadinessState.Ready, ComponentHealth.Available));
+        await WaitUntilAsync(() => !viewModel.IsEvaluatingLibraryReadiness);
     }
 
     [Fact]
@@ -183,6 +233,38 @@ public sealed class GuiViewModelTests
     }
 
     [Fact]
+    public async Task CancelledRefreshClearsTheSelectionLoadingIndicator()
+    {
+        var discovery = new ControlledDiscovery();
+        var viewModel = new MainViewModel(discovery, new FakeStatusProvider(), new MemoryStateStore(),
+            new MemoryPreferencesStore(new UiPreferences()));
+        await viewModel.SelectAsync(Game(10, "First"));
+
+        var refresh = viewModel.RefreshAsync();
+        await discovery.WaitForRequestAsync();
+        Assert.True(viewModel.IsSelectionLoading);
+
+        discovery.Cancel();
+        await refresh;
+
+        Assert.False(viewModel.IsSelectionLoading);
+    }
+
+    [Fact]
+    public void ReadinessShortcutFiltersAreSelectableLibraryFilters()
+    {
+        var viewModel = new MainViewModel(new FakeDiscovery([]), new FakeStatusProvider(), new MemoryStateStore(),
+            new MemoryPreferencesStore(new UiPreferences()));
+
+        foreach (var filter in new[] { "Ready", "Needs attention", "Recovery required" })
+        {
+            Assert.Contains(filter, viewModel.LibraryFilters);
+            viewModel.FilterLibraryForReadiness(filter);
+            Assert.Equal(filter, viewModel.LibraryFilter);
+        }
+    }
+
+    [Fact]
     public async Task StartupReconcilesStalePersistedGameList()
     {
         var stale = PersistedGameEntry.FromInstalledGame(Game(10, "Uninstalled"));
@@ -263,6 +345,11 @@ public sealed class GuiViewModelTests
     {
         var unavailable = Card(ComponentHealth.Available);
         Assert.False(unavailable.CanInstall);
+        var cleanReShade = new ComponentCardViewModel(new ComponentStatus(
+            ComponentKind.ReShade, ComponentHealth.Available, null, [], "Not installed.",
+            Lifecycle: ComponentLifecycleState.NotInstalled));
+        Assert.True(cleanReShade.CanInstall);
+        Assert.Equal("Install", cleanReShade.ActionText);
         var automatic = Card(ComponentHealth.DownloadRequired, Resolved(ComponentKind.RenoDx));
         Assert.True(automatic.CanInstall);
         Assert.False(unavailable.CanRemove);
@@ -288,11 +375,12 @@ public sealed class GuiViewModelTests
         var foreign = new ComponentCardViewModel(new ComponentStatus(ComponentKind.ReShade, ComponentHealth.Installed, null, ["dxgi.dll"], "Detected on disk but not owned by RHI Linux; removal is disabled.",
             InstallationVerification.RecognizedExisting, Lifecycle: ComponentLifecycleState.InstalledUnmanaged,
             Ownership: OwnershipHealth.Unmanaged, Update: UpdateAvailability.ManualInstallationDetected));
-        Assert.False(foreign.CanRemove);
+        Assert.True(foreign.CanRemove);
         Assert.False(foreign.CanUpdate);
-        Assert.True(foreign.NoActionNeeded);
+        Assert.False(foreign.NoActionNeeded);
         Assert.Equal("Installed manually", foreign.State);
-        Assert.Equal("No action needed", foreign.Explanation);
+        Assert.Equal("Remove", foreign.ActionText);
+        Assert.Contains("recovery plan", foreign.Explanation, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -563,9 +651,16 @@ public sealed class GuiViewModelTests
     }
 
     [Fact]
-    public async Task ExecutableOrFolderOverrideAutomaticallyRescansSelectedGame()
+    public async Task ExecutableOrFolderOverrideReevaluatesOnlySelectedGame()
     {
-        var game = Game(10, "First");
+        using var temp = new TestDirectory();
+        var root = temp.Directory("game");
+        var original = temp.Pe("game/game.exe");
+        var replacement = temp.Pe("game/bin/other.exe");
+        var deployment = Path.GetDirectoryName(replacement)!;
+        var game = new InstalledGame(new("override-game"), "First", GameStore.Steam, GameLauncher.Steam,
+            "10", 10, root, original, null, root, GameBinaryPlatform.Windows, CompatibilityEnvironment.Proton,
+            [], null, [], DetectionConfidence.High);
         var discovery = new FakeDiscovery([game]);
         var statuses = new CountingStatusProvider();
         var viewModel = Create(discovery, statusProvider: statuses);
@@ -573,10 +668,11 @@ public sealed class GuiViewModelTests
         var initialScans = discovery.ScanCount;
         var initialDetections = statuses.Count;
 
-        await viewModel.SaveOverridesAsync("/fixture/game/10/other.exe", "/fixture/game/10/bin");
+        await viewModel.SaveOverridesAsync(replacement, deployment);
 
-        Assert.Equal(initialScans + 1, discovery.ScanCount);
+        Assert.Equal(initialScans, discovery.ScanCount);
         Assert.Equal(initialDetections + 1, statuses.Count);
+        Assert.Equal(replacement, viewModel.SelectedGame?.Executable);
         Assert.False(viewModel.IsSelectionLoading);
     }
 
@@ -740,6 +836,7 @@ public sealed class GuiViewModelTests
             Assert.Equal(action, viewModel.PrimaryAction);
             Assert.Equal(text, viewModel.PrimaryActionText);
             Assert.True(viewModel.CanInstallRecommendedStack);
+            Assert.Equal(action != PrimaryActionKind.Remove, viewModel.CanRunPrimarySetup);
         }
     }
 
@@ -909,7 +1006,7 @@ public sealed class GuiViewModelTests
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "RhiLinux.sln"))) directory = directory.Parent;
         Assert.NotNull(directory);
-        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "MainWindow.axaml.cs"));
+        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "Views", "GameDetailsView.axaml.cs"));
         var normalStart = source.IndexOf("ComponentAction_Click", StringComparison.Ordinal);
         var troubleshootingStart = source.IndexOf("UseLocalArtifact_Click", normalStart, StringComparison.Ordinal);
         var normalFlow = source[normalStart..troubleshootingStart];
@@ -930,6 +1027,7 @@ public sealed class GuiViewModelTests
 
         Assert.Equal("Remove", viewModel.ActionButtonText);
         Assert.Equal("Ready to remove", viewModel.Title);
+        Assert.Equal("Removal plan", viewModel.PlanSectionTitle);
         Assert.DoesNotContain("dry", viewModel.ExecutionHint, StringComparison.OrdinalIgnoreCase);
         viewModel.Begin();
         Assert.True(viewModel.IsRunning);
@@ -1111,7 +1209,7 @@ public sealed class GuiViewModelTests
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "RhiLinux.sln")))
             directory = directory.Parent;
         Assert.NotNull(directory);
-        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "MainWindow.axaml"));
+        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "Views", "GameDetailsView.axaml"));
         var action = source.IndexOf("Content=\"{Binding ActionText}\"", StringComparison.Ordinal);
         var advanced = source.IndexOf("Header=\"Advanced details\"", StringComparison.Ordinal);
         var hash = source.IndexOf("StringFormat='SHA-256: {0}'", StringComparison.Ordinal);
@@ -1130,7 +1228,7 @@ public sealed class GuiViewModelTests
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "RhiLinux.sln")))
             directory = directory.Parent;
         Assert.NotNull(directory);
-        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "MainWindow.axaml"));
+        var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "Views", "GameDetailsView.axaml"));
         var advanced = source.IndexOf("Header=\"Advanced game details\"", StringComparison.Ordinal);
         var executable = source.IndexOf("Text=\"{Binding ExecutableDisplay}\"", StringComparison.Ordinal);
         var deployment = source.IndexOf("Text=\"{Binding DeploymentDisplay}\"", StringComparison.Ordinal);
@@ -1139,6 +1237,9 @@ public sealed class GuiViewModelTests
         Assert.True(advanced >= 0 && advanced < executable);
         Assert.True(executable < deployment && deployment < prefix);
         Assert.DoesNotContain("Header=\"Advanced game details\" IsExpanded=\"True\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Advanced executable details", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"Issues\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Readiness.Issues", source, StringComparison.Ordinal);
     }
 
     private static ComponentCardViewModel Card(ComponentHealth health, ResolvedArtifact? resolved = null) =>
@@ -1160,6 +1261,22 @@ public sealed class GuiViewModelTests
         params (ComponentKind Component, ComponentHealth Health)[] components) =>
         components.Select(x => new ComponentStatus(x.Component, x.Health,
             x.Health == ComponentHealth.Available ? null : "1", [], $"{x.Component} {x.Health}")).ToArray();
+    private static GameReadinessResult ReadinessResult(
+        InstalledGame game,
+        GameReadinessState state,
+        ComponentHealth health) => new(
+        game.InstallId,
+        state,
+        state.ToString(),
+        "Review",
+        game.ToDeploymentTarget(),
+        Statuses(game.AppId, health),
+        [],
+        null,
+        null,
+        null,
+        DateTimeOffset.UtcNow,
+        game.EffectiveInstallId);
     private static ResolvedArtifact Resolved(ComponentKind component, ArtifactSupportKind support = ArtifactSupportKind.ExactGameProfile)
     {
         var selection = new ArtifactSelection(component, "1", new Uri("https://github.com/example/project/releases/download/v1/file.addon64"),
@@ -1172,13 +1289,15 @@ public sealed class GuiViewModelTests
         MemoryPreferencesStore? preferences = null,
         IComponentStatusProvider? statusProvider = null,
         IStackStatusProvider? stackStatusProvider = null,
-        Func<InstalledGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder = null) => new(
+        Func<InstalledGame, CancellationToken, Task<DeploymentPlan>>? recommendedPlanBuilder = null,
+        IGameReadinessService? readinessService = null) => new(
         discovery,
         statusProvider ?? new FakeStatusProvider(),
         new MemoryStateStore(),
         preferences ?? new MemoryPreferencesStore(new UiPreferences()),
         stackStatusProvider: stackStatusProvider,
-        recommendedPlanBuilder: recommendedPlanBuilder);
+        recommendedPlanBuilder: recommendedPlanBuilder,
+        readinessService: readinessService);
     private static InstalledGame Game(uint id, string name, GameEngine engine = GameEngine.Unknown) =>
         InstalledGame.FromSteamGame(new SteamGame(
             id, name, "/fixture/steam", "/fixture/library", $"/fixture/game/{id}", $"/fixture/pfx/{id}",
@@ -1207,6 +1326,7 @@ public sealed class GuiViewModelTests
         }
         public Task WaitForRequestAsync() => requested.Task;
         public void Complete(IReadOnlyList<InstalledGame> games) => completion.TrySetResult(new(games, [], [], []));
+        public void Cancel() => completion.TrySetCanceled();
     }
 
     private sealed class FakeStatusProvider : IComponentStatusProvider
@@ -1218,6 +1338,31 @@ public sealed class GuiViewModelTests
             new(ComponentKind.RenoDx, ComponentHealth.Available, null, [], "fixture"),
             new(ComponentKind.OptiScaler, ComponentHealth.Available, null, [], "fixture")
         ]);
+    }
+
+    private sealed class FixedReadinessService(
+        IReadOnlyDictionary<uint, GameReadinessState> states,
+        IReadOnlyDictionary<uint, Task<GameReadinessResult>>? pending = null,
+        uint? outdatedAppId = null) : IGameReadinessService
+    {
+        private readonly HashSet<string> evaluatedInstallIds = new(StringComparer.Ordinal);
+        private readonly object gate = new();
+        public int EvaluationCount { get { lock (gate) return evaluatedInstallIds.Count; } }
+
+        public Task<GameReadinessResult> EvaluateAsync(
+            InstalledGame game,
+            GameReadinessEvaluationOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            lock (gate) evaluatedInstallIds.Add(game.EffectiveInstallId);
+            if (pending?.TryGetValue(game.AppId, out var task) == true) return task;
+            var state = states[game.AppId];
+            var health = game.AppId == outdatedAppId ? ComponentHealth.Outdated : ComponentHealth.Available;
+            return Task.FromResult(ReadinessResult(game, state, health));
+        }
+
+        public void Invalidate(GameInstallId installId) { }
+        public void InvalidateAll() { }
     }
 
     private sealed class ControlledStatusProvider : IComponentStatusProvider

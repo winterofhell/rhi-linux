@@ -1,4 +1,5 @@
 using Avalonia;
+using RhiLinux.Core;
 
 namespace RhiLinux.Gui;
 
@@ -10,6 +11,12 @@ internal static class Program
     public static void Main(string[] args)
     {
         SteamRoots = ParseSteamRoots(args);
+        using var instance = SingleInstanceGuard.Acquire(new XdgPaths().AppDataDirectory);
+        if (!instance.IsPrimary)
+        {
+            Console.Error.WriteLine("RHI Linux is already running. Use the existing window to manage game files.");
+            return;
+        }
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
     public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>().UsePlatformDetect().LogToTrace();

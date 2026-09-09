@@ -219,7 +219,9 @@ public sealed record SteamGame(
     {
         get
         {
-            var parts = new List<string> { StoreBadge, LauncherBadge };
+            var parts = new List<string> { StoreBadge };
+            if (!LauncherBadge.Equals(StoreBadge, StringComparison.OrdinalIgnoreCase))
+                parts.Add(LauncherBadge);
             if (Engine != GameEngine.Unknown) parts.Add(Engine.ToString());
             if (IsNativeLinux || Platform == GameBinaryPlatform.Linux)
                 parts.Add("Native");
@@ -572,7 +574,10 @@ public sealed record OrphanedLegacyStateEntry(
     string Reason,
     string? PayloadJson = null);
 
-public sealed record GameOverride(string? Executable, string? DeploymentDirectory);
+public sealed record GameOverride(
+    string? Executable,
+    string? DeploymentDirectory,
+    string? Prefix = null);
 
 public sealed record ManagedFile(
     string RelativePath,
@@ -712,6 +717,9 @@ public sealed class DeploymentPlan
     public List<DeploymentOperation> Operations { get; init; } = [];
     public List<DeploymentFileDecision> FileDecisions { get; init; } = [];
     public List<ComponentStateExpectation> ExpectedComponentStates { get; init; } = [];
+    public string? Fingerprint { get; set; }
+    public DeploymentPlanPreconditions? ApprovedPreconditions { get; set; }
+    public DateTimeOffset? ApprovedAt { get; set; }
 }
 
 public enum OperationLifecycleState

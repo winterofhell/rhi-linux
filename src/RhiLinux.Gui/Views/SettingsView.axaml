@@ -1,0 +1,144 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="using:RhiLinux.Core"
+             x:Class="RhiLinux.Gui.Views.SettingsView">
+  <ScrollViewer IsVisible="{Binding ShowSettingsPage}" Classes="pageScroll"
+                IsHitTestVisible="{Binding ShowSettingsPage}">
+    <StackPanel Spacing="16" MaxWidth="920" Margin="24,20,28,48">
+      <TextBlock Text="Settings" Classes="pageTitle" />
+      <TextBlock Text="Configure game sources, download cache, and application preferences."
+                 Classes="secondary" TextWrapping="Wrap" />
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Game sources" Classes="sectionTitle" />
+          <CheckBox Content="Scan all configured sources" IsChecked="{Binding ScanAllSources, Mode=TwoWay}"
+                    ToolTip.Tip="Discover Steam, Heroic, Legendary, Lutris, Bottles, Minigalaxy, and manual installations" />
+          <TextBlock Classes="help" Text="Steam remains available when multi-source scanning is disabled. Other providers are skipped until enabled again." />
+          <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10" ColumnSpacing="12">
+            <TextBlock Text="Steam" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="Always enabled" Classes="secondary" VerticalAlignment="Center" />
+            <TextBlock Grid.Row="1" Text="Heroic" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <CheckBox Grid.Row="1" Grid.Column="1" Content="Enabled" IsChecked="{Binding EnableHeroic, Mode=TwoWay}" />
+            <TextBlock Grid.Row="2" Text="Legendary" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <CheckBox Grid.Row="2" Grid.Column="1" Content="Enabled" IsChecked="{Binding EnableLegendary, Mode=TwoWay}" />
+            <TextBlock Grid.Row="3" Text="Lutris" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <CheckBox Grid.Row="3" Grid.Column="1" Content="Enabled" IsChecked="{Binding EnableLutris, Mode=TwoWay}" />
+            <TextBlock Grid.Row="4" Text="Bottles" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <CheckBox Grid.Row="4" Grid.Column="1" Content="Enabled" IsChecked="{Binding EnableBottles, Mode=TwoWay}" />
+            <TextBlock Grid.Row="5" Text="Minigalaxy" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <CheckBox Grid.Row="5" Grid.Column="1" Content="Enabled" IsChecked="{Binding EnableMinigalaxy, Mode=TwoWay}" />
+            <TextBlock Grid.Row="6" Text="Manual" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <TextBlock Grid.Row="6" Grid.Column="1" Text="Always enabled when multi-source scanning is on" Classes="secondary" VerticalAlignment="Center" />
+          </Grid>
+          <TextBlock Text="Additional Steam library" Classes="secondary" Margin="0,4,0,0" />
+          <TextBox Text="{Binding AdditionalSteamLibrary, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                   Watermark="/path/to/additional/steamapps parent"
+                   ToolTip.Tip="Use this only when Steam libraries are stored outside automatically detected locations." />
+          <TextBlock Classes="help" Text="Changing providers or custom roots saves preferences and schedules a targeted library refresh." />
+          <Expander Header="Custom source locations" Classes="compact">
+            <Grid Margin="0,8,0,0" ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="8" ColumnSpacing="12">
+              <TextBlock Text="Heroic" VerticalAlignment="Center" />
+              <TextBox Grid.Column="1" Text="{Binding HeroicCustomRoot, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Watermark="Optional Heroic data root" />
+              <TextBlock Grid.Row="1" Text="Legendary" VerticalAlignment="Center" />
+              <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding LegendaryCustomRoot, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Watermark="Optional Legendary config root" />
+              <TextBlock Grid.Row="2" Text="Lutris" VerticalAlignment="Center" />
+              <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding LutrisCustomRoot, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Watermark="Optional Lutris config root" />
+              <TextBlock Grid.Row="3" Text="Bottles" VerticalAlignment="Center" />
+              <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding BottlesCustomRoot, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Watermark="Optional Bottles data root" />
+              <TextBlock Grid.Row="4" Text="Minigalaxy" VerticalAlignment="Center" />
+              <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding MinigalaxyCustomRoot, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" Watermark="Optional Minigalaxy config root" />
+            </Grid>
+          </Expander>
+          <Button Content="Rescan sources now" Classes="compact secondary" HorizontalAlignment="Left"
+                  IsEnabled="{Binding CanInteract}" Click="Refresh_Click"
+                  ToolTip.Tip="Rescan configured game sources immediately" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Download cache" Classes="sectionTitle" />
+          <TextBlock Classes="help"
+                     Text="Cache limit is the maximum disk space used for downloaded ReShade, RenoDX, and OptiScaler files. Files required by installed games are never removed automatically." />
+          <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8" ColumnSpacing="12">
+            <TextBlock Text="Current size" Classes="secondary" />
+            <TextBlock Grid.Column="1" Text="{Binding CacheSizeText}" />
+            <TextBlock Grid.Row="1" Text="Last cleanup" Classes="secondary" />
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding CacheCleanupText}" />
+            <TextBlock Grid.Row="2" Text="Size limit" Classes="secondary" VerticalAlignment="Center" />
+            <NumericUpDown Grid.Row="2" Grid.Column="1" Width="140" HorizontalAlignment="Left"
+                           Minimum="0.0009765625" Maximum="2097151" Increment="0.25" FormatString="0.## GiB"
+                           Value="{Binding CacheLimitGiB, Mode=TwoWay}" />
+          </Grid>
+          <WrapPanel Orientation="Horizontal" Classes="button-row">
+            <Button Content="Clear unused files" Classes="compact secondary button-row-item"
+                    IsEnabled="{Binding CanManageCache}" Click="ClearCache_Click"
+                    ToolTip.Tip="Remove unused cached downloads while keeping files still referenced by installed games" />
+            <Button Content="Verify cache" Classes="compact secondary button-row-item"
+                    IsEnabled="{Binding CanManageCache}" Click="VerifyCache_Click"
+                    ToolTip.Tip="Check cached downloads for damage without modifying game files" />
+            <Button Content="Open cache folder" Classes="compact secondary button-row-item"
+                    IsEnabled="{Binding CanManageCache}" Click="OpenCacheFolder_Click"
+                    ToolTip.Tip="Open the download cache directory in the file manager" />
+          </WrapPanel>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Readiness" Classes="sectionTitle" />
+          <CheckBox Content="Automatically evaluate readiness after library refresh"
+                    IsChecked="{Binding AutomaticallyEvaluateReadiness, Mode=TwoWay}"
+                    ToolTip.Tip="Evaluate the selected game after discovery without downloading files" />
+          <CheckBox Content="Show unsupported native games"
+                    IsChecked="{Binding ShowUnsupportedNativeGames, Mode=TwoWay}"
+                    ToolTip.Tip="Keep native Linux installs visible in the library list" />
+          <CheckBox Content="Warn before anti-cheat deployments"
+                    IsChecked="{Binding WarnBeforeAntiCheatDeployments, Mode=TwoWay}"
+                    ToolTip.Tip="Treat anti-cheat detections as blocking readiness issues" />
+          <CheckBox Content="Prefer existing managed component versions"
+                    IsChecked="{Binding PreferExistingManagedVersions, Mode=TwoWay}"
+                    ToolTip.Tip="Recommend keeping current managed installs when they are healthy" />
+          <CheckBox Content="Refresh artifact metadata on startup"
+                    IsChecked="{Binding RefreshArtifactMetadataOnStartup, Mode=TwoWay}"
+                    ToolTip.Tip="Allow automatic official source checks after selecting a game at startup" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Updates and discovery" Classes="sectionTitle" />
+          <CheckBox Content="Check for updates automatically"
+                    IsChecked="{Binding CheckForUpdatesAutomatically, Mode=TwoWay}"
+                    ToolTip.Tip="Checks official component sources after selecting a game. It does not modify game files." />
+          <TextBlock Classes="help" Text="Checks official component sources after startup selection. It does not modify game files." />
+          <Button Content="Refresh RenoDX catalog" Classes="compact secondary" HorizontalAlignment="Left"
+                  IsEnabled="{Binding CanManageCache}" Click="RefreshRenoDxCatalog_Click"
+                  ToolTip.Tip="Reload the official RenoDX Mods wiki catalog and refresh the selected game." />
+          <CheckBox Content="Reduce non-essential motion" IsChecked="{Binding ReduceMotion, Mode=TwoWay}"
+                    ToolTip.Tip="Disable fades and other decorative transitions" />
+          <Button Content="Reset settings to defaults" Classes="compact secondary" HorizontalAlignment="Left"
+                  Click="ResetSettings_Click"
+                  ToolTip.Tip="Restore cache limit, motion, update checks, and source defaults" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Data" Classes="sectionTitle" />
+          <Grid ColumnDefinitions="150,*" RowDefinitions="Auto" RowSpacing="8" ColumnSpacing="12">
+            <TextBlock Text="Profiles" Classes="secondary" />
+            <TextBlock Grid.Column="1" Text="Portable preferences only; no credentials, binaries, or logs." TextWrapping="Wrap" />
+          </Grid>
+          <WrapPanel Orientation="Horizontal" Classes="button-row">
+            <Button Content="Export profiles" Classes="compact secondary button-row-item" Click="ExportProfiles_Click" />
+            <Button Content="Import profiles" Classes="compact secondary button-row-item" Click="ImportProfiles_Click" />
+            <Button Content="Rebuild library cache" Classes="compact secondary button-row-item" Click="RebuildLibraryCache_Click" />
+            <Button Content="Run setup again" Classes="compact secondary button-row-item" Click="RunSetupAgain_Click" />
+          </WrapPanel>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

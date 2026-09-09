@@ -172,7 +172,9 @@ public sealed record InstalledGame(
     {
         get
         {
-            var parts = new List<string> { StoreBadge, LauncherBadge };
+            var parts = new List<string> { StoreBadge };
+            if (!LauncherBadge.Equals(StoreBadge, StringComparison.OrdinalIgnoreCase))
+                parts.Add(LauncherBadge);
             if (Engine != GameEngine.Unknown) parts.Add(Engine.ToString());
             if (IsNativeLinux || Platform == GameBinaryPlatform.Linux)
                 parts.Add("Native");
@@ -288,12 +290,26 @@ public sealed record GameSourceDiscoveryContext(
     string CacheHome,
     IReadOnlyDictionary<string, string?> Environment,
     IReadOnlyList<string> CustomRoots,
-    IReadOnlySet<string>? EnabledProviders = null);
+    IReadOnlySet<string>? EnabledProviders = null,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? CustomRootsByProvider = null)
+{
+    public IReadOnlyList<string> RootsForProvider(string providerId) =>
+        CustomRootsByProvider?.GetValueOrDefault(providerId) ?? CustomRoots;
+}
 
 public sealed record GameSourceScanContext(
     IReadOnlyDictionary<string, string> PreviousFingerprints,
     bool ForceFullScan,
-    int SchemaVersion);
+    int SchemaVersion,
+    IReadOnlySet<string>? Documents = null,
+    string? RootId = null,
+    int ParserVersion = 1)
+{
+    public bool IsTargeted => Documents is { Count: > 0 };
+
+    public bool IncludesDocument(string path) =>
+        Documents is null || Documents.Count == 0 || Documents.Contains(GameIdentity.NormalizePath(path));
+}
 
 public sealed record GameSourceScanResult(
     string ProviderId,

@@ -1,10 +1,64 @@
 using RhiLinux.Core;
+using RhiLinux.Gui;
 using RhiLinux.Mods;
 
 namespace RhiLinux.Tests;
 
 public sealed class RemovalScopeTests
 {
+    [Fact]
+    public async Task ManualCyberpunkReShadeAndRenoRemovalUsesRecoveryAndLeavesUnknownDll()
+    {
+        using var temp = new TestDirectory();
+        var root = temp.Directory("Cyberpunk 2077");
+        var deployment = temp.Directory("Cyberpunk 2077", "bin", "x64");
+        var executable = temp.Pe("Cyberpunk 2077/bin/x64/Cyberpunk2077.exe");
+        var reshade = temp.PeWithMarker("Cyberpunk 2077/bin/x64/dxgi.dll", "ReShade reshade.me");
+        var reno = temp.PeWithMarker("Cyberpunk 2077/bin/x64/renodx-cp2077.addon64", "RenoDX");
+        var reshadeIni = temp.File("Cyberpunk 2077/bin/x64/ReShade.ini", "[GENERAL]\nPresetPath=.\\preset.ini\n");
+        var unknown = temp.PeWithMarker("Cyberpunk 2077/bin/x64/user-overlay.dll", "unrelated overlay");
+        var game = new SteamGame(1091500, "Cyberpunk 2077", temp.Path, temp.Path, root,
+            temp.Combine("compatdata", "1091500", "pfx"), executable, deployment, DetectionConfidence.High,
+            "fixture Cyberpunk layout", GameEngine.Unknown,
+            [new(executable, 100, DetectionConfidence.High, PeArchitecture.X64, 1024, ["fixture"])]);
+        var planner = new DeploymentPlanner();
+        var executor = new DeploymentExecutor();
+
+        var before = await new ComponentDetector().DetectStackAsync(game);
+        var reshadeStatus = StackDetector.ToComponentStatus(before.ReportFor(ComponentKind.ReShade)!);
+        var renoStatus = StackDetector.ToComponentStatus(before.ReportFor(ComponentKind.RenoDx)!);
+        Assert.True(new ComponentCardViewModel(reshadeStatus).CanRemove);
+        Assert.True(new ComponentCardViewModel(renoStatus).CanRemove);
+
+        var plan = await planner.BuildRemovePlanAsync(game, ComponentKind.ReShade);
+        Assert.Contains(plan.Operations, operation =>
+            operation.Type == DeploymentOperationType.Backup && operation.Target == reshade);
+        Assert.Contains(plan.Operations, operation =>
+            operation.Type == DeploymentOperationType.Backup && operation.Target == reno);
+        Assert.Contains(plan.Operations, operation =>
+            operation.Type == DeploymentOperationType.Backup && operation.Target == reshadeIni);
+        Assert.DoesNotContain(plan.Operations, operation => operation.Target == unknown);
+
+        var result = await executor.ExecuteAsync(plan, false);
+
+        Assert.True(result.Succeeded, result.Error);
+        Assert.False(File.Exists(reshade));
+        Assert.False(File.Exists(reno));
+        Assert.False(File.Exists(reshadeIni));
+        Assert.True(File.Exists(unknown));
+        Assert.True(File.Exists(Path.Combine(root, ".rhi-linux", "recovery", plan.Id,
+            "detected", "bin", "x64", "dxgi.dll")));
+        Assert.True(File.Exists(Path.Combine(root, ".rhi-linux", "recovery", plan.Id,
+            "detected", "bin", "x64", "renodx-cp2077.addon64")));
+
+        var after = await new ComponentDetector().DetectStackAsync(game);
+        var cleanReShade = new ComponentCardViewModel(
+            StackDetector.ToComponentStatus(after.ReportFor(ComponentKind.ReShade)!));
+        Assert.True(cleanReShade.CanInstall);
+        Assert.False(cleanReShade.CanRemove);
+        Assert.Equal("Install", cleanReShade.ActionText);
+    }
+
     [Fact]
     public async Task CyberpunkLayoutCopyRemovesReShadeWithEditedFakeNvApiIni()
     {

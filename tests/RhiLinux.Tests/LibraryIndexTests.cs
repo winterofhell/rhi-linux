@@ -1,10 +1,25 @@
 using RhiLinux.Core;
 using RhiLinux.Sources;
+using Microsoft.Data.Sqlite;
 
 namespace RhiLinux.Tests;
 
 public sealed class LibraryIndexTests
 {
+    [Fact]
+    public void SourceFingerprintStaysStableAcrossProcesses()
+    {
+        Assert.Equal("6c612924e4cfe41f", SourceRootDiscovery.SourceFingerprint("missing/one", "missing/two"));
+    }
+
+    [Fact]
+    public void StableHashDoesNotDependOnTheRuntimeStringHashSeed()
+    {
+        Assert.Equal(-3750763034362895579L, StableHash.Ordinal(string.Empty));
+        Assert.Equal(StableHash.OrdinalIgnoreCase("DXGI"), StableHash.OrdinalIgnoreCase("dxgi"));
+        Assert.NotEqual(StableHash.Ordinal("DXGI"), StableHash.Ordinal("dxgi"));
+    }
+
     [Fact]
     public async Task CompleteGenerationPersistsFingerprintsAndRecords()
     {
@@ -77,6 +92,224 @@ public sealed class LibraryIndexTests
         Assert.Equal("good", fingerprints["heroic:/heroic"]);
         Assert.Equal("Good", Assert.Single(records).Name);
     }
+
+    [Fact]
+    public async Task VersionOneSchemaMigratesTransactionallyToVersionTwo()
+    {
+        using var temp = new TestDirectory();
+        var dbPath = temp.Combine("library.db");
+        await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE schema_info (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  schema_version INTEGER NOT NULL,
+                  active_generation INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO schema_info(id, schema_version, active_generation) VALUES (1, 1, 0);
+                CREATE TABLE scan_generations (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  started_utc TEXT NOT NULL,
+                  completed_utc TEXT,
+                  status TEXT NOT NULL,
+                  force_scan INTEGER NOT NULL DEFAULT 0,
+                  timings_json TEXT
+                );
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var index = new SqliteLibraryIndex(dbPath);
+        await index.OpenAsync();
+
+        Assert.Equal(2, await index.GetSchemaVersionAsync());
+        Assert.Equal(1, await index.GetReconciliationVersionAsync());
+        Assert.Empty(await index.LoadSourceDocumentsAsync());
+        Assert.Empty(await index.LoadGameRelationshipsAsync());
+        Assert.Empty(await index.LoadAnalysisAsync());
+    }
+
+    [Fact]
+    public async Task FutureSchemaVersionIsRejectedWithoutModification()
+    {
+        using var temp = new TestDirectory();
+        var dbPath = temp.Combine("library.db");
+        await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE schema_info (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  schema_version INTEGER NOT NULL,
+                  active_generation INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO schema_info(id, schema_version, active_generation) VALUES (1, 99, 0);
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using var index = new SqliteLibraryIndex(dbPath);
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => index.OpenAsync());
+
+        Assert.Contains("newer than supported", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FailedMigrationRollsBackSchemaChanges()
+    {
+        using var temp = new TestDirectory();
+        var dbPath = temp.Combine("library.db");
+        await using (var connection = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE schema_info (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  schema_version INTEGER NOT NULL,
+                  active_generation INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO schema_info(id, schema_version, active_generation) VALUES (1, 1, 0);
+                CREATE TABLE scan_generations (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  started_utc TEXT NOT NULL,
+                  completed_utc TEXT,
+                  status TEXT NOT NULL,
+                  force_scan INTEGER NOT NULL DEFAULT 0,
+                  timings_json TEXT
+                );
+                CREATE TABLE source_documents(document_id TEXT PRIMARY KEY);
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await using (var index = new SqliteLibraryIndex(dbPath))
+            await Assert.ThrowsAsync<SqliteException>(() => index.OpenAsync());
+
+        await using var verify = new SqliteConnection($"Data Source={dbPath}");
+        await verify.OpenAsync();
+        await using var version = verify.CreateCommand();
+        version.CommandText = "SELECT schema_version FROM schema_info WHERE id=1;";
+        Assert.Equal(1L, await version.ExecuteScalarAsync());
+        await using var columns = verify.CreateCommand();
+        columns.CommandText = "SELECT name FROM pragma_table_info('schema_info') WHERE name='reconciliation_version';";
+        Assert.Null(await columns.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task CorruptDatabaseIsQuarantinedAndRecreated()
+    {
+        using var temp = new TestDirectory();
+        var dbPath = temp.Combine("library.db");
+        await File.WriteAllBytesAsync(dbPath, [0x52, 0x48, 0x49, 0x00, 0x01]);
+
+        await using var index = new SqliteLibraryIndex(dbPath);
+        await index.OpenAsync();
+
+        Assert.Equal(SqliteLibraryIndex.SchemaVersion, await index.GetSchemaVersionAsync());
+        Assert.Single(Directory.GetFiles(temp.Path, "library.db.corrupt.*"));
+    }
+
+    [Fact]
+    public async Task OpeningDatabaseRecoversInterruptedGenerationWithoutReplacingActiveData()
+    {
+        using var temp = new TestDirectory();
+        var dbPath = temp.Combine("library.db");
+        long active;
+        await using (var index = new SqliteLibraryIndex(dbPath))
+        {
+            await index.OpenAsync();
+            active = await index.BeginGenerationAsync(false);
+            await index.CompleteGenerationAsync(
+                active,
+                new Dictionary<string, string> { ["heroic:/fixture"] = "stable" },
+                [Record("stable", "Stable", "/fixture/stable.json")],
+                [], [], new Dictionary<string, double>());
+            _ = await index.BeginGenerationAsync(false);
+        }
+
+        await using var reopened = new SqliteLibraryIndex(dbPath);
+        await reopened.OpenAsync();
+
+        Assert.Equal(active, await reopened.GetActiveGenerationAsync());
+        Assert.Equal("Stable", Assert.Single(await reopened.LoadCachedRecordsAsync()).Name);
+    }
+
+    [Fact]
+    public async Task JsonSourceIndexImportsOnlyOnceAndRemainsAvailable()
+    {
+        using var temp = new TestDirectory();
+        var jsonPath = temp.Combine("source-index.json");
+        var store = new JsonSourceIndexStore(jsonPath);
+        await store.SaveAsync(new SourceIndexDocument
+        {
+            Fingerprints = new Dictionary<string, string> { ["heroic:/fixture"] = "one" },
+            Records = [Record("one", "First", "/fixture/one.json")]
+        });
+
+        await using var index = new SqliteLibraryIndex(temp.Combine("library.db"));
+        await index.OpenAsync();
+        await index.ImportJsonSourceIndexAsync(jsonPath);
+        await store.SaveAsync(new SourceIndexDocument
+        {
+            Fingerprints = new Dictionary<string, string> { ["heroic:/fixture"] = "two" },
+            Records = [Record("two", "Second", "/fixture/two.json")]
+        });
+        await index.ImportJsonSourceIndexAsync(jsonPath);
+
+        Assert.True(File.Exists(jsonPath));
+        Assert.Equal("First", Assert.Single(await index.LoadCachedRecordsAsync()).Name);
+        Assert.Equal("one", (await index.LoadFingerprintsAsync())["heroic:/fixture"]);
+    }
+
+    [Fact]
+    public async Task VersionTwoPersistsDocumentsRelationshipsAndAnalysis()
+    {
+        using var temp = new TestDirectory();
+        var metadata = temp.File("metadata/game.json", "{}");
+        var root = temp.Directory("game");
+        var record = Record("one", "Fixture", metadata) with { InstallRoot = root };
+        var game = Assert.Single(GameReconciliation.Reconcile([record]).Games);
+        var generationValue = 1L;
+        var document = SourceDocumentEntry.FromPath("heroic", temp.Path, metadata, 4, generationValue);
+        var relationship = new GameSourceRelationship(
+            game.InstallId, "heroic", record.ExternalId, metadata, 0,
+            DetectionConfidence.High, game.FieldSelections ?? [], generationValue);
+        var analysis = new PersistedGameAnalysis(
+            game.InstallId, 1, "analysis-input", game.Executable, [], game.Engine, null,
+            7, 3, 12, game, generationValue);
+
+        await using var index = new SqliteLibraryIndex(temp.Combine("library.db"));
+        await index.OpenAsync();
+        var generation = await index.BeginGenerationAsync(false);
+        await index.CompleteGenerationAsync(
+            generation,
+            new Dictionary<string, string> { [$"heroic:{temp.Path}"] = "fingerprint" },
+            [record],
+            [game],
+            [],
+            new Dictionary<string, double>(),
+            [document with { LastSuccessfulParseGeneration = generation }],
+            [relationship with { ReconciliationGeneration = generation }],
+            [analysis with { Generation = generation }],
+            GameReconciliation.RulesVersion);
+
+        Assert.Equal(4, Assert.Single(await index.LoadSourceDocumentsAsync()).ParserVersion);
+        Assert.Equal(game.InstallId, Assert.Single(await index.LoadGameRelationshipsAsync()).InstallId);
+        Assert.Equal("analysis-input", (await index.LoadAnalysisAsync())[game.InstallId].InputFingerprint);
+    }
+
+    private static SourceGameRecord Record(string id, string name, string metadataPath) => new(
+        "heroic", GameStore.Epic, GameLauncher.Heroic, id, name,
+        $"/games/{id}", null, null, null, GameBinaryPlatform.Windows,
+        CompatibilityEnvironment.Wine, metadataPath, null, DateTimeOffset.UnixEpoch,
+        new Dictionary<string, string>(), []);
 }
 
 public sealed class LibraryCollectionDiffTests

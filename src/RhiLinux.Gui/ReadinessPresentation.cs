@@ -21,8 +21,6 @@ public sealed class ReadinessIssueItemViewModel(GameReadinessIssue issue)
         "copy-launch-configuration" => "Copy launch configuration",
         "review-recommended-setup" => "Review recommended setup",
         "review-updates" => "Review updates",
-        "recover-interrupted" => "Recover interrupted operation",
-        "restore-backups" => "Restore previous files",
         "open-diagnostics" => "Open diagnostics",
         "refresh-readiness" => "Refresh readiness",
         "refresh-component-information" => "Refresh component information",
@@ -42,33 +40,40 @@ public sealed class RecommendedSetupOptionViewModel(RecommendedSetupOption optio
     public double SupportOpacity => IsSupported ? 1 : 0.72;
 }
 
-public sealed class ComponentUpdateItemViewModel(
-    InstalledGame game,
-    ComponentStatus status,
-    GameReadinessState readinessImpact)
+public sealed class ComponentUpdateItemViewModel
 {
-    public string GameName { get; } = game.Name;
-    public string InstallId { get; } = game.EffectiveInstallId;
-    public string ComponentName { get; } = status.Component switch
+    public ComponentUpdateItemViewModel(InstalledGame game, ComponentStatus status, GameReadinessState readinessImpact)
     {
-        ComponentKind.RenoDx => "RenoDX",
-        ComponentKind.OptiScaler => "OptiScaler",
-        _ => "ReShade"
-    };
-    public string InstalledVersion { get; } = status.Version ?? "Unknown";
-    public string AvailableVersion { get; } = status.Health == ComponentHealth.Outdated
-        ? "Newer official release"
-        : status.Version ?? "Unknown";
-    public string UpdateState { get; } = status.Health switch
-    {
-        ComponentHealth.Outdated => "Update available",
-        ComponentHealth.Installed => "Up to date",
-        ComponentHealth.Unavailable => "Not installed",
-        ComponentHealth.Unsupported => "Unsupported",
-        _ => "Unknown"
-    };
-    public string ReadinessImpact { get; } = readinessImpact.ToString();
-    public bool CanReview { get; } = status.Health == ComponentHealth.Outdated;
+        GameName = game.Name;
+        InstallId = game.EffectiveInstallId;
+        ComponentName = status.Component switch
+        {
+            ComponentKind.RenoDx => "RenoDX",
+            ComponentKind.OptiScaler => "OptiScaler",
+            _ => "ReShade"
+        };
+        InstalledVersion = status.Version ?? "Unknown";
+        AvailableVersion = status.Health == ComponentHealth.Outdated ? "Newer official release" : status.Version ?? "Unknown";
+        UpdateState = status.Health switch
+        {
+            ComponentHealth.Outdated => "Update available",
+            ComponentHealth.Installed => "Up to date",
+            ComponentHealth.Unavailable => "Not installed",
+            ComponentHealth.Unsupported => "Unsupported",
+            _ => "Unknown"
+        };
+        ReadinessImpact = readinessImpact.ToString();
+        CanReview = status.Health == ComponentHealth.Outdated;
+    }
+
+    public string GameName { get; }
+    public string InstallId { get; }
+    public string ComponentName { get; }
+    public string InstalledVersion { get; }
+    public string AvailableVersion { get; }
+    public string UpdateState { get; }
+    public string ReadinessImpact { get; }
+    public bool CanReview { get; }
 }
 
 public sealed class ReadinessPresentation : INotifyPropertyChanged
@@ -154,15 +159,6 @@ public sealed class ReadinessPresentation : INotifyPropertyChanged
     public string PrefixDisplay => Result?.Target is { HasProtonPrefix: true, ProtonPrefix.Length: > 0 } target
         ? target.ProtonPrefix
         : "Not available";
-    public string LauncherDisplay => Result?.Target is null
-        ? string.Empty
-        : string.Join(" · ", new[]
-        {
-            Result.Target.Launcher.ToString(),
-            Result.Target.Store.ToString(),
-            Result.Target.Environment.ToString()
-        }.Distinct(StringComparer.OrdinalIgnoreCase));
-
     public void SetResult(GameReadinessResult? value)
     {
         Result = value;

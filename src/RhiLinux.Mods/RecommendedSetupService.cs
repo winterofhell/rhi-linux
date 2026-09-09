@@ -63,12 +63,18 @@ public sealed class RecommendedSetupService : IRecommendedSetupService
                 "Anti-cheat confirmation required",
                 "Anti-cheat files were detected. Deployment requires explicit confirmation and may prevent online play.",
                 true,
-                true));
+                false));
         }
 
         var reshadeInstalled = IsInstalled(reshade);
         var renodxInstalled = IsInstalled(renodx);
         var optiInstalled = IsInstalled(opti);
+        var repairNeeded = components.Any(item => item.Health is ComponentHealth.Broken or
+            ComponentHealth.PartiallyInstalled or ComponentHealth.IncorrectlyConfigured or ComponentHealth.RepairAvailable);
+
+        if (repairNeeded)
+            options.Add(new("repair-managed", "Repair managed setup",
+                "Rebuild the supported managed files and configuration while preserving user-owned files.", true, true));
 
         if (!reshadeInstalled && !renodxInstalled && !optiInstalled)
         {
@@ -105,7 +111,6 @@ public sealed class RecommendedSetupService : IRecommendedSetupService
                 options.Add(new("update-outdated", "Update outdated components", "Update managed components that have newer official releases.", true, true));
             else
                 options.Add(new("up-to-date", "Stack is up to date", "Installed managed components match the known official sources.", true, true));
-            options.Add(new("restore-backups", "Restore previous files", "Review recoverable backups for this game.", true, false));
         }
 
         if (options.Count == 0)

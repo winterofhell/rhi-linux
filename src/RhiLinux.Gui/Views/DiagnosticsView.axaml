@@ -1,0 +1,126 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="using:RhiLinux.Core"
+             x:Class="RhiLinux.Gui.Views.DiagnosticsView">
+  <ScrollViewer IsVisible="{Binding ShowDiagnosticsPage}" Classes="pageScroll"
+                IsHitTestVisible="{Binding ShowDiagnosticsPage}">
+    <StackPanel Spacing="16" MaxWidth="960" Margin="24,20,28,48">
+    <TextBlock Text="Diagnostics" Classes="pageTitle" />
+    <TextBlock Text="{Binding LastScanSummary}" Classes="secondary" TextWrapping="Wrap" />
+
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Troubleshooting report" Classes="sectionTitle" />
+          <TextBlock Text="Creates a privacy-safe local summary of runtime, providers, cache health, recovery, and recent diagnostics."
+                     Classes="secondary" TextWrapping="Wrap" />
+          <WrapPanel Orientation="Horizontal" Classes="button-row">
+            <Button Content="Copy troubleshooting information" Classes="compact secondary button-row-item"
+                    Click="CopyReport_Click" />
+            <Button Content="Save troubleshooting report" Classes="compact secondary button-row-item"
+                    Click="SaveReport_Click" />
+            <Button Content="Open logs" Classes="compact secondary button-row-item" Click="OpenLogs_Click" />
+            <Button Content="Open state directory" Classes="compact secondary button-row-item" Click="OpenState_Click" />
+          </WrapPanel>
+          <TextBlock x:Name="CopyFeedback" Text="Copied" Foreground="{DynamicResource SuccessTextBrush}" IsVisible="False" />
+          <Expander Header="Preview report" Classes="compact" IsVisible="{Binding HasTroubleshootingReport}">
+            <TextBox Text="{Binding TroubleshootingReport}" IsReadOnly="True" TextWrapping="Wrap"
+                     FontFamily="monospace" Margin="0,8,0,0" AutomationProperties.Name="Troubleshooting report" />
+          </Expander>
+        </StackPanel>
+      </Border>
+
+    <Border Classes="card" IsVisible="{Binding HasScanMetrics}">
+      <StackPanel Spacing="8">
+        <TextBlock Text="Last library refresh" Classes="sectionTitle" />
+        <TextBlock Text="{Binding ScanMetricsText}" Classes="secondary" TextWrapping="Wrap" />
+      </StackPanel>
+    </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Runtime" Classes="sectionTitle" />
+          <TextBlock Text="{Binding ProtonSummary}" Classes="secondary" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding HdrSummary}" Classes="secondary" TextWrapping="Wrap" />
+          <TextBlock Text="Suggested launch composition" Classes="secondary" Margin="0,4,0,0" />
+          <TextBox Text="{Binding LaunchCompositionText}" IsReadOnly="True" TextWrapping="Wrap"
+                   AutomationProperties.Name="Suggested launch composition" />
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Source providers" Classes="sectionTitle" />
+          <TextBlock IsVisible="{Binding !HasProviderStatuses}" Text="Provider details appear after the next library scan."
+                     Classes="secondary" TextWrapping="Wrap" />
+          <ItemsControl ItemsSource="{Binding ProviderStatuses}" IsVisible="{Binding HasProviderStatuses}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="card subtle" Margin="0,0,0,8">
+                  <Grid ColumnDefinitions="140,*,Auto" ColumnSpacing="12" RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Spacing="2">
+                      <TextBlock Text="{Binding Status}" Classes="secondary" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding RootPath}" Classes="path secondary" TextTrimming="CharacterEllipsis"
+                                 IsVisible="{Binding HasRootPath}" ToolTip.Tip="{Binding RootPath}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Spacing="4" HorizontalAlignment="Right">
+                      <Border Classes="statusBadge">
+                        <TextBlock Text="{Binding EnabledLabel}" FontSize="12" FontWeight="SemiBold" />
+                      </Border>
+                      <TextBlock Text="{Binding DetectionLabel}" Classes="secondary" FontSize="12"
+                                 HorizontalAlignment="Right" />
+                    </StackPanel>
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="3"
+                               Text="{Binding GameCount, StringFormat='Games discovered: {0}'}"
+                               Classes="secondary" FontSize="12" />
+                    <TextBlock Grid.Row="2" Grid.ColumnSpan="3"
+                               Text="{Binding RootCount, StringFormat='Roots: {0}'}"
+                               Classes="secondary" FontSize="12" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Source diagnostics" Classes="sectionTitle" />
+          <Border Classes="emptyState" IsVisible="{Binding !HasDiagnosticItems}" Padding="20,24">
+            <StackPanel Spacing="6" HorizontalAlignment="Center">
+              <TextBlock Text="No diagnostics" Classes="sectionTitle" HorizontalAlignment="Center" />
+              <TextBlock Text="Source scans have not reported warnings or errors."
+                         Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
+            </StackPanel>
+          </Border>
+          <ItemsControl ItemsSource="{Binding DiagnosticItems}" IsVisible="{Binding HasDiagnosticItems}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="card subtle" Margin="0,0,0,8">
+                  <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
+                    <Border Classes="severityBadge" Classes.warning="{Binding IsWarning}"
+                            Classes.error="{Binding IsError}" Classes.info="{Binding IsInfo}">
+                      <TextBlock Text="{Binding Severity}" FontSize="12" FontWeight="SemiBold" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Spacing="2">
+                      <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding Provider, StringFormat='Provider: {0}'}" Classes="secondary" FontSize="12" />
+                      <TextBlock Text="{Binding Code, StringFormat='Code: {0}'}" Classes="secondary" FontSize="12" />
+                    </StackPanel>
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Path}" Classes="path secondary"
+                               TextTrimming="CharacterEllipsis" IsVisible="{Binding HasPath}"
+                               ToolTip.Tip="{Binding Path}" />
+                    <TextBox Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding Detail}" IsReadOnly="True"
+                             TextWrapping="Wrap" IsVisible="{Binding HasDetail}"
+                             AutomationProperties.Name="Diagnostic detail" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

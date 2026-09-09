@@ -21,7 +21,7 @@ public sealed class BottlesGameSourceProvider : IGameSourceProvider
             (SourceRootDiscovery.FlatpakData(context.HomeDirectory, "com.usebottles.bottles", "bottles", "bottles"), SourceRootKind.Flatpak)
         };
 
-        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.CustomRoots));
+        return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, candidates, context.RootsForProvider(ProviderId), context.HomeDirectory));
     }
 
     public async Task<GameSourceScanResult> ScanAsync(
@@ -57,13 +57,16 @@ public sealed class BottlesGameSourceProvider : IGameSourceProvider
                 started.Elapsed);
         }
 
-        var yamlFiles = bottleDirs
+        var allYamlFiles = bottleDirs
             .Select(dir => Path.Combine(dir, "bottle.yml"))
             .Where(File.Exists)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        var fingerprint = SourceRootDiscovery.SourceFingerprint(yamlFiles) + ":v1";
-        if (!context.ForceFullScan &&
+        var yamlFiles = context.IsTargeted
+            ? allYamlFiles.Where(context.IncludesDocument).ToArray()
+            : allYamlFiles;
+        var fingerprint = SourceRootDiscovery.SourceFingerprint(allYamlFiles) + ":v1";
+        if (!context.ForceFullScan && !context.IsTargeted &&
             context.PreviousFingerprints.TryGetValue(FingerprintKey(root), out var previous) &&
             string.Equals(previous, fingerprint, StringComparison.Ordinal))
         {

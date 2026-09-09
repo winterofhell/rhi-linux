@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace RhiLinux.Core;
 
 public sealed record DeploymentRecoveryStatus(
@@ -24,15 +26,15 @@ public static class DeploymentRecoveryProbe
             {
                 try
                 {
-                    var text = File.ReadAllText(path);
-                    if (text.Contains("\"Completed\"", StringComparison.Ordinal) ||
-                        text.Contains("\"RolledBack\"", StringComparison.Ordinal))
+                    using var document = JsonDocument.Parse(File.ReadAllText(path));
+                    var state = ReadState(document.RootElement);
+                    if (IsTerminalJournalState(state))
                         continue;
                     var id = Path.GetFileNameWithoutExtension(path);
                     journalIds.Add(id);
                     message ??= $"Interrupted deployment transaction {id} requires recovery.";
                 }
-                catch (IOException)
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
                 {
                     journalIds.Add(Path.GetFileNameWithoutExtension(path));
                     message ??= "An interrupted deployment journal could not be read safely.";
@@ -44,5 +46,20 @@ public static class DeploymentRecoveryProbe
         var hasBackups = Directory.Exists(backupDirectory) &&
             Directory.EnumerateFileSystemEntries(backupDirectory).Any();
         return new(journalIds.Count > 0, hasBackups, message, journalIds);
+    }
+
+    internal static bool IsTerminalJournalState(string? state) =>
+        state is not null &&
+        (state.Equals("completed", StringComparison.OrdinalIgnoreCase) ||
+         state.Equals("rolledBack", StringComparison.OrdinalIgnoreCase));
+
+    private static string? ReadState(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return null;
+        foreach (var property in root.EnumerateObject())
+            if (property.Name.Equals("state", StringComparison.OrdinalIgnoreCase) &&
+                property.Value.ValueKind == JsonValueKind.String)
+                return property.Value.GetString();
+        return null;
     }
 }

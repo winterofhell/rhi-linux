@@ -1,7 +1,7 @@
 pkgname=rhi-linux
-pkgver=0.2.1
+pkgver=0.4.0
 pkgrel=1
-pkgdesc="Steam Proton mod deployment manager for AMD GPUs"
+pkgdesc="Windows game compatibility mod deployment manager for AMD GPUs"
 arch=('x86_64')
 url="https://github.com/winterofhell/rhi-linux"
 license=('GPL-3.0-only')
@@ -30,6 +30,7 @@ package() {
   install -Dm755 packaging/rhi-linux "$pkgdir/usr/bin/rhi-linux"
   install -Dm755 packaging/rhi-linux-gui "$pkgdir/usr/bin/rhi-linux-gui"
   install -Dm644 packaging/io.github.rhilinux.RhiLinux.desktop "$pkgdir/usr/share/applications/io.github.rhilinux.RhiLinux.desktop"
+  install -Dm644 packaging/io.github.rhilinux.RhiLinux.png "$pkgdir/usr/share/pixmaps/io.github.rhilinux.RhiLinux.png"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY_NOTICES.md"
 }

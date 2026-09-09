@@ -64,7 +64,8 @@ public sealed class LaunchCommandComposerTests
             enableHdr: true);
         Assert.Contains("WINEDLLOVERRIDES=", composition.Text, StringComparison.Ordinal);
         Assert.Contains("gamemoderun", composition.Text, StringComparison.Ordinal);
-        Assert.Contains("PROTON_ENABLE_WAYLAND=1", composition.Text, StringComparison.Ordinal);
+        Assert.Contains("DXVK_HDR=1", composition.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("PROTON_ENABLE_WAYLAND=1", composition.Text, StringComparison.Ordinal);
         Assert.Contains("%command%", composition.Text, StringComparison.Ordinal);
     }
 }

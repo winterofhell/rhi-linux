@@ -28,9 +28,26 @@ public sealed partial class DeploymentPlanDialog : Window
     private async void Execute_Click(object? sender, RoutedEventArgs eventArgs)
     {
         cancellation = new CancellationTokenSource();
-        dialogViewModel.Begin();
         try
         {
+            dialogViewModel.ProgressText = "Checking target, permissions, storage, and running processes…";
+            var preflight = await mainViewModel.CheckOperationPreflightAsync(plan, cancellation.Token);
+            if (!preflight.CanProceed)
+            {
+                await MessageDialog.ShowAsync(this, "Operation blocked",
+                    string.Join("\n\n", preflight.Issues
+                        .Where(issue => issue.Severity == OperationPreflightSeverity.Blocking)
+                        .Select(issue => $"{issue.Title}\n{issue.Message}")));
+                return;
+            }
+            if (preflight.RequiresWarningConfirmation && !await MessageDialog.ConfirmAsync(this,
+                    "Safety warning",
+                    string.Join("\n\n", preflight.Issues
+                        .Where(issue => issue.Severity == OperationPreflightSeverity.Warning)
+                        .Select(issue => $"{issue.Title}\n{issue.Message}")),
+                    "Continue anyway"))
+                return;
+            dialogViewModel.Begin();
             var result = await mainViewModel.ExecuteAsync(plan, false, cancellation.Token);
             dialogViewModel.Complete(result);
         }
@@ -67,6 +84,15 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
             action.Contains("remove", StringComparison.Ordinal) ? "Remove" :
             action.Contains("update", StringComparison.Ordinal) ? "Update" :
             action.Contains("restore", StringComparison.Ordinal) ? "Restore" : "Install";
+        PlanSectionTitle = ActionButtonText.StartsWith("Remove", StringComparison.Ordinal)
+            ? "Removal plan"
+            : ActionButtonText == "Repair"
+                ? "Repair plan"
+                : ActionButtonText == "Update"
+                    ? "Update plan"
+                    : ActionButtonText == "Restore"
+                        ? "Recovery plan"
+                        : "Installation plan";
         Title = $"Ready to {ActionButtonText.ToLowerInvariant()}";
         Subtitle = plan.SteamAppId is { } steamAppId
             ? $"{plan.Action} · Steam AppID {steamAppId}"
@@ -80,6 +106,7 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     public string Title { get; }
     public string ActionButtonText { get; }
+    public string PlanSectionTitle { get; }
     public string Subtitle { get; }
     public string CompatibilityMessage { get; }
     public bool HasCompatibilityMessage => CompatibilityMessage.Length > 0;
@@ -106,7 +133,7 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
     public bool CanExecute => !IsRunning && !HasResult;
     public bool CanClose => !IsRunning;
     public string CloseText => HasResult ? "Close" : "Cancel";
-    public string ExecutionHint => "Changed files are backed up first. Confirm to apply the plan.";
+    public string ExecutionHint => "Existing files are protected automatically. Confirm to apply the plan.";
 
     public void Begin()
     {
@@ -120,7 +147,7 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
         var succeeded = result.IsSuccessfulOutcome;
         ResultTitle = succeeded
             ? result.State == OperationLifecycleState.SucceededWithWarning
-                ? "Installed successfully"
+                ? "Changes completed with warnings"
                 : "Changes completed"
             : "Operation failed";
         ResultMessage = succeeded
@@ -138,7 +165,8 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
         void Add(string text) { if (!summary.Contains(text, StringComparer.Ordinal)) summary.Add(text); }
         foreach (var operation in plan.Operations)
         {
-            if (operation.Type == DeploymentOperationType.Backup) Add("Create backups of files that will be replaced");
+            if (operation.Type == DeploymentOperationType.Backup)
+                Add("Preserve existing files in recovery storage");
             if (operation.Type == DeploymentOperationType.Move || operation.Type == DeploymentOperationType.WriteIniValue)
                 Add("Configure compatibility between installed components");
             if (operation.Type == DeploymentOperationType.DeleteManagedFile) Add("Remove managed component files");

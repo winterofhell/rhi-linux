@@ -317,7 +317,8 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
             var notesCell = columns.Notes >= 0 && columns.Notes < cells.Count ? cells[columns.Notes] : string.Empty;
             var (addon32, addon64, sourceType) = ReadAddonUrls(linksCell, name);
             var discussionUrl = ExtractDiscussionUrl(nameCell, linksCell, notesCell);
-            if (discussionUrl is not null && sourceType is RenoDxSourceType.Unknown or RenoDxSourceType.Nexus or RenoDxSourceType.Discord)
+            var officialPageUrl = ExtractExternalPageUrl(linksCell) ?? discussionUrl;
+            if (discussionUrl is not null && sourceType == RenoDxSourceType.Unknown)
                 sourceType = RenoDxSourceType.Discussion;
             var expectedAddon = ExtractExpectedAddonFileName(nameCell, linksCell, notesCell, statusCell);
             var status = ReadStatus(statusCell);
@@ -340,7 +341,7 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
             if (catalogSection == RenoDxCatalogSection.Related)
             {
                 AddOrMerge(entries, BuildEntry(name, maintainer, addon32, addon64, status, statusNote,
-                    RenoDxCatalogSection.Related, sourceType, false, discussionUrl, expectedAddon));
+                    RenoDxCatalogSection.Related, sourceType, false, discussionUrl, expectedAddon, officialPageUrl));
                 continue;
             }
 
@@ -358,7 +359,8 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
                 continue;
 
             AddOrMerge(entries, BuildEntry(name, maintainer, addon32, addon64, status, statusNote, catalogSection,
-                sourceType, direct && catalogSection != RenoDxCatalogSection.Deprecated, discussionUrl, expectedAddon));
+                sourceType, direct && catalogSection != RenoDxCatalogSection.Deprecated, discussionUrl, expectedAddon,
+                officialPageUrl));
             if (entries.Count > MaximumRecords)
                 throw new InvalidDataException("The RenoDX wiki contains too many game records.");
         }
@@ -403,7 +405,8 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
         RenoDxSourceType sourceType,
         bool direct,
         Uri? discussionUrl,
-        string? expectedAddonFileName)
+        string? expectedAddonFileName,
+        Uri? officialPageUrl = null)
     {
         var fileName = Path.GetFileName(Uri.UnescapeDataString((addon64 ?? addon32)?.AbsolutePath ?? string.Empty));
         if (string.IsNullOrWhiteSpace(fileName)) fileName = expectedAddonFileName;
@@ -437,11 +440,29 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
             true,
             ExtractSupersededBy(statusNote))
         {
-            OfficialPageUrl = discussionUrl,
+            OfficialPageUrl = officialPageUrl ?? discussionUrl,
             DiscussionUrl = discussionUrl,
             ExpectedAddonFileName = expectedAddonFileName ?? fileName
         };
     }
+
+    private static Uri? ExtractExternalPageUrl(string linksCell)
+    {
+        Uri? discord = null;
+        foreach (Match match in HttpUrlPattern.Matches(linksCell))
+        {
+            var raw = match.Value.TrimEnd(']', '}', ',', ';', '.', '"', '\'');
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) continue;
+            if (IsHostOrSubdomain(uri.Host, "nexusmods.com")) return uri;
+            if (IsHostOrSubdomain(uri.Host, "discord.com") || uri.Host.Equals("discord.gg", StringComparison.OrdinalIgnoreCase))
+                discord ??= uri;
+        }
+        return discord;
+    }
+
+    private static bool IsHostOrSubdomain(string host, string domain) =>
+        host.Equals(domain, StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith('.' + domain, StringComparison.OrdinalIgnoreCase);
 
     private static Uri? ExtractDiscussionUrl(params string[] cells)
     {
@@ -644,9 +665,11 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
                 sourceType = sourceType == RenoDxSourceType.Snapshot ? sourceType : RenoDxSourceType.Nexus;
             else if (lower.Contains("discord.com", StringComparison.Ordinal) ||
                      lower.Contains("discord.gg", StringComparison.Ordinal))
-                sourceType = sourceType == RenoDxSourceType.Snapshot ? sourceType : RenoDxSourceType.Discord;
+                sourceType = sourceType is RenoDxSourceType.Unknown or RenoDxSourceType.Discussion
+                    ? RenoDxSourceType.Discord
+                    : sourceType;
             else if (lower.Contains("/discussions/", StringComparison.Ordinal))
-                sourceType = sourceType == RenoDxSourceType.Snapshot ? sourceType : RenoDxSourceType.Discussion;
+                sourceType = sourceType == RenoDxSourceType.Unknown ? RenoDxSourceType.Discussion : sourceType;
 
             if (!raw.Contains(".addon32", StringComparison.OrdinalIgnoreCase) &&
                 !raw.Contains(".addon64", StringComparison.OrdinalIgnoreCase))
@@ -837,6 +860,8 @@ public sealed class RenoDxWikiClient(HttpClient httpClient, XdgPaths paths)
             pair.First.Addon64Url == pair.Second.Addon64Url &&
             pair.First.Status == pair.Second.Status &&
             pair.First.SourceSection == pair.Second.SourceSection &&
+            pair.First.SourceType == pair.Second.SourceType &&
+            pair.First.OfficialPageUrl == pair.Second.OfficialPageUrl &&
             pair.First.DiscussionUrl == pair.Second.DiscussionUrl &&
             pair.First.ExpectedAddonFileName == pair.Second.ExpectedAddonFileName);
 

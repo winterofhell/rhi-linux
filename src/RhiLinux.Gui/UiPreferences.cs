@@ -9,6 +9,8 @@ public sealed class UiPreferences
     public double WindowWidth { get; set; } = 1360;
     public double WindowHeight { get; set; } = 820;
     public double SidebarWidth { get; set; } = 310;
+    public bool WindowMaximized { get; set; }
+    public bool OnboardingCompleted { get; set; }
     public uint? SelectedAppId { get; set; }
     public string? SelectedInstallId { get; set; }
     public string Theme { get; set; } = "System";
@@ -30,6 +32,7 @@ public sealed class UiPreferences
     public bool WarnBeforeAntiCheatDeployments { get; set; } = true;
     public bool PreferExistingManagedVersions { get; set; } = true;
     public bool RefreshArtifactMetadataOnStartup { get; set; } = true;
+    public Dictionary<string, string> CustomSourceRoots { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public interface IUiPreferencesStore

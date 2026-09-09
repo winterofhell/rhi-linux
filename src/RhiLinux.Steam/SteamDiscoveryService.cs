@@ -6,7 +6,8 @@ public sealed record ScanOptions(
     bool UseLibraryIndex = true,
     bool ForceFullAnalysis = false,
     int AnalysisConcurrency = 0,
-    ILibraryIndexStore? LibraryIndexStore = null);
+    ILibraryIndexStore? LibraryIndexStore = null,
+    IReadOnlySet<string>? ManifestPaths = null);
 
 public sealed record IncrementalScanMetrics(
     int ManifestsSeen,
@@ -173,6 +174,8 @@ public sealed class SteamDiscoveryService
             try
             {
                 manifests = Directory.EnumerateFiles(steamApps, "appmanifest_*.acf").Order(StringComparer.Ordinal).ToArray();
+                if (options.ManifestPaths is { Count: > 0 })
+                    manifests = manifests.Where(path => options.ManifestPaths.Contains(Normalize(path))).ToArray();
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -565,6 +568,7 @@ public sealed class SteamDiscoveryService
         {
             Executable = selected?.Path ?? game.Executable,
             DeploymentDirectory = deployment,
+            ProtonPrefix = gameOverride.Prefix ?? game.ProtonPrefix,
             Confidence = selected?.Confidence ?? game.Confidence,
             SelectionReason = gameOverride.Executable is not null
                 ? "Selected because a persistent manual executable override is configured."
@@ -592,7 +596,7 @@ public sealed class SteamDiscoveryService
         yield return (Path.Combine(home, "snap", "steam", "current", ".local", "share", "Steam"), SteamRootSource.Snap);
     }
 
-    private static IEnumerable<string> EnumerateLibraryPaths(VdfObject document)
+    public static IEnumerable<string> EnumerateLibraryPaths(VdfObject document)
     {
         var folders = document.GetObject("libraryfolders") ?? document.GetObject("LibraryFolders") ?? document;
         foreach (var entry in folders.Values)

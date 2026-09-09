@@ -18,8 +18,8 @@ public sealed class ProxyDiagnosticsTests
         Assert.Equal(ProxyFileClassification.KnownGameOwnedDll, dbghelp.Classification);
         Assert.True(dbghelp.ProhibitedByProfile);
         Assert.True(dbghelp.ProtonOverrideAppropriate);
-        Assert.Equal("version.dll", result.SelectedProxy);
-        Assert.True(Assert.Single(result.Candidates, x => x.ProxyName == "version.dll").Score > dbghelp.Score);
+        Assert.Equal("dxgi.dll", result.SelectedProxy);
+        Assert.True(Assert.Single(result.Candidates, x => x.ProxyName == "dxgi.dll").Score > dbghelp.Score);
     }
 
     [Fact]

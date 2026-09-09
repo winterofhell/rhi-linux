@@ -34,6 +34,11 @@ public sealed class IniDocument
     private static IniDocument Parse(string text, bool strict)
     {
         var document = new IniDocument();
+        if (text.StartsWith('\uFEFF'))
+        {
+            document.hadUtf8Bom = true;
+            text = text[1..];
+        }
         if (text.Contains("\r\n", StringComparison.Ordinal)) document.newline = "\r\n";
         else if (text.Contains('\n')) document.newline = "\n";
         var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');

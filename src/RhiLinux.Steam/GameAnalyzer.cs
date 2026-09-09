@@ -268,13 +268,14 @@ public sealed class GameAnalyzer : IGameAnalyzer
         bool openPe)
     {
         var ranked = new List<ExecutableFingerprint>();
+        var normalizedGame = Normalize(gameName);
         foreach (var (path, depth, info) in executables)
         {
             var architecture = openPe ? PeReader.ReadArchitecture(path) : PeArchitecture.Unknown;
             var fileName = Path.GetFileNameWithoutExtension(path);
             var relative = Path.GetRelativePath(root, path);
             var normalizedFile = Normalize(fileName);
-            var normalizedGame = Normalize(gameName);
+            var executableDirectory = Path.GetDirectoryName(path)!;
             var reasons = new List<string>();
             var score = 0;
             var kind = ExecutableKind.Unknown;
@@ -298,15 +299,15 @@ public sealed class GameAnalyzer : IGameAnalyzer
             }
 
             if (engine == GameEngine.Unity &&
-                (File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "UnityPlayer.dll")) ||
-                 File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "GameAssembly.dll"))))
+                (File.Exists(Path.Combine(executableDirectory, "UnityPlayer.dll")) ||
+                 File.Exists(Path.Combine(executableDirectory, "GameAssembly.dll"))))
             {
                 score += 22;
                 reasons.Add("next to Unity runtime markers");
             }
 
             if (engine == GameEngine.ReEngine &&
-                File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "re_chunk_000.pak")))
+                File.Exists(Path.Combine(executableDirectory, "re_chunk_000.pak")))
             {
                 score += 24;
                 reasons.Add("next to RE Engine data");
@@ -530,27 +531,15 @@ public sealed class GameAnalyzer : IGameAnalyzer
     }
 
     private static bool FileContainsAscii(string path, string marker)
-    {
-        try
-        {
-            var info = new FileInfo(path);
-            if (info.Length > 8 * 1024 * 1024) return false;
-            var bytes = File.ReadAllBytes(path);
-            return Encoding.ASCII.GetString(bytes).Contains(marker, StringComparison.Ordinal);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
-    }
+        => BinaryMarkerScanner.ContainsAscii(path, marker, 8 * 1024 * 1024);
 
     private static bool IsElf(string path)
     {
         try
         {
-            var magic = new byte[4];
+            Span<byte> magic = stackalloc byte[4];
             using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return stream.Read(magic) == 4 && magic.SequenceEqual(new byte[] { 0x7f, (byte)'E', (byte)'L', (byte)'F' });
+            return stream.Read(magic) == magic.Length && magic.SequenceEqual("\u007fELF"u8);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -606,12 +595,8 @@ public sealed class GameAnalyzer : IGameAnalyzer
 
     private static long Mix(long hash, string name, long size, long ticks)
     {
-        unchecked
-        {
-            hash = (hash * 31) + StringComparer.OrdinalIgnoreCase.GetHashCode(name);
-            hash = (hash * 31) + size.GetHashCode();
-            hash = (hash * 31) + ticks.GetHashCode();
-            return hash;
-        }
+        hash = StableHash.Combine(hash, StableHash.OrdinalIgnoreCase(name));
+        hash = StableHash.Combine(hash, size);
+        return StableHash.Combine(hash, ticks);
     }
 }

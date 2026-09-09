@@ -8,6 +8,8 @@ public sealed record ReconciliationResult(
 
 public static class GameReconciliation
 {
+    public const int RulesVersion = 2;
+
     private static readonly GameLauncher[] LauncherPriority =
     [
         GameLauncher.Manual,
@@ -29,25 +31,24 @@ public static class GameReconciliation
             .ToArray();
 
         var diagnostics = new List<SourceDiagnostic>();
-        var groups = new List<List<SourceGameRecord>>();
+        var groups = new List<List<NormalizedRecord>>();
+        var groupIndex = new ReconciliationGroupIndex();
         var duplicateSource = 0;
         var duplicatePhysical = 0;
 
-        foreach (var record in ordered)
+        foreach (var normalized in ordered.Select(NormalizedRecord.From))
         {
+            var record = normalized.Record;
             var matched = false;
-            foreach (var group in groups)
+            if (groupIndex.FindFirst(normalized) is { } index)
             {
-                if (!CanMerge(group, record, out var strength))
-                    continue;
-
-                if (strength == EvidenceStrength.Weak)
-                    continue;
+                var group = groups[index];
+                _ = CanMerge(group, normalized, out var strength);
 
                 if (group.Any(existing =>
-                        existing.ProviderId == record.ProviderId &&
-                        string.Equals(existing.ExternalId, record.ExternalId, StringComparison.Ordinal) &&
-                        string.Equals(existing.MetadataPath, record.MetadataPath, StringComparison.Ordinal)))
+                        existing.Record.ProviderId == record.ProviderId &&
+                        string.Equals(existing.Record.ExternalId, record.ExternalId, StringComparison.Ordinal) &&
+                        string.Equals(existing.Record.MetadataPath, record.MetadataPath, StringComparison.Ordinal)))
                 {
                     duplicateSource++;
                     diagnostics.Add(new(
@@ -59,32 +60,38 @@ public static class GameReconciliation
                         record.MetadataPath,
                         record.ExternalId));
                     matched = true;
-                    break;
                 }
-
-                if (strength == EvidenceStrength.Strong)
+                else
                 {
-                    duplicatePhysical++;
-                    diagnostics.Add(new(
-                        record.ProviderId,
-                        SourceDiagnosticCodes.DuplicatePhysicalInstall,
-                        SourceDiagnosticSeverity.Info,
-                        $"Merged duplicate physical installation for '{record.Name}'.",
-                        $"Evidence: strong identity overlap with {group[0].ProviderId}:{group[0].ExternalId}",
-                        record.MetadataPath,
-                        record.ExternalId));
-                }
+                    if (strength == EvidenceStrength.Strong)
+                    {
+                        duplicatePhysical++;
+                        diagnostics.Add(new(
+                            record.ProviderId,
+                            SourceDiagnosticCodes.DuplicatePhysicalInstall,
+                            SourceDiagnosticSeverity.Info,
+                            $"Merged duplicate physical installation for '{record.Name}'.",
+                            $"Evidence: strong identity overlap with {group[0].Record.ProviderId}:{group[0].Record.ExternalId}",
+                            record.MetadataPath,
+                            record.ExternalId));
+                    }
 
-                group.Add(record);
-                matched = true;
-                break;
+                    group.Add(normalized);
+                    groupIndex.Add(index, normalized);
+                    matched = true;
+                }
             }
 
             if (!matched)
-                groups.Add([record]);
+            {
+                groupIndex.Add(groups.Count, normalized);
+                groups.Add([normalized]);
+            }
         }
 
-        var games = groups.Select(group => MergeGroup(group, diagnostics)).ToList();
+        var games = groups
+            .Select(group => MergeGroup(group.Select(item => item.Record).ToArray(), diagnostics))
+            .ToList();
         return new ReconciliationResult(
             games
                 .OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
@@ -97,9 +104,105 @@ public static class GameReconciliation
 
     private enum EvidenceStrength { None, Weak, Medium, Strong }
 
+    private sealed record NormalizedRecord(
+        SourceGameRecord Record,
+        string InstallRoot,
+        string Executable,
+        string Prefix,
+        string Title,
+        string ExecutableFileName)
+    {
+        public static NormalizedRecord From(SourceGameRecord record)
+        {
+            var executable = GameIdentity.NormalizePath(record.ExecutableHint ?? string.Empty);
+            return new(
+                record,
+                GameIdentity.NormalizePath(record.InstallRoot ?? string.Empty),
+                executable,
+                GameIdentity.NormalizePath(record.PrefixHint ?? string.Empty),
+                string.IsNullOrWhiteSpace(record.Name) ? string.Empty : NormalizeTitle(record.Name),
+                executable.Length == 0 ? string.Empty : Path.GetFileName(executable));
+        }
+    }
+
+    private sealed class ReconciliationGroupIndex
+    {
+        private readonly Dictionary<string, int> executables = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string Root, GameStore Store, string ExternalId), int> storeInstalls = [];
+        private readonly Dictionary<(string Root, string ProviderId, string ExternalId), int> sourceInstalls = [];
+        private readonly Dictionary<(string Root, GameLauncher Launcher, string ExternalId), int> launcherInstalls = [];
+
+        public int? FindFirst(NormalizedRecord record)
+        {
+            int? result = null;
+            FindEarlier(executables, record.Executable, ref result, record.Executable.Length > 0);
+            FindEarlier(
+                storeInstalls,
+                (record.InstallRoot, record.Record.Store, record.Record.ExternalId),
+                ref result,
+                record.InstallRoot.Length > 0 && record.Record.Store != GameStore.Unknown &&
+                !string.IsNullOrWhiteSpace(record.Record.ExternalId));
+            FindEarlier(
+                sourceInstalls,
+                (record.InstallRoot, record.Record.ProviderId, record.Record.ExternalId),
+                ref result,
+                record.InstallRoot.Length > 0);
+            FindEarlier(
+                launcherInstalls,
+                (record.InstallRoot, record.Record.Launcher, record.Record.ExternalId),
+                ref result,
+                record.InstallRoot.Length > 0 && !string.IsNullOrWhiteSpace(record.Record.ExternalId));
+            return result;
+        }
+
+        public void Add(int group, NormalizedRecord record)
+        {
+            Register(executables, record.Executable, group, record.Executable.Length > 0);
+            Register(
+                storeInstalls,
+                (record.InstallRoot, record.Record.Store, record.Record.ExternalId),
+                group,
+                record.InstallRoot.Length > 0 && record.Record.Store != GameStore.Unknown &&
+                !string.IsNullOrWhiteSpace(record.Record.ExternalId));
+            Register(
+                sourceInstalls,
+                (record.InstallRoot, record.Record.ProviderId, record.Record.ExternalId),
+                group,
+                record.InstallRoot.Length > 0);
+            Register(
+                launcherInstalls,
+                (record.InstallRoot, record.Record.Launcher, record.Record.ExternalId),
+                group,
+                record.InstallRoot.Length > 0 && !string.IsNullOrWhiteSpace(record.Record.ExternalId));
+        }
+
+        private static void FindEarlier<TKey>(
+            IReadOnlyDictionary<TKey, int> index,
+            TKey key,
+            ref int? result,
+            bool enabled)
+            where TKey : notnull
+        {
+            if (enabled && index.TryGetValue(key, out var group) && (result is null || group < result))
+                result = group;
+        }
+
+        private static void Register<TKey>(
+            IDictionary<TKey, int> index,
+            TKey key,
+            int group,
+            bool enabled)
+            where TKey : notnull
+        {
+            if (!enabled) return;
+            if (!index.TryGetValue(key, out var existing) || group < existing)
+                index[key] = group;
+        }
+    }
+
     private static bool CanMerge(
-        IReadOnlyList<SourceGameRecord> group,
-        SourceGameRecord candidate,
+        IReadOnlyList<NormalizedRecord> group,
+        NormalizedRecord candidate,
         out EvidenceStrength strength)
     {
         strength = EvidenceStrength.None;
@@ -108,54 +211,42 @@ public static class GameReconciliation
             var current = ScoreEvidence(existing, candidate);
             if (current > strength)
                 strength = current;
+            if (strength == EvidenceStrength.Strong) break;
         }
 
         return strength is EvidenceStrength.Strong or EvidenceStrength.Medium;
     }
 
-    private static EvidenceStrength ScoreEvidence(SourceGameRecord left, SourceGameRecord right)
+    private static EvidenceStrength ScoreEvidence(NormalizedRecord left, NormalizedRecord right)
     {
-        var leftRoot = GameIdentity.NormalizePath(left.InstallRoot ?? string.Empty);
-        var rightRoot = GameIdentity.NormalizePath(right.InstallRoot ?? string.Empty);
-        var leftExe = GameIdentity.NormalizePath(left.ExecutableHint ?? string.Empty);
-        var rightExe = GameIdentity.NormalizePath(right.ExecutableHint ?? string.Empty);
+        var leftRoot = left.InstallRoot;
+        var rightRoot = right.InstallRoot;
+        var leftExe = left.Executable;
+        var rightExe = right.Executable;
 
-        var sameExe = !string.IsNullOrWhiteSpace(leftExe) &&
-                      string.Equals(leftExe, rightExe, StringComparison.Ordinal);
-        var sameRoot = !string.IsNullOrWhiteSpace(leftRoot) &&
-                       string.Equals(leftRoot, rightRoot, StringComparison.Ordinal);
-        var sameStoreId = left.Store != GameStore.Unknown &&
-                          left.Store == right.Store &&
-                          !string.IsNullOrWhiteSpace(left.ExternalId) &&
-                          string.Equals(left.ExternalId, right.ExternalId, StringComparison.Ordinal);
-        var sameSourceId = string.Equals(left.ProviderId, right.ProviderId, StringComparison.Ordinal) &&
-                           string.Equals(left.ExternalId, right.ExternalId, StringComparison.Ordinal);
+        var sameExe = leftExe.Length > 0 && string.Equals(leftExe, rightExe, StringComparison.Ordinal);
+        var sameRoot = leftRoot.Length > 0 && string.Equals(leftRoot, rightRoot, StringComparison.Ordinal);
+        var sameStoreId = left.Record.Store != GameStore.Unknown &&
+                          left.Record.Store == right.Record.Store &&
+                          !string.IsNullOrWhiteSpace(left.Record.ExternalId) &&
+                          string.Equals(left.Record.ExternalId, right.Record.ExternalId, StringComparison.Ordinal);
+        var sameSourceId = string.Equals(left.Record.ProviderId, right.Record.ProviderId, StringComparison.Ordinal) &&
+                           string.Equals(left.Record.ExternalId, right.Record.ExternalId, StringComparison.Ordinal);
 
         if (sameExe || sameRoot && sameStoreId || sameSourceId && sameRoot)
             return EvidenceStrength.Strong;
 
-        var samePrefix = !string.IsNullOrWhiteSpace(left.PrefixHint) &&
-                         string.Equals(
-                             GameIdentity.NormalizePath(left.PrefixHint),
-                             GameIdentity.NormalizePath(right.PrefixHint ?? string.Empty),
-                             StringComparison.Ordinal);
-        var nestedRoot = !string.IsNullOrWhiteSpace(leftRoot) &&
-                         !string.IsNullOrWhiteSpace(rightRoot) &&
-                         sameExe &&
-                         (GameIdentity.IsPathInsideRoot(leftRoot, rightRoot) ||
-                          GameIdentity.IsPathInsideRoot(rightRoot, leftRoot));
-        var sameLauncherExternal = left.Launcher == right.Launcher &&
-                                   !string.IsNullOrWhiteSpace(left.ExternalId) &&
-                                   string.Equals(left.ExternalId, right.ExternalId, StringComparison.Ordinal);
+        var sameLauncherExternal = left.Record.Launcher == right.Record.Launcher &&
+                                   !string.IsNullOrWhiteSpace(left.Record.ExternalId) &&
+                                   string.Equals(left.Record.ExternalId, right.Record.ExternalId, StringComparison.Ordinal);
 
-        if (samePrefix && sameExe || nestedRoot || sameLauncherExternal && (sameRoot || sameExe))
+        if (sameLauncherExternal && sameRoot)
             return EvidenceStrength.Medium;
 
-        var sameTitle = !string.IsNullOrWhiteSpace(left.Name) &&
-                        string.Equals(NormalizeTitle(left.Name), NormalizeTitle(right.Name), StringComparison.Ordinal);
-        var sameFileName = !string.IsNullOrWhiteSpace(leftExe) &&
-                           !string.IsNullOrWhiteSpace(rightExe) &&
-                           string.Equals(Path.GetFileName(leftExe), Path.GetFileName(rightExe), StringComparison.OrdinalIgnoreCase);
+        var sameTitle = left.Title.Length > 0 &&
+                        string.Equals(left.Title, right.Title, StringComparison.Ordinal);
+        var sameFileName = left.ExecutableFileName.Length > 0 && right.ExecutableFileName.Length > 0 &&
+                           string.Equals(left.ExecutableFileName, right.ExecutableFileName, StringComparison.OrdinalIgnoreCase);
 
         if (sameTitle || sameFileName)
             return EvidenceStrength.Weak;

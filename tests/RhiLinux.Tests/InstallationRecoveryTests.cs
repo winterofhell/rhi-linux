@@ -188,7 +188,7 @@ public sealed class InstallationRecoveryTests
         var plan = await new DeploymentPlanner().BuildRecommendedStackPlanAsync(game, new(reshade, null, null));
 
         Assert.Contains(plan.Operations, x => x.Type == DeploymentOperationType.Copy &&
-            x.Target.EndsWith("version.dll", StringComparison.Ordinal));
+            x.Target.EndsWith("dxgi.dll", StringComparison.Ordinal));
         Assert.DoesNotContain(plan.Operations, x => x.Type is DeploymentOperationType.Copy or DeploymentOperationType.Backup &&
             x.Target.Equals(dbgHelp, StringComparison.Ordinal));
         var decision = Assert.Single(plan.FileDecisions, x => x.DestinationPath.Equals(dbgHelp, StringComparison.Ordinal));
@@ -196,7 +196,7 @@ public sealed class InstallationRecoveryTests
         Assert.Equal(DeploymentFileAction.PreserveExisting, decision.Action);
         Assert.True(decision.PreservesExistingFile);
         Assert.True(decision.AlternativeExists);
-        Assert.Contains("Use version.dll", decision.Alternatives);
+        Assert.Contains("Use dxgi.dll", decision.Alternatives);
         Assert.Equal(originalHash, Hash(dbgHelp));
     }
 
