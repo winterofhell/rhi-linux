@@ -291,7 +291,8 @@ public sealed record GameSourceDiscoveryContext(
     IReadOnlyDictionary<string, string?> Environment,
     IReadOnlyList<string> CustomRoots,
     IReadOnlySet<string>? EnabledProviders = null,
-    IReadOnlyDictionary<string, IReadOnlyList<string>>? CustomRootsByProvider = null)
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? CustomRootsByProvider = null,
+    bool IncludeDefaultSteamRoots = true)
 {
     public IReadOnlyList<string> RootsForProvider(string providerId) =>
         CustomRootsByProvider?.GetValueOrDefault(providerId) ?? CustomRoots;

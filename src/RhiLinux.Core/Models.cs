@@ -683,7 +683,8 @@ public sealed record DeploymentOperation(
     string? ConfigurationVersion = null,
     bool ClearConfigurationPatch = false,
     string? Purpose = null,
-    DeploymentFileRequirement Requirement = DeploymentFileRequirement.Required);
+    DeploymentFileRequirement Requirement = DeploymentFileRequirement.Required,
+    bool PreserveOriginalBackup = false);
 
 public sealed record DeploymentFileDecision(
     ComponentKind Component,

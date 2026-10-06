@@ -4,6 +4,34 @@ namespace RhiLinux.Mods;
 
 public static class ReShadePresetService
 {
+    public static async Task<byte[]> ReadValidatedPresetAsync(string path, CancellationToken cancellationToken = default)
+    {
+        if (!Path.GetExtension(path).Equals(".ini", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Choose a ReShade preset with the .ini extension.");
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous);
+        if (stream.Length > 4 * 1024 * 1024)
+            throw new InvalidDataException("The ReShade preset exceeds the 4 MiB size limit.");
+        using var buffer = new MemoryStream();
+        await ArtifactValidator.CopyWithLimitAsync(stream, buffer, 4 * 1024 * 1024, cancellationToken);
+        var bytes = buffer.ToArray();
+        var text = new System.Text.UTF8Encoding(false, true).GetString(bytes);
+        var document = IniDocument.Parse(text);
+        if (document.HasFatalIssues || document.HasRecoverableIssues)
+            throw new InvalidDataException("The selected preset contains malformed INI data.");
+        var techniques = document.Get(string.Empty, "Techniques");
+        if (techniques is null)
+            throw new InvalidDataException("The selected file is not a ReShade preset: Techniques is missing.");
+        foreach (var technique in techniques.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = technique.Split('@');
+            if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length <= 3 ||
+                !parts[1].EndsWith(".fx", StringComparison.OrdinalIgnoreCase) ||
+                technique.IndexOfAny(['/', '\\', ':', '\0']) >= 0 || technique.Contains("..", StringComparison.Ordinal))
+                throw new InvalidDataException("The preset contains an invalid technique or shader filename.");
+        }
+        return bytes;
+    }
+
     public const string HostIniFileName = "ReShade.ini";
     public const string CleanPresetFileName = "ReShadePreset.ini";
     public const string CleanPresetPurpose = "reshade-clean-preset";

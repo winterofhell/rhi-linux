@@ -7,6 +7,49 @@ namespace RhiLinux.Tests;
 public sealed class GuiViewModelTests
 {
     [Fact]
+    public async Task InitializationAndRefreshAreSerialized()
+    {
+        var discovery = new SerializedDiscovery([Game(10, "First")]) { Block = true };
+        await using var viewModel = Create(discovery);
+        var initialization = viewModel.InitializeAsync();
+        await discovery.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var refresh = viewModel.RefreshAsync();
+        Assert.Equal(1, discovery.ScanCount);
+
+        discovery.Block = false;
+        discovery.Release.TrySetResult();
+        await Task.WhenAll(initialization, refresh).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, discovery.ScanCount);
+        Assert.Equal(1, discovery.MaximumConcurrentScans);
+        Assert.Equal("First", Assert.Single(viewModel.Games).Name);
+    }
+
+    [Fact]
+    public async Task CancelledQueuedRefreshPreservesPreviousLibraryAndShutdownDrainsScan()
+    {
+        var discovery = new SerializedDiscovery([Game(10, "First")]);
+        var viewModel = Create(discovery);
+        await viewModel.InitializeAsync();
+        discovery.Block = true;
+        var activeRefresh = viewModel.RefreshAsync();
+        await discovery.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using var cancellation = new CancellationTokenSource();
+        var queuedRefresh = viewModel.RefreshAsync(cancellation.Token);
+
+        cancellation.Cancel();
+        await queuedRefresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, discovery.ScanCount);
+        Assert.Equal("First", Assert.Single(viewModel.Games).Name);
+
+        await viewModel.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        await activeRefresh;
+        Assert.Equal(1, discovery.MaximumConcurrentScans);
+        Assert.False(viewModel.IsBusy);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => viewModel.RefreshAsync());
+    }
+
+    [Fact]
     public async Task FiltersByStoreAndLauncherBadges()
     {
         var discovery = new FakeDiscovery(
@@ -1222,21 +1265,23 @@ public sealed class GuiViewModelTests
     }
 
     [Fact]
-    public void ExecutableAndFilesystemDiagnosticsAreCollapsedByDefault()
+    public void TargetSummaryIsVisibleAndFilesystemDiagnosticsAreCollapsedByDefault()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "RhiLinux.sln")))
             directory = directory.Parent;
         Assert.NotNull(directory);
         var source = File.ReadAllText(Path.Combine(directory!.FullName, "src", "RhiLinux.Gui", "Views", "GameDetailsView.axaml"));
-        var advanced = source.IndexOf("Header=\"Advanced game details\"", StringComparison.Ordinal);
-        var executable = source.IndexOf("Text=\"{Binding ExecutableDisplay}\"", StringComparison.Ordinal);
+        var advanced = source.IndexOf("Header=\"Game paths and detection\"", StringComparison.Ordinal);
+        var summary = source.IndexOf("Text=\"{Binding ExecutableDisplay}\"", StringComparison.Ordinal);
+        var executable = source.LastIndexOf("Text=\"{Binding ExecutableDisplay}\"", StringComparison.Ordinal);
         var deployment = source.IndexOf("Text=\"{Binding DeploymentDisplay}\"", StringComparison.Ordinal);
         var prefix = source.IndexOf("Text=\"{Binding ProtonPrefixDisplay}\"", StringComparison.Ordinal);
 
         Assert.True(advanced >= 0 && advanced < executable);
+        Assert.True(summary >= 0 && summary < advanced);
         Assert.True(executable < deployment && deployment < prefix);
-        Assert.DoesNotContain("Header=\"Advanced game details\" IsExpanded=\"True\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Header=\"Game paths and detection\" IsExpanded=\"True\"", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Advanced executable details", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Text=\"Issues\"", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Readiness.Issues", source, StringComparison.Ordinal);
@@ -1285,7 +1330,7 @@ public sealed class GuiViewModelTests
             support, ArtifactCacheState.DownloadRequired, ArtifactValidationState.NotValidated, null, null, selection);
     }
     private static MainViewModel Create(
-        FakeDiscovery discovery,
+        IGameDiscovery discovery,
         MemoryPreferencesStore? preferences = null,
         IComponentStatusProvider? statusProvider = null,
         IStackStatusProvider? stackStatusProvider = null,
@@ -1302,6 +1347,35 @@ public sealed class GuiViewModelTests
         InstalledGame.FromSteamGame(new SteamGame(
             id, name, "/fixture/steam", "/fixture/library", $"/fixture/game/{id}", $"/fixture/pfx/{id}",
             $"/fixture/game/{id}/game.exe", $"/fixture/game/{id}", DetectionConfidence.High, "fixture", engine, []));
+
+    private sealed class SerializedDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
+    {
+        private int activeScans;
+        public int ScanCount { get; private set; }
+        public int MaximumConcurrentScans { get; private set; }
+        public bool Block { get; set; }
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<ScanResult> ScanAsync(IReadOnlyDictionary<string, GameOverride> overrides, CancellationToken cancellationToken)
+        {
+            ScanCount++;
+            MaximumConcurrentScans = Math.Max(MaximumConcurrentScans, Interlocked.Increment(ref activeScans));
+            try
+            {
+                if (Block)
+                {
+                    Started.TrySetResult();
+                    await Release.Task.WaitAsync(cancellationToken);
+                }
+                return new(games, [], [], []);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref activeScans);
+            }
+        }
+    }
 
     private sealed class FakeDiscovery(IReadOnlyList<InstalledGame> games) : IGameDiscovery
     {

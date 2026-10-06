@@ -7,7 +7,8 @@ public static class SourceRootDiscovery
         IReadOnlyDictionary<string, string?>? environment = null,
         IReadOnlyList<string>? customRoots = null,
         IReadOnlySet<string>? enabledProviders = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? customRootsByProvider = null)
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? customRootsByProvider = null,
+        bool includeDefaultSteamRoots = true)
     {
         home ??= Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         environment ??= CaptureEnvironment();
@@ -22,7 +23,8 @@ public static class SourceRootDiscovery
             environment,
             customRoots ?? [],
             enabledProviders,
-            customRootsByProvider);
+            customRootsByProvider,
+            includeDefaultSteamRoots);
     }
 
     public static IReadOnlyList<GameSourceRoot> ResolveCandidates(

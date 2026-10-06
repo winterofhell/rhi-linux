@@ -27,7 +27,9 @@ public sealed partial class DeploymentPlanDialog : Window
 
     private async void Execute_Click(object? sender, RoutedEventArgs eventArgs)
     {
+        if (!dialogViewModel.CanExecute) return;
         cancellation = new CancellationTokenSource();
+        dialogViewModel.Begin();
         try
         {
             dialogViewModel.ProgressText = "Checking target, permissions, storage, and running processes…";
@@ -47,12 +49,16 @@ public sealed partial class DeploymentPlanDialog : Window
                         .Select(issue => $"{issue.Title}\n{issue.Message}")),
                     "Continue anyway"))
                 return;
-            dialogViewModel.Begin();
             var result = await mainViewModel.ExecuteAsync(plan, false, cancellation.Token);
             dialogViewModel.Complete(result);
         }
         catch (Exception exception) { dialogViewModel.Fail(exception.Message); }
-        finally { cancellation.Dispose(); cancellation = null; }
+        finally
+        {
+            dialogViewModel.EndPreparation();
+            cancellation.Dispose();
+            cancellation = null;
+        }
     }
 
     private void CancelOperation_Click(object? sender, RoutedEventArgs eventArgs)
@@ -77,7 +83,10 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
     public DeploymentPlanDialogViewModel(DeploymentPlan plan)
     {
         var action = plan.Action.ToLowerInvariant();
-        ActionButtonText = action.Contains("remove", StringComparison.Ordinal) &&
+        ActionButtonText = action.Contains("configure", StringComparison.Ordinal) ? "Save settings" :
+            action.Contains("import", StringComparison.Ordinal) ? "Import preset" :
+            action.Contains("reset", StringComparison.Ordinal) ? "Reset preset" :
+            action.Contains("remove", StringComparison.Ordinal) &&
             action.Contains("recommended", StringComparison.Ordinal)
             ? "Remove all managed components"
             : plan.RequiresRepair || action.Contains("repair", StringComparison.Ordinal) ? "Repair" :
@@ -93,6 +102,8 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
                     : ActionButtonText == "Restore"
                         ? "Recovery plan"
                         : "Installation plan";
+        if (action.Contains("configure", StringComparison.Ordinal) || action.Contains("preset", StringComparison.Ordinal))
+            PlanSectionTitle = "Configuration plan";
         Title = $"Ready to {ActionButtonText.ToLowerInvariant()}";
         Subtitle = plan.SteamAppId is { } steamAppId
             ? $"{plan.Action} · Steam AppID {steamAppId}"
@@ -140,6 +151,7 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
         IsRunning = true;
         ProgressText = "Applying changes safely…";
     }
+    public void EndPreparation() => IsRunning = false;
     public void Complete(ExecutionResult result)
     {
         IsRunning = false;
@@ -167,7 +179,9 @@ public sealed class DeploymentPlanDialogViewModel : INotifyPropertyChanged
         {
             if (operation.Type == DeploymentOperationType.Backup)
                 Add("Preserve existing files in recovery storage");
-            if (operation.Type == DeploymentOperationType.Move || operation.Type == DeploymentOperationType.WriteIniValue)
+            if (operation.Type == DeploymentOperationType.WriteIniValue)
+                Add("Apply and verify the selected configuration values");
+            if (operation.Type == DeploymentOperationType.Move)
                 Add("Configure compatibility between installed components");
             if (operation.Type == DeploymentOperationType.DeleteManagedFile) Add("Remove managed component files");
             if (operation.Type == DeploymentOperationType.RestoreBackup) Add("Restore the original backed-up files");

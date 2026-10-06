@@ -6,7 +6,7 @@
             IsVisible="{Binding ShowLibraryPage}">
       <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="12,12,8,12">
         <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="8,4,8,8">
-          <TextBlock Text="Games" Classes="sectionTitle" VerticalAlignment="Center" />
+          <TextBlock Text="Your library" Classes="sectionTitle" VerticalAlignment="Center" />
           <Border Grid.Column="1" Background="{DynamicResource SurfaceAltBrush}" CornerRadius="10" Padding="8,3"
                   Margin="8,0,0,0" VerticalAlignment="Center">
             <TextBlock Text="{Binding FilteredGameCount}" Classes="secondary" FontSize="12" />
@@ -16,7 +16,7 @@
         </Grid>
         <ComboBox Grid.Row="1" ItemsSource="{Binding LibraryFilters}" SelectedItem="{Binding LibraryFilter, Mode=TwoWay}"
                   Margin="4,0,4,8" AutomationProperties.Name="Library filters" />
-        <TextBlock Grid.Row="2" IsVisible="{Binding ShowNoMatches}" Text="No games match this search."
+        <TextBlock Grid.Row="2" IsVisible="{Binding ShowNoMatches}" Text="No matches. Try a different name or filter."
                    Classes="secondary" TextWrapping="Wrap" Margin="8,0,16,12" />
         <ListBox Grid.Row="3" x:Name="GameList" Classes="gameList" SelectionMode="Single"
                  ItemsSource="{Binding FilteredGames}" SelectedItem="{Binding SelectedGame, Mode=OneWay}"

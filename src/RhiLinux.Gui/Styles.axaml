@@ -4,7 +4,9 @@
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Light">
-          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FFF2F4F7" />
+          <Color x:Key="SystemAccentColor">#087F70</Color>
+          <SolidColorBrush x:Key="HeroBrush" Color="#FFF0F8F5" />
+          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FFF3F5F4" />
           <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFFFF" />
           <SolidColorBrush x:Key="SurfaceAltBrush" Color="#FFF4F6F9" />
           <SolidColorBrush x:Key="ControlBrush" Color="#FFEBEEF3" />
@@ -13,7 +15,7 @@
           <SolidColorBrush x:Key="StrokeBrush" Color="#24172033" />
           <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FF111827" />
           <SolidColorBrush x:Key="SecondaryTextBrush" Color="#A6000000" />
-          <SolidColorBrush x:Key="AccentSoftBrush" Color="#1A246BCE" />
+          <SolidColorBrush x:Key="AccentSoftBrush" Color="#1A087F70" />
           <SolidColorBrush x:Key="WarningBrush" Color="#FFFFF4CE" />
           <SolidColorBrush x:Key="WarningStrokeBrush" Color="#FFD9A300" />
           <SolidColorBrush x:Key="SuccessBrush" Color="#FFEAF7EE" />
@@ -50,16 +52,18 @@
           <Thickness x:Key="ExpanderChevronMargin">8,0,10,0</Thickness>
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
-          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FF17191E" />
-          <SolidColorBrush x:Key="SurfaceBrush" Color="#FF22252C" />
-          <SolidColorBrush x:Key="SurfaceAltBrush" Color="#FF2A2E36" />
-          <SolidColorBrush x:Key="ControlBrush" Color="#FF343942" />
-          <SolidColorBrush x:Key="ControlHoverBrush" Color="#FF3E4450" />
-          <SolidColorBrush x:Key="ControlPressedBrush" Color="#FF4A515E" />
+          <Color x:Key="SystemAccentColor">#168B78</Color>
+          <SolidColorBrush x:Key="HeroBrush" Color="#FF192D29" />
+          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FF12191B" />
+          <SolidColorBrush x:Key="SurfaceBrush" Color="#FF1B2427" />
+          <SolidColorBrush x:Key="SurfaceAltBrush" Color="#FF182123" />
+          <SolidColorBrush x:Key="ControlBrush" Color="#FF2B3639" />
+          <SolidColorBrush x:Key="ControlHoverBrush" Color="#FF344346" />
+          <SolidColorBrush x:Key="ControlPressedBrush" Color="#FF405255" />
           <SolidColorBrush x:Key="StrokeBrush" Color="#34DCE2F0" />
           <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FFF3F5F8" />
           <SolidColorBrush x:Key="SecondaryTextBrush" Color="#C7E3E7F0" />
-          <SolidColorBrush x:Key="AccentSoftBrush" Color="#443F83D8" />
+          <SolidColorBrush x:Key="AccentSoftBrush" Color="#3327B69B" />
           <SolidColorBrush x:Key="WarningBrush" Color="#FF3D3522" />
           <SolidColorBrush x:Key="WarningStrokeBrush" Color="#FFD8A72B" />
           <SolidColorBrush x:Key="SuccessBrush" Color="#FF193623" />
@@ -102,6 +106,7 @@
   <Style Selector="Window">
     <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
     <Setter Property="FontFamily" Value="Inter, Noto Sans, Segoe UI, sans-serif" />
+    <Setter Property="FontSize" Value="14" />
   </Style>
 
   <Style Selector="Border.card">
@@ -113,6 +118,29 @@
   </Style>
   <Style Selector="Border.card.subtle">
     <Setter Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+  </Style>
+  <Style Selector="Border.card.hero">
+    <Setter Property="Background" Value="{DynamicResource HeroBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource SystemAccentColor}" />
+    <Setter Property="Padding" Value="20" />
+  </Style>
+  <Style Selector="Border.componentIcon">
+    <Setter Property="Width" Value="42" />
+    <Setter Property="Height" Value="42" />
+    <Setter Property="CornerRadius" Value="12" />
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+  </Style>
+  <Style Selector="Border.componentIcon > TextBlock">
+    <Setter Property="HorizontalAlignment" Value="Center" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+    <Setter Property="FontWeight" Value="Bold" />
+    <Setter Property="FontSize" Value="13" />
+  </Style>
+  <Style Selector="TextBlock.eyebrow">
+    <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
+    <Setter Property="FontSize" Value="11" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="LetterSpacing" Value="1.5" />
   </Style>
   <Style Selector="Border.providerChip">
     <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
@@ -127,7 +155,7 @@
   </Style>
   <Style Selector="Border.card.component">
     <Setter Property="Padding" Value="16" />
-    <Setter Property="MinHeight" Value="220" />
+    <Setter Property="MinHeight" Value="0" />
   </Style>
   <Style Selector="Border.warning">
     <Setter Property="Background" Value="{DynamicResource WarningBrush}" />
@@ -423,6 +451,12 @@
     <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
   </Style>
   <Style Selector="ListBox.gameList > ListBoxItem:selected:pointerover">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+  </Style>
+  <Style Selector="ListBox.gameList > ListBoxItem:selected /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+  </Style>
+  <Style Selector="ListBox.gameList > ListBoxItem:selected:pointerover /template/ ContentPresenter">
     <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
   </Style>
 

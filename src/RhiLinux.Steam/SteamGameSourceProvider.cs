@@ -21,6 +21,8 @@ public sealed class SteamGameSourceProvider : IGameSourceProvider
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!context.IncludeDefaultSteamRoots)
+            return Task.FromResult(SourceRootDiscovery.ResolveCandidates(ProviderId, [], context.RootsForProvider(ProviderId), context.HomeDirectory));
         var candidates = new List<(string Path, SourceRootKind Kind)>();
         if (context.Environment.TryGetValue("STEAM_DIR", out var steamDir) && !string.IsNullOrWhiteSpace(steamDir))
             candidates.Add((steamDir!, SourceRootKind.Environment));

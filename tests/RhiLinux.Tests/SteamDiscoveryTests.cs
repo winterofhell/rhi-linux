@@ -6,6 +6,23 @@ namespace RhiLinux.Tests;
 public sealed class SteamDiscoveryTests
 {
     [Fact]
+    public async Task ExplicitSourceRootsDoNotDiscoverNativeOrFlatpakDefaults()
+    {
+        using var temp = new TestDirectory();
+        var explicitRoot = temp.Directory("fixture-steam");
+        temp.Directory(".local", "share", "Steam");
+        temp.Directory(".var", "app", "com.valvesoftware.Steam", "data", "Steam");
+        var context = SourceRootDiscovery.CreateContext(temp.Path,
+            new Dictionary<string, string?> { ["STEAM_DIR"] = temp.Combine("environment-steam") },
+            customRoots: [explicitRoot], includeDefaultSteamRoots: false);
+
+        var root = Assert.Single(await new SteamGameSourceProvider().DiscoverRootsAsync(context));
+
+        Assert.Equal(explicitRoot, root.CanonicalPath);
+        Assert.Equal(SourceRootKind.Custom, root.Kind);
+    }
+
+    [Fact]
     public async Task InstalledGameWithoutCompatDataIsIncluded()
     {
         using var temp = new TestDirectory();

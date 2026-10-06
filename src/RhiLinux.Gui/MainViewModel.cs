@@ -41,7 +41,7 @@ public enum MainSection
 }
 
 
-public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
+public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 {
     private readonly IGameDiscovery discovery;
     private readonly IComponentStatusProvider statusProvider;
@@ -68,6 +68,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly ConcurrentDictionary<string, GameReadinessState> readinessSummaries = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<long, Task> ownedBackgroundTasks = new();
     private readonly SemaphoreSlim preferencesSaveLock = new(1, 1);
+    private readonly SemaphoreSlim libraryRefreshLock = new(1, 1);
+    private readonly CancellationTokenSource libraryLifetime = new();
+    private TaskCompletionSource? libraryIdle;
+    private int activeLibraryOperations;
     private readonly object backgroundTaskLock = new();
     private ApplicationState applicationState = new();
     private List<InstalledGame> games = [];
@@ -443,6 +447,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if (!Set(ref isBusy, value)) return;
             OnPropertyChanged(nameof(CanInteract));
+            OnPropertyChanged(nameof(CanConfigureOptiScaler));
+            OnPropertyChanged(nameof(CanConfigureReShade));
             OnPropertyChanged(nameof(CanInstallRecommendedStack));
             OnPropertyChanged(nameof(CanRunPrimarySetup));
             OnPropertyChanged(nameof(CanCheckForUpdates));
@@ -868,7 +874,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _ => "Library"
         };
 
-    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    public Task InitializeAsync(CancellationToken cancellationToken = default) =>
+        RunLibraryOperationAsync(InitializeCoreAsync, cancellationToken);
+
+    private async Task InitializeCoreAsync(CancellationToken cancellationToken)
     {
         CurrentState = UiState.Loading;
         var busy = BeginBusy();
@@ -916,7 +925,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             }
             else
                 CurrentState = UiState.Empty;
-            await RefreshAsync(cancellationToken);
+            await RefreshCoreAsync(cancellationToken);
             await applicationLog.WriteAsync(new(DateTimeOffset.UtcNow, ApplicationLogLevel.Information,
                 "startup", $"Application initialized with {games.Count} cached or discovered games."), cancellationToken);
         }
@@ -1099,7 +1108,39 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         CacheCleanupText = statistics.LastCleanupUtc?.ToLocalTime().ToString("g") ?? "Never";
     }
 
-    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    public Task RefreshAsync(CancellationToken cancellationToken = default) =>
+        RunLibraryOperationAsync(RefreshCoreAsync, cancellationToken);
+
+    private async Task RunLibraryOperationAsync(
+        Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken)
+    {
+        lock (backgroundTaskLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (activeLibraryOperations++ == 0)
+                libraryIdle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        var acquired = false;
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, libraryLifetime.Token);
+            await libraryRefreshLock.WaitAsync(linked.Token);
+            acquired = true;
+            await operation(linked.Token);
+        }
+        catch (OperationCanceledException) when (libraryLifetime.IsCancellationRequested || cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (acquired) libraryRefreshLock.Release();
+            lock (backgroundTaskLock)
+                if (--activeLibraryOperations == 0) libraryIdle!.TrySetResult();
+        }
+    }
+
+    private async Task RefreshCoreAsync(CancellationToken cancellationToken)
     {
         if (discovery is GameDiscoveryAdapter adapter)
         {
@@ -1227,15 +1268,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var currentGames = games.Select(GameIdentity).ToHashSet();
             var added = currentGames.Except(previousGames).Count();
             var removed = previousGames.Except(currentGames).Count();
+            var gameCount = $"{games.Count} game{(games.Count == 1 ? string.Empty : "s")}";
             GlobalStatus = result.Warnings.Count > 0
-                ? $"{games.Count} games found · {result.Warnings.Count} warnings"
+                ? $"{gameCount} found · {result.Warnings.Count} warning{(result.Warnings.Count == 1 ? string.Empty : "s")}"
                 : previousGames.Count > 0 && added == 0 && removed == 0
                     ? multi is { UsedCache: true }
-                        ? $"{games.Count} games · unchanged sources reused"
+                        ? $"{gameCount} · unchanged sources reused"
                         : metrics is { CacheHits: > 0 }
-                            ? $"{games.Count} games · incremental refresh ({metrics.CacheHits} cached)"
-                            : $"{games.Count} games found · library is up to date"
-                    : $"{games.Count} games found";
+                            ? $"{gameCount} · incremental refresh ({metrics.CacheHits} cached)"
+                            : $"{gameCount} found · library is up to date"
+                    : $"{gameCount} found";
             StartLibraryReadinessEvaluation(cancellationToken);
         }
         catch (OperationCanceledException) { GlobalStatus = "Scan cancelled"; CurrentState = games.Count == 0 ? UiState.Empty : UiState.Ready; }
@@ -3324,6 +3366,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private InstalledGame RequireGame() => SelectedGame ?? throw new InvalidOperationException("Select a game first.");
     private void RaiseSelectionProperties()
     {
+        OnPropertyChanged(nameof(CanConfigureOptiScaler));
+        OnPropertyChanged(nameof(CanConfigureReShade));
         foreach (var property in new[] { nameof(SelectedGame), nameof(ComponentCards), nameof(HasSelection), nameof(ShowGame), nameof(IsSelectionLoading), nameof(ShowGameLoading), nameof(HasWarnings), nameof(WarningText), nameof(SelectedGameTitle), nameof(SelectedGameSubtitle), nameof(ExecutableDisplay), nameof(ExecutablePath), nameof(DeploymentDisplay), nameof(DeploymentPath), nameof(ProtonPrefixDisplay), nameof(ProtonPrefixPath), nameof(ConfidenceText), nameof(ArchitectureDisplay), nameof(EngineDisplay), nameof(SelectionReason), nameof(Candidates), nameof(LaunchOption), nameof(LaunchOptionDescription), nameof(HasLaunchOption), nameof(ProfileSummary), nameof(SelectedProxy), nameof(DependencySummary), nameof(TimingDiagnostics), nameof(HasTimingDiagnostics), nameof(SelectionPhase), nameof(SupportTitle), nameof(SupportMessage), nameof(CanInstallRecommendedStack), nameof(CanRunPrimarySetup), nameof(CanCheckForUpdates), nameof(IsCheckingUpdates), nameof(UpdateState), nameof(UpdateStatusText), nameof(ShowUpdateStatusChip), nameof(HasUpdates), nameof(PrimaryAction), nameof(PrimaryActionText), nameof(SelectionProgress), nameof(PreviousOperationResult), nameof(OutdatedComponents), nameof(OverviewUpdateSummary) }) OnPropertyChanged(property);
         RaiseUpdatesPageProperties();
     }
@@ -3525,8 +3569,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (disposed) return;
-        disposed = true;
+        Task libraryTask;
+        lock (backgroundTaskLock)
+        {
+            if (disposed) return;
+            disposed = true;
+            libraryTask = libraryIdle?.Task ?? Task.CompletedTask;
+        }
+        libraryLifetime.Cancel();
         CancelBackgroundWork();
         Interlocked.Increment(ref providerRefreshGeneration);
 
@@ -3536,7 +3586,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             await Task.WhenAll(
                 ownedBackgroundTasks.Values.Append(preferencesTask).Append(providerRefreshTask)
-                    .Append(libraryReadinessTask));
+                    .Append(libraryReadinessTask).Append(libraryTask));
         }
         catch (OperationCanceledException)
         {
@@ -3546,10 +3596,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             libraryReadinessCancellation?.Dispose();
             libraryReadinessCancellation = null;
             if (ownedLibraryCoordinator is not null)
+            {
                 await ownedLibraryCoordinator.DisposeAsync();
+            }
             await operationCoordinator.DisposeAsync();
             ownedNetworkClient?.Dispose();
             preferencesSaveLock.Dispose();
+            libraryRefreshLock.Dispose();
+            libraryLifetime.Dispose();
         }
     }
     private static string ShortenPath(string path)

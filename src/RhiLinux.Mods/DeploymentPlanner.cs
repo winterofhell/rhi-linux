@@ -25,7 +25,7 @@ public sealed record RecommendedStackArtifacts(
     IReadOnlyList<ComponentArtifact>? OptiScalerSupportFiles = null,
     OptiScalerBundleManifest? OptiScalerBundle = null);
 
-public sealed class DeploymentPlanner(TargetFileClassifier? targetFileClassifier = null)
+public sealed partial class DeploymentPlanner(TargetFileClassifier? targetFileClassifier = null)
 {
     private readonly TargetFileClassifier targetFileClassifier = targetFileClassifier ?? new TargetFileClassifier();
     public static readonly string[] SupportedProxyNames =

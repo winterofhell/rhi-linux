@@ -41,6 +41,7 @@ internal static class CliApplication
                 {
                     var enabled = ParseProviders(options.Value("provider"));
                     var multi = await multiSource.ScanAsync(new MultiSourceScanRequest(
+                        DiscoveryContext: CreateDiscoveryContext(options),
                         EnabledProviders: enabled,
                         ForceFullScan: options.Has("force"),
                         SourceIndexPath: xdg.SourceIndexFile));
@@ -53,7 +54,7 @@ internal static class CliApplication
 
                 var roots = options.Values("steam-root");
                 var result = await discovery.ScanAsync(roots.Count == 0 ? null : roots, ToSteamAppOverrides(state.Overrides),
-                    includeDefaultRoots: roots.Count > 0);
+                    includeDefaultRoots: roots.Count == 0);
                 state.DiscoveredGames = ToPersisted(result.Games); state.LastScanUtc = DateTimeOffset.UtcNow;
                 if (!options.Has("no-save") && !diagnosticsReadOnly) await store.SaveAsync(state);
                 Write(result, options.Has("json"), options.Has("diagnostics") ? PrintDiagnosticScan : PrintScan);
@@ -65,6 +66,7 @@ internal static class CliApplication
             if (options.Has("all-sources") || options.Value("provider") is not null)
             {
                 var multi = await multiSource.ScanAsync(new MultiSourceScanRequest(
+                    DiscoveryContext: CreateDiscoveryContext(options),
                     EnabledProviders: ParseProviders(options.Value("provider")),
                     ForceFullScan: options.Has("force"),
                     SourceIndexPath: xdg.SourceIndexFile,
@@ -78,7 +80,7 @@ internal static class CliApplication
             {
                 currentScan = await discovery.ScanAsync(configuredRoots.Count == 0 ? null : configuredRoots,
                     ToSteamAppOverrides(state.Overrides),
-                    includeDefaultRoots: configuredRoots.Count > 0);
+                    includeDefaultRoots: configuredRoots.Count == 0);
             }
             state.DiscoveredGames = ToPersisted(currentScan.Games);
             state.LastScanUtc = DateTimeOffset.UtcNow;
@@ -151,6 +153,34 @@ internal static class CliApplication
                     return await HandleInstallLike(command, game, options, state, store);
                 case "remove":
                     return await HandleRemove(game, options, state, store);
+                case "opti-settings":
+                    var currentSettings = await OptiScalerSettingsService.ReadAsync(target);
+                    var requestedSettings = currentSettings with
+                    {
+                        Dx11Upscaler = options.Value("dx11") ?? currentSettings.Dx11Upscaler,
+                        Dx12Upscaler = options.Value("dx12") ?? currentSettings.Dx12Upscaler,
+                        VulkanUpscaler = options.Value("vulkan") ?? currentSettings.VulkanUpscaler,
+                        DlssInputs = options.Value("dlss-inputs") ?? currentSettings.DlssInputs,
+                        FrameGeneration = options.Value("frame-generation") ?? currentSettings.FrameGeneration,
+                        FrameGenerationInput = options.Value("fg-input") ?? currentSettings.FrameGenerationInput,
+                        FrameGenerationOutput = options.Value("fg-output") ?? currentSettings.FrameGenerationOutput
+                    };
+                    if (requestedSettings == currentSettings)
+                    {
+                        Write(currentSettings, options.Has("json"), settings =>
+                        {
+                            foreach (var value in settings.Values)
+                                Console.WriteLine($"{value.Section}.{value.Key}={value.Value}");
+                        });
+                        return 0;
+                    }
+                    var settingsPlan = await new DeploymentPlanner().BuildOptiScalerSettingsPlanAsync(target, requestedSettings);
+                    return await ExecutePlan(settingsPlan, options, state, store);
+                case "preset":
+                    if (options.Has("reset") == (options.Value("source") is not null))
+                        throw new ArgumentException("Choose either --source PRESET.ini or --reset.");
+                    var presetPlan = await new DeploymentPlanner().BuildReShadePresetPlanAsync(target, options.Value("source"));
+                    return await ExecutePlan(presetPlan, options, state, store);
                 default: throw new ArgumentException($"Unknown command '{command}'. Run 'help' for usage.");
             }
         }
@@ -165,6 +195,15 @@ internal static class CliApplication
             Console.Error.WriteLine($"error: {exception.Message}");
             return 1;
         }
+    }
+
+    private static GameSourceDiscoveryContext CreateDiscoveryContext(Options options)
+    {
+        var roots = options.Values("steam-root");
+        return SourceRootDiscovery.CreateContext(
+            enabledProviders: ParseProviders(options.Value("provider")),
+            customRootsByProvider: new Dictionary<string, IReadOnlyList<string>> { ["steam"] = roots },
+            includeDefaultSteamRoots: roots.Count == 0);
     }
 
     private static async Task<int> HandleSources(string? action, Options options, XdgPaths xdg)
@@ -793,6 +832,10 @@ internal static class CliApplication
           plan|install|update|repair --game GAME --component NAME (--source FILE | --source-url URL) [--proxy NAME]
           remove --game GAME --component NAME [--proxy NAME]
           launch-option --game GAME [--proxy NAME]
+          opti-settings --game GAME [--dx11 auto|fsr22|fsr31|xess_12] [--dx12 auto|fsr22|fsr31|xess]
+            [--vulkan auto|fsr22|fsr31|xess] [--dlss-inputs auto|true|false] [--frame-generation auto|true|false]
+            [--fg-input auto|nofg|upscaler|fsrfg|fsrfg30] [--fg-output auto|nofg|fsrfg]
+          preset --game GAME (--source PRESET.ini | --reset)
           cache list|verify|clean [--json]
           doctor [--json]
 

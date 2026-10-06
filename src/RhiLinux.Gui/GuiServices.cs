@@ -90,7 +90,8 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
             var context = SourceRootDiscovery.CreateContext(
                 homeDirectory,
                 enabledProviders: EnabledProviders,
-                customRootsByProvider: BuildCustomRoots(customRoots));
+                customRootsByProvider: BuildCustomRoots(customRoots),
+                includeDefaultSteamRoots: steamRoots is not { Count: > 0 });
             coordinator.Configure(context, EnabledProviders, overrides);
             coordinator.SetWatchingEnabled(WatchSources);
             var refresh = await coordinator.RefreshAsync(
@@ -113,7 +114,8 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
             if (ExtraSteamRoots is not null) customRoots.AddRange(ExtraSteamRoots);
             var discoveryContext = SourceRootDiscovery.CreateContext(
                 enabledProviders: EnabledProviders,
-                customRootsByProvider: BuildCustomRoots(customRoots));
+                customRootsByProvider: BuildCustomRoots(customRoots),
+                includeDefaultSteamRoots: steamRoots is not { Count: > 0 });
             var multi = await multiSource.ScanAsync(
                 new MultiSourceScanRequest(
                     DiscoveryContext: discoveryContext,
@@ -141,7 +143,7 @@ public sealed class GameDiscoveryAdapter : IGameDiscovery
         var rootsOnly = new List<string>();
         if (steamRoots is not null) rootsOnly.AddRange(steamRoots);
         if (ExtraSteamRoots is not null) rootsOnly.AddRange(ExtraSteamRoots);
-        var includeDefaults = rootsOnly.Count > 0;
+        var includeDefaults = steamRoots is not { Count: > 0 };
         var result = await service.ScanAsync(
             rootsOnly.Count == 0 ? null : rootsOnly,
             ToSteamAppOverrides(overrides),

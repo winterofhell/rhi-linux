@@ -1,0 +1,51 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RhiLinux.Gui.OptiScalerSettingsDialog"
+        Title="OptiScaler settings" Width="640" Height="650" MinWidth="520" MinHeight="500"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="28">
+    <StackPanel Spacing="8" Margin="0,0,0,24">
+      <TextBlock Text="Tune your upscaling" Classes="pageTitle" />
+      <TextBlock Text="Choose AMD-compatible backends for this game. Your changes will be reviewed before they are applied."
+                 Classes="secondary" TextWrapping="Wrap" />
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" Classes="pageScroll">
+      <StackPanel Spacing="20" Margin="0,0,8,16">
+        <Border Classes="card">
+          <StackPanel Spacing="14">
+            <TextBlock Text="Upscaling" Classes="sectionTitle" />
+            <Grid ColumnDefinitions="*,240" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="16">
+              <TextBlock Text="DirectX 11" VerticalAlignment="Center" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding Dx11Choices}" SelectedItem="{Binding Dx11, Mode=TwoWay}" AutomationProperties.Name="DirectX 11 upscaler" />
+              <TextBlock Grid.Row="1" Text="DirectX 12" VerticalAlignment="Center" />
+              <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding Dx12Choices}" SelectedItem="{Binding Dx12, Mode=TwoWay}" AutomationProperties.Name="DirectX 12 upscaler" />
+              <TextBlock Grid.Row="2" Text="Vulkan" VerticalAlignment="Center" />
+              <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding VulkanChoices}" SelectedItem="{Binding Vulkan, Mode=TwoWay}" AutomationProperties.Name="Vulkan upscaler" />
+              <TextBlock Grid.Row="3" Text="Accept DLSS inputs" VerticalAlignment="Center" />
+              <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding DlssChoices}" SelectedItem="{Binding Dlss, Mode=TwoWay}" AutomationProperties.Name="DLSS input translation" />
+            </Grid>
+            <TextBlock Text="DLSS inputs let OptiScaler translate the game's DLSS calls into FSR or XeSS on AMD. Select DLSS inside the game when using this input path." Classes="help" />
+          </StackPanel>
+        </Border>
+        <Border Classes="card">
+          <StackPanel Spacing="14">
+            <TextBlock Text="Frame generation" Classes="sectionTitle" />
+            <Grid ColumnDefinitions="*,240" RowDefinitions="Auto,Auto,Auto" RowSpacing="12" ColumnSpacing="16">
+              <TextBlock Text="Frame generation" VerticalAlignment="Center" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding FrameGenerationChoices}" SelectedItem="{Binding FrameGeneration, Mode=TwoWay}" AutomationProperties.Name="Enable frame generation" />
+              <TextBlock Grid.Row="1" Text="Input" VerticalAlignment="Center" />
+              <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding InputChoices}" SelectedItem="{Binding Input, Mode=TwoWay}" AutomationProperties.Name="Frame generation input" />
+              <TextBlock Grid.Row="2" Text="Output" VerticalAlignment="Center" />
+              <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding OutputChoices}" SelectedItem="{Binding Output, Mode=TwoWay}" AutomationProperties.Name="Frame generation output" />
+            </Grid>
+            <TextBlock Text="FSR 3 frame generation needs its matching FidelityFX runtime. The plan checks for these files. Compatibility depends on the game and Proton; restart the game after changing settings." Classes="help" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,16,0,0">
+      <Button Content="Cancel" Classes="secondary" IsCancel="True" Click="Cancel_Click" />
+      <Button Content="Review changes" Classes="primary" Click="Review_Click" />
+    </StackPanel>
+  </Grid>
+</Window>

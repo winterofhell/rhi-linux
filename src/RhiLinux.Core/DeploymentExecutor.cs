@@ -684,7 +684,8 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         var targetRecord = manifest.Files.FirstOrDefault(x => x.RelativePath.Equals(relative, StringComparison.Ordinal));
         var prior = sourceRecord ?? targetRecord;
         var hash = await HashFileAsync(operation.Target, token);
-        var backup = await ResolveBackupProvenanceAsync(plan, operation.BackupPath,
+        var backupPath = operation.PreserveOriginalBackup && prior is not null ? null : operation.BackupPath;
+        var backup = await ResolveBackupProvenanceAsync(plan, backupPath,
             prior?.BackupRelativePath, prior?.BackupSha256, token);
         manifest.Files.RemoveAll(x => x.RelativePath.Equals(relative, StringComparison.Ordinal));
         manifest.Files.Add(new ManagedFile(
@@ -711,7 +712,8 @@ public sealed class DeploymentExecutor : IDeploymentExecutor
         var relative = Path.GetRelativePath(plan.GameRoot, operation.Target);
         var hash = await HashFileAsync(operation.Target, token);
         var previous = manifest.Files.FirstOrDefault(x => x.RelativePath.Equals(relative, StringComparison.Ordinal));
-        var backup = await ResolveBackupProvenanceAsync(plan, operation.BackupPath,
+        var backupPath = operation.PreserveOriginalBackup && previous is not null ? null : operation.BackupPath;
+        var backup = await ResolveBackupProvenanceAsync(plan, backupPath,
             previous?.BackupRelativePath, previous?.BackupSha256, token);
         manifest.Files.RemoveAll(x => x.RelativePath.Equals(relative, StringComparison.Ordinal));
         manifest.Files.Add(new ManagedFile(

@@ -16,6 +16,7 @@ public sealed partial class MainWindow : Window
     private CancellationTokenSource? selectionChangeCancellation;
     private bool initialized;
     private bool closeRequested;
+    private bool closingDialogOpen;
     private Grid Workspace => this.FindControl<Grid>("WorkspaceGrid") ?? throw new InvalidOperationException("Workspace grid was not loaded.");
     private ComboBox ThemeBox => this.FindControl<ComboBox>("ThemeSelector") ?? throw new InvalidOperationException("Theme selector was not loaded.");
     private TextBox SearchInput => this.FindControl<TextBox>("SearchBox") ?? throw new InvalidOperationException("Search box was not loaded.");
@@ -39,6 +40,7 @@ public sealed partial class MainWindow : Window
     {
         operationCancellation = new CancellationTokenSource();
         await viewModel.InitializeAsync(operationCancellation.Token);
+        if (closeRequested) return;
         var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
         var maximumWidth = screen is null ? 3840 : screen.WorkingArea.Width / screen.Scaling;
         var maximumHeight = screen is null ? 2160 : screen.WorkingArea.Height / screen.Scaling;
@@ -90,10 +92,19 @@ public sealed partial class MainWindow : Window
         if (closeRequested) return;
 
         eventArgs.Cancel = true;
+        if (closingDialogOpen) return;
         if (viewModel.HasActiveWriteOperation)
         {
-            await MessageDialog.ShowAsync(this, "Operation in progress",
-                "An operation is currently modifying game files. Wait for it to reach a safe state before closing.");
+            closingDialogOpen = true;
+            try
+            {
+                await MessageDialog.ShowAsync(this, "Operation in progress",
+                    "An operation is currently modifying game files. Wait for it to reach a safe state before closing.");
+            }
+            finally
+            {
+                closingDialogOpen = false;
+            }
             return;
         }
         closeRequested = true;
@@ -104,6 +115,7 @@ public sealed partial class MainWindow : Window
         operationCancellation?.Cancel();
         operationCancellation?.Dispose();
         operationCancellation = null;
+        Details.CancelPendingOperation();
         viewModel.CancelBackgroundWork();
 
         viewModel.Preferences.WindowWidth = Width;
@@ -146,6 +158,7 @@ public sealed partial class MainWindow : Window
 
     private async Task RefreshViewAsync()
     {
+        if (!initialized || closeRequested || viewModel.IsBusy || viewModel.HasActiveWriteOperation) return;
         operationCancellation?.Cancel();
         operationCancellation?.Dispose();
         operationCancellation = new CancellationTokenSource();
@@ -223,7 +236,11 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private void Cancel_Click(object? sender, RoutedEventArgs eventArgs) => operationCancellation?.Cancel();
+    private void Cancel_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        operationCancellation?.Cancel();
+        Details.CancelPendingOperation();
+    }
     private void DismissError_Click(object? sender, RoutedEventArgs eventArgs) => viewModel.DismissError();
 
     private async void Library_AddManualGameRequested(object? sender, EventArgs eventArgs)
@@ -240,11 +257,16 @@ public sealed partial class MainWindow : Window
             eventArgs.Handled = true;
             await RefreshViewAsync();
         }
-        else if (eventArgs.Key == Key.F && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        else if (eventArgs.Key is Key.F or Key.L && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             eventArgs.Handled = true;
             SearchInput.Focus();
             SearchInput.SelectAll();
+        }
+        else if (eventArgs.Key == Key.Q && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            eventArgs.Handled = true;
+            Close();
         }
         else if (!editingText && eventArgs.Key == Key.Enter && viewModel.ShowLibraryPage &&
                  viewModel.SelectedGame is { } selected)

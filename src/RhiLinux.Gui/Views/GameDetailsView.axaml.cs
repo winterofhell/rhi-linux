@@ -12,11 +12,61 @@ namespace RhiLinux.Gui.Views;
 public sealed partial class GameDetailsView : UserControl
 {
     private CancellationTokenSource? operationCancellation;
+    private bool configurationDialogOpen;
 
     public GameDetailsView() => AvaloniaXamlLoader.Load(this);
 
     private MainViewModel? ViewModel => DataContext as MainViewModel;
     private Window? Host => TopLevel.GetTopLevel(this) as Window;
+
+    public void CancelPendingOperation() => operationCancellation?.Cancel();
+
+    private async void ConfigureOptiScaler_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (configurationDialogOpen || ViewModel is not { } viewModel || Host is not { } host) return;
+        configurationDialogOpen = true;
+        var selectedId = viewModel.SelectedGame?.EffectiveInstallId;
+        ResetOperationCancellation();
+        try
+        {
+            var current = await viewModel.ReadOptiScalerSettingsAsync(operationCancellation!.Token);
+            var settings = await new OptiScalerSettingsDialog(current).ShowDialog<OptiScalerSettings?>(host);
+            if (settings is null || viewModel.SelectedGame?.EffectiveInstallId != selectedId) return;
+            await ShowPlanAsync(await viewModel.BuildOptiScalerSettingsPlanAsync(settings, operationCancellation.Token));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { await ShowErrorAsync("Could not configure OptiScaler", exception.Message); }
+        finally { configurationDialogOpen = false; }
+    }
+
+    private async void ImportPreset_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (ViewModel is not { } viewModel || Host is not { } host) return;
+        var selectedId = viewModel.SelectedGame?.EffectiveInstallId;
+        var files = await host.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Choose a ReShade preset",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("ReShade preset") { Patterns = ["*.ini"] }]
+        });
+        if (files.FirstOrDefault()?.TryGetLocalPath() is not { } source ||
+            viewModel.SelectedGame?.EffectiveInstallId != selectedId) return;
+        await BuildPresetPlanAsync(source);
+    }
+
+    private async void ResetPreset_Click(object? sender, RoutedEventArgs eventArgs) => await BuildPresetPlanAsync(null);
+
+    private async Task BuildPresetPlanAsync(string? source)
+    {
+        if (ViewModel is not { } viewModel) return;
+        ResetOperationCancellation();
+        try
+        {
+            await ShowPlanAsync(await viewModel.BuildReShadePresetPlanAsync(source, operationCancellation!.Token));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { await ShowErrorAsync("Could not prepare ReShade preset", exception.Message); }
+    }
 
     public void ResetPresentation()
     {

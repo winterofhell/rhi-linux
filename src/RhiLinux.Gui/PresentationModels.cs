@@ -330,6 +330,23 @@ public sealed class ComponentCardViewModel : INotifyPropertyChanged
     public ComponentKind Component { get; }
     public string Name { get; }
     public ComponentHealth Health { get; }
+    public string Initials => Component switch
+    {
+        ComponentKind.ReShade => "RS",
+        ComponentKind.RenoDx => "RX",
+        _ => "OS"
+    };
+    public string Purpose => Component switch
+    {
+        ComponentKind.ReShade => "Effects and add-on host",
+        ComponentKind.RenoDx => "HDR and tone mapping",
+        _ => "Upscaling and frame generation"
+    };
+    public bool IsManaged => Ownership == "Managed by RHI";
+    public bool IsHealthy => Health is ComponentHealth.Installed;
+    public bool HasUpdate => Health is ComponentHealth.Outdated;
+    public bool NeedsRepair => CanRepair;
+    public bool IsBlocked => Health is ComponentHealth.Conflicting or ComponentHealth.Unsupported or ComponentHealth.Unavailable;
     public string State { get; private set; }
     public string? Version { get; }
     public string InstalledVersion { get; }

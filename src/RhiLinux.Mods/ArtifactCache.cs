@@ -78,8 +78,9 @@ public sealed record ArtifactAcquisitionProgress(
     int Attempt,
     string? Detail = null);
 
-public sealed class ArtifactCacheService(XdgPaths paths)
+public sealed class ArtifactCacheService(XdgPaths paths, TimeSpan? downloadTimeout = null)
 {
+    private readonly TimeSpan downloadTimeout = ValidateDownloadTimeout(downloadTimeout ?? MetadataHttp.DownloadBudget);
     public const long DefaultLimitBytes = 5L * 1024 * 1024 * 1024;
     private static readonly HashSet<string> ApprovedHosts = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -169,7 +170,7 @@ public sealed class ArtifactCacheService(XdgPaths paths)
         {
             progress?.Report(new(unresolved.Component, "Downloading", 0, null, 1));
             var (etag, lastModified) = await DownloadWithRetryAsync(
-                httpClient, unresolved.Component, unresolved.SourceUrl, download, cancellationToken, progress);
+                httpClient, unresolved.Component, unresolved.SourceUrl, download, downloadTimeout, cancellationToken, progress);
 
             progress?.Report(new(unresolved.Component, "Hashing", 0, null, 1));
             var archiveHash = await Task.Run(async () => await HashAsync(download, cancellationToken), cancellationToken);
@@ -581,8 +582,40 @@ public sealed class ArtifactCacheService(XdgPaths paths)
         ComponentKind component,
         Uri sourceUrl,
         string destination,
+        TimeSpan timeout,
         CancellationToken cancellationToken,
         IProgress<ArtifactAcquisitionProgress>? progress = null)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
+        var token = deadline.Token;
+        try
+        {
+            return await DownloadAttemptsAsync(httpClient, component, sourceUrl, destination, token, progress);
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new ArtifactPipelineException(component, ArtifactPipelineStage.Download,
+                "The official download exceeded its time limit. Retry when the connection is stable. No game files were changed.",
+                technicalDetail: $"Download deadline: {timeout}.", innerException: exception);
+        }
+        finally
+        {
+            if (token.IsCancellationRequested && File.Exists(destination)) File.Delete(destination);
+        }
+    }
+
+    private static TimeSpan ValidateDownloadTimeout(TimeSpan timeout) => timeout > TimeSpan.Zero && timeout <= TimeSpan.FromHours(1)
+        ? timeout
+        : throw new ArgumentOutOfRangeException(nameof(timeout));
+
+    private static async Task<(string? ETag, DateTimeOffset? LastModified)> DownloadAttemptsAsync(
+        HttpClient httpClient,
+        ComponentKind component,
+        Uri sourceUrl,
+        string destination,
+        CancellationToken cancellationToken,
+        IProgress<ArtifactAcquisitionProgress>? progress)
     {
         const int maximumAttempts = 4;
         Exception? lastFailure = null;

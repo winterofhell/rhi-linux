@@ -9,20 +9,24 @@
         WindowStartupLocation="CenterScreen"
         Classes.motion="{Binding UseMotion}"
         KeyDown="Window_KeyDown">
-  <Grid RowDefinitions="Auto,*">
+  <Grid RowDefinitions="Auto,*,Auto">
     <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}"
             BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,0,1"
             Padding="16,12">
       <Grid ColumnDefinitions="Auto,16,*,Auto,12,Auto,8,Auto" VerticalAlignment="Center">
         <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <Border Width="30" Height="30" CornerRadius="8" Background="{DynamicResource SystemAccentColor}">
-            <TextBlock Text="R" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource SystemAccentColor}">
+            <TextBlock Text="rhi" FontSize="14" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
-          <TextBlock Text="RHI Linux" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <StackPanel Spacing="1" VerticalAlignment="Center">
+            <TextBlock Text="RHI Linux" FontSize="16" FontWeight="SemiBold" />
+            <TextBlock Text="Your games, enhanced" Classes="secondary" FontSize="11" />
+          </StackPanel>
         </StackPanel>
-        <TextBox Grid.Column="2" x:Name="SearchBox" Classes="search" Watermark="Search games or use store:, launcher:, status:, engine:, has:update" MaxWidth="520"
+        <TextBox Grid.Column="2" x:Name="SearchBox" Classes="search" Watermark="Search your library…" MaxWidth="520"
                  Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                 AutomationProperties.Name="Search installed games" />
+                 AutomationProperties.Name="Search installed games"
+                 ToolTip.Tip="Ctrl+L · Search by name, AppID, store:, launcher:, status:, engine:, or has:update" />
         <TextBlock Grid.Column="3" Text="{Binding GlobalStatus}" Classes="secondary"
                    MaxWidth="220" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="8,0,0,0"
                    ToolTip.Tip="{Binding GlobalStatus}" />
@@ -42,14 +46,20 @@
 
     <Grid Grid.Row="1" x:Name="WorkspaceGrid" ColumnDefinitions="148,320,6,*">
       <Border Grid.Column="0" Background="{DynamicResource SurfaceAltBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,1,0">
-        <ListBox ItemsSource="{Binding NavigationItems}" SelectedItem="{Binding SelectedNavigation, Mode=TwoWay}"
-                 Margin="8,12" Classes="mainNavigation" AutomationProperties.Name="Primary navigation">
+        <DockPanel Margin="0,16,0,12">
+          <StackPanel DockPanel.Dock="Bottom" Spacing="4" Margin="16,12">
+            <TextBlock Text="STEAM + PROTON" Classes="eyebrow" FontSize="10" />
+            <TextBlock Text="AMD edition" Classes="secondary" FontSize="12" />
+          </StackPanel>
+          <ListBox ItemsSource="{Binding NavigationItems}" SelectedItem="{Binding SelectedNavigation, Mode=TwoWay}"
+                 Margin="4,0" Classes="mainNavigation" AutomationProperties.Name="Primary navigation">
           <ListBox.ItemTemplate>
             <DataTemplate>
               <TextBlock Text="{Binding}" Classes="navLabel" />
             </DataTemplate>
           </ListBox.ItemTemplate>
-        </ListBox>
+          </ListBox>
+        </DockPanel>
       </Border>
 
       <views:LibraryView Grid.Column="1" Grid.ColumnSpan="2" x:Name="Library"
@@ -118,5 +128,14 @@
         </Border>
       </Grid>
     </Grid>
+    <Border Grid.Row="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+            BorderThickness="0,1,0,0" Padding="20,8">
+      <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+        <Ellipse Width="6" Height="6" Fill="{DynamicResource SystemAccentColor}" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding LastScanSummary}" Classes="secondary" FontSize="11"
+                   TextTrimming="CharacterEllipsis" />
+        <TextBlock Grid.Column="2" Text="Ctrl+L  Search     F5  Refresh" Classes="secondary" FontSize="11" />
+      </Grid>
+    </Border>
   </Grid>
 </Window>
