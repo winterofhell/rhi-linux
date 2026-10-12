@@ -232,6 +232,59 @@ public sealed partial class GameDetailsView : UserControl
         }
     }
 
+    private async void EnhancementAction_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if ((sender as Control)?.DataContext is not EnhancementCardViewModel { Kind: { } kind } card ||
+            ViewModel is not { } viewModel || Host is not { } host) return;
+        if (card.IsShaderCard)
+        {
+            var selected = await new ShaderPackPickerDialog(viewModel.InstalledShaderPackIds).ShowDialog<IReadOnlyList<string>?>(host);
+            if (selected is null) return;
+            await ShowEnhancementPlanAsync(selected.Count == 0 ? "Remove shader packs" : "Install shader packs",
+                (progress, token) => viewModel.BuildShaderPackPlanAsync(selected, progress, token));
+            return;
+        }
+        await ShowEnhancementPlanAsync($"{card.ActionText} {card.Name}",
+            (_, token) => viewModel.BuildEnhancementInstallPlanAsync(kind, token));
+    }
+
+    private async void EnhancementRemove_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if ((sender as Control)?.DataContext is not EnhancementCardViewModel { Kind: { } kind } card || ViewModel is not { } viewModel) return;
+        if (card.IsShaderCard)
+            await ShowEnhancementPlanAsync("Remove shader packs", (progress, token) => viewModel.BuildShaderPackPlanAsync([], progress, token));
+        else
+            await ShowEnhancementPlanAsync($"Remove {card.Name}", (_, token) => viewModel.BuildEnhancementRemovePlanAsync(kind, token));
+    }
+
+    private async void EnhancementRemoveAll_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (ViewModel is not { } viewModel) return;
+        await ShowEnhancementPlanAsync("Remove enhancements", (_, token) => viewModel.BuildRemoveAllEnhancementsPlanAsync(token));
+    }
+
+    private async void EnhancementRecover_Click(object? sender, RoutedEventArgs eventArgs)
+    {
+        if (ViewModel is not { } viewModel) return;
+        ResetOperationCancellation();
+        try
+        {
+            if (!await viewModel.RecoverEnhancementsAsync(operationCancellation!.Token))
+                await ShowErrorAsync("Recovery incomplete", "Some files could not be restored. Check the diagnostics page for details.");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
+        {
+            await ShowErrorAsync("Recovery failed", exception.Message);
+        }
+    }
+
+    private async Task ShowEnhancementPlanAsync(string title, Func<IProgress<string>, CancellationToken, Task<EnhancementPlan>> build)
+    {
+        if (ViewModel is not { } viewModel || Host is not { } host) return;
+        await new EnhancementPlanDialog(viewModel, title, build).ShowDialog(host);
+    }
+
     private async void CheckForUpdates_Click(object? sender, RoutedEventArgs eventArgs)
     {
         if (ViewModel is { } viewModel) await viewModel.CheckForUpdatesAsync();

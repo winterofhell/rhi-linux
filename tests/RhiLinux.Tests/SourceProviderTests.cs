@@ -185,33 +185,6 @@ public sealed class SourceProviderTests
     }
 
     [Fact]
-    public async Task Minigalaxy_ParsesWindowsAndNativeWithoutScanningInstallDir()
-    {
-        using var temp = new TestDirectory();
-        var mini = MaterializeTree(temp, Path.Combine("config", "minigalaxy"), Path.Combine(FixturesRoot, "minigalaxy"));
-        RewritePlaceholders(mini, temp.Combine("games"), null);
-        CreatePe(temp, "games/GOG Games/The Witcher 3/bin/x64/witcher3.exe");
-        temp.Directory("games", "GOG Games", "Native GOG Title");
-        temp.File("games/GOG Games/Native GOG Title/start.sh", "#!/bin/sh\n");
-        temp.Directory("games", "GOG Games", "Untracked Folder");
-        temp.File("games/GOG Games/Untracked Folder/secret.exe", "not scanned");
-
-        var provider = new MinigalaxyGameSourceProvider();
-        var context = SourceRootDiscovery.CreateContext(temp.Path, new Dictionary<string, string?>
-        {
-            ["XDG_CONFIG_HOME"] = Path.Combine(temp.Path, "config"),
-            ["HOME"] = temp.Path
-        });
-        var root = Assert.Single(await provider.DiscoverRootsAsync(context), item => item.Exists);
-        var result = await provider.ScanAsync(root, new GameSourceScanContext(new Dictionary<string, string>(), true, 1));
-        Assert.Contains(result.Games, game => game.Name == "The Witcher 3" && game.IsActionable);
-        Assert.Contains(result.Games, game => game.Name == "Native GOG Title" && !game.IsActionable);
-        Assert.DoesNotContain(result.Games, game => game.Name.Contains("Untracked", StringComparison.Ordinal));
-        Assert.Contains(result.Diagnostics, d => d.Code == SourceDiagnosticCodes.SourceMetadataMalformed);
-        Assert.Contains(result.Games, game => game.Attributes.ContainsKey("unknownGogId"));
-    }
-
-    [Fact]
     public async Task Manual_ReadsJsonList()
     {
         using var temp = new TestDirectory();

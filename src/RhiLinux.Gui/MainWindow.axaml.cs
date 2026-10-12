@@ -4,6 +4,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media.Transformation;
 using Avalonia.Styling;
 using RhiLinux.Core;
 
@@ -11,6 +12,7 @@ namespace RhiLinux.Gui;
 
 public sealed partial class MainWindow : Window
 {
+    private const int NavigationItemPitch = 38;
     private readonly MainViewModel viewModel;
     private CancellationTokenSource? operationCancellation;
     private CancellationTokenSource? selectionChangeCancellation;
@@ -21,6 +23,7 @@ public sealed partial class MainWindow : Window
     private ComboBox ThemeBox => this.FindControl<ComboBox>("ThemeSelector") ?? throw new InvalidOperationException("Theme selector was not loaded.");
     private TextBox SearchInput => this.FindControl<TextBox>("SearchBox") ?? throw new InvalidOperationException("Search box was not loaded.");
     private Views.GameDetailsView Details => this.FindControl<Views.GameDetailsView>("GameDetails") ?? throw new InvalidOperationException("Game details view was not loaded.");
+    private Border? NavigationIndicator => this.FindControl<Border>("NavIndicator");
     private Views.LibraryView LibraryControl => this.FindControl<Views.LibraryView>("Library") ?? throw new InvalidOperationException("Library view was not loaded.");
 
     public MainWindow() : this(new MainViewModel()) { }
@@ -51,6 +54,7 @@ public sealed partial class MainWindow : Window
         ThemeBox.SelectedIndex = viewModel.Preferences.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         ApplyTheme(viewModel.Preferences.Theme);
         LibraryControl.SyncSelection(viewModel.SelectedGame);
+        MoveNavigationIndicator();
         initialized = true;
         if (!viewModel.Preferences.OnboardingCompleted)
         {
@@ -71,6 +75,25 @@ public sealed partial class MainWindow : Window
             UpdateWorkspaceColumns();
         if (eventArgs.PropertyName is nameof(MainViewModel.FilteredGames) or nameof(MainViewModel.SelectedGame))
             LibraryControl.SyncSelection(viewModel.SelectedGame);
+    }
+
+    private void Navigation_SelectionChanged(object? sender, SelectionChangedEventArgs eventArgs) => MoveNavigationIndicator();
+
+    private void MoveNavigationIndicator()
+    {
+        if (NavigationIndicator is not { } indicator) return;
+        var index = viewModel.SelectedNavigation is { } selected ? IndexOf(viewModel.NavigationItems, selected) : -1;
+        indicator.Opacity = index < 0 ? 0 : 1;
+        if (index < 0) return;
+        indicator.RenderTransform = TransformOperations.Parse(
+            string.Create(System.Globalization.CultureInfo.InvariantCulture, $"translateY({index * NavigationItemPitch + 1}px)"));
+    }
+
+    private static int IndexOf(IReadOnlyList<string> items, string value)
+    {
+        for (var index = 0; index < items.Count; index++)
+            if (string.Equals(items[index], value, StringComparison.Ordinal)) return index;
+        return -1;
     }
 
     private void UpdateWorkspaceColumns()

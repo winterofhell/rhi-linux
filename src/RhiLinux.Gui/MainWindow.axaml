@@ -10,55 +10,71 @@
         Classes.motion="{Binding UseMotion}"
         KeyDown="Window_KeyDown">
   <Grid RowDefinitions="Auto,*,Auto">
-    <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}"
+    <Border Grid.Row="0" Background="{DynamicResource ChromeBrush}"
             BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,0,1"
-            Padding="16,12">
-      <Grid ColumnDefinitions="Auto,16,*,Auto,12,Auto,8,Auto" VerticalAlignment="Center">
-        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource SystemAccentColor}">
-            <TextBlock Text="rhi" FontSize="14" Foreground="White" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            Padding="14,10">
+      <Grid ColumnDefinitions="Auto,24,*,Auto,12,Auto,8,Auto" VerticalAlignment="Center">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <Border Width="30" Height="30" CornerRadius="5" Background="{DynamicResource AccentBrush}">
+            <TextBlock Text="R" FontFamily="{DynamicResource MonoFont}" FontSize="15" FontWeight="Bold"
+                       Foreground="{DynamicResource AccentForegroundBrush}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
-          <StackPanel Spacing="1" VerticalAlignment="Center">
-            <TextBlock Text="RHI Linux" FontSize="16" FontWeight="SemiBold" />
-            <TextBlock Text="Your games, enhanced" Classes="secondary" FontSize="11" />
+          <StackPanel Spacing="0" VerticalAlignment="Center">
+            <TextBlock Text="RHI Linux" FontSize="14" FontWeight="SemiBold" />
+            <TextBlock Text="RESHADE · RENODX · OPTISCALER" Classes="eyebrow" FontSize="9" LetterSpacing="1.2" />
           </StackPanel>
         </StackPanel>
-        <TextBox Grid.Column="2" x:Name="SearchBox" Classes="search" Watermark="Search your library…" MaxWidth="520"
-                 Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                 AutomationProperties.Name="Search installed games"
-                 ToolTip.Tip="Ctrl+L · Search by name, AppID, store:, launcher:, status:, engine:, or has:update" />
-        <TextBlock Grid.Column="3" Text="{Binding GlobalStatus}" Classes="secondary"
-                   MaxWidth="220" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="8,0,0,0"
+        <Panel Grid.Column="2" MaxWidth="540" HorizontalAlignment="Stretch">
+          <TextBox x:Name="SearchBox" Classes="search" Watermark="Search library"
+                   Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                   AutomationProperties.Name="Search installed games"
+                   ToolTip.Tip="Ctrl+L · Search by name, AppID, store:, launcher:, status:, engine:, or has:update" />
+          <TextBlock Text="⌕" FontSize="15" Margin="12,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
+                     Foreground="{DynamicResource TertiaryTextBrush}" IsHitTestVisible="False" />
+        </Panel>
+        <TextBlock Grid.Column="3" Text="{Binding GlobalStatus}" Classes="secondary" FontSize="12"
+                   MaxWidth="240" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="12,0,0,0"
                    ToolTip.Tip="{Binding GlobalStatus}" />
-        <ComboBox Grid.Column="5" x:Name="ThemeSelector" MinWidth="108" SelectionChanged="ThemeSelector_SelectionChanged"
+        <ComboBox Grid.Column="5" x:Name="ThemeSelector" MinWidth="104" SelectionChanged="ThemeSelector_SelectionChanged"
                   AutomationProperties.Name="Application theme" ToolTip.Tip="Follow the system theme or choose a light or dark appearance">
           <ComboBoxItem Content="System" />
           <ComboBoxItem Content="Light" />
           <ComboBoxItem Content="Dark" />
         </ComboBox>
-        <Button Grid.Column="7" Classes="secondary" Width="36" Height="36" Padding="0" Click="Refresh_Click" IsEnabled="{Binding CanInteract}"
+        <Button Grid.Column="7" Classes="secondary icon" Click="Refresh_Click" IsEnabled="{Binding CanInteract}"
                 AutomationProperties.Name="Refresh game libraries" ToolTip.Tip="Rescan configured game sources without losing the selected game">
-          <TextBlock Text="↻" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"
-                     TextAlignment="Center" />
+          <TextBlock Text="↻" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" />
         </Button>
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1" x:Name="WorkspaceGrid" ColumnDefinitions="148,320,6,*">
-      <Border Grid.Column="0" Background="{DynamicResource SurfaceAltBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,1,0">
-        <DockPanel Margin="0,16,0,12">
-          <StackPanel DockPanel.Dock="Bottom" Spacing="4" Margin="16,12">
-            <TextBlock Text="STEAM + PROTON" Classes="eyebrow" FontSize="10" />
-            <TextBlock Text="AMD edition" Classes="secondary" FontSize="12" />
+    <Grid Grid.Row="1" x:Name="WorkspaceGrid" ColumnDefinitions="168,320,6,*">
+      <Border Grid.Column="0" Background="{DynamicResource ChromeBrush}" BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,1,0">
+        <DockPanel Margin="0,18,0,14">
+          <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="18,12">
+            <Border Height="1" Background="{DynamicResource StrokeBrush}" Margin="0,0,0,8" />
+            <TextBlock Text="STEAM · PROTON" Classes="eyebrow" />
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Ellipse Width="6" Height="6" Fill="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+              <TextBlock Text="AMD Radeon" Classes="secondary" FontSize="12" />
+            </StackPanel>
           </StackPanel>
-          <ListBox ItemsSource="{Binding NavigationItems}" SelectedItem="{Binding SelectedNavigation, Mode=TwoWay}"
-                 Margin="4,0" Classes="mainNavigation" AutomationProperties.Name="Primary navigation">
-          <ListBox.ItemTemplate>
-            <DataTemplate>
-              <TextBlock Text="{Binding}" Classes="navLabel" />
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-          </ListBox>
+          <TextBlock DockPanel.Dock="Top" Text="WORKSPACE" Classes="eyebrow" Margin="20,0,0,10" />
+          <Grid Margin="8,0">
+            <Border x:Name="NavIndicator" Classes="navIndicator" RenderTransform="translateY(1px)">
+              <Border Classes="navIndicatorBar" />
+            </Border>
+            <ListBox x:Name="NavigationList" ItemsSource="{Binding NavigationItems}" SelectedItem="{Binding SelectedNavigation, Mode=TwoWay}"
+                     Classes="mainNavigation" AutomationProperties.Name="Primary navigation"
+                     SelectionChanged="Navigation_SelectionChanged">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding}" Classes="navLabel" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
         </DockPanel>
       </Border>
 
@@ -66,75 +82,79 @@
                          GameSelectionRequested="GameList_SelectionChanged"
                          AddManualGameRequested="Library_AddManualGameRequested" />
 
-      <Grid Grid.Column="3">
-        <views:OverviewView IsVisible="{Binding ShowOverviewPage}" />
-        <views:UpdatesView IsVisible="{Binding ShowUpdatesPage}" />
-        <views:DiagnosticsView IsVisible="{Binding ShowDiagnosticsPage}" />
-        <views:SettingsView IsVisible="{Binding ShowSettingsPage}" />
-        <views:GameDetailsView x:Name="GameDetails" IsVisible="{Binding ShowGame}" />
+      <Grid Grid.Column="3" ClipToBounds="True">
+        <views:OverviewView Classes="page" IsVisible="{Binding ShowOverviewPage}" />
+        <views:UpdatesView Classes="page" IsVisible="{Binding ShowUpdatesPage}" />
+        <views:DiagnosticsView Classes="page" IsVisible="{Binding ShowDiagnosticsPage}" />
+        <views:SettingsView Classes="page" IsVisible="{Binding ShowSettingsPage}" />
+        <views:GameDetailsView x:Name="GameDetails" Classes="page" IsVisible="{Binding ShowGame}" />
 
         <Grid IsVisible="{Binding ShowGameLoading}" IsHitTestVisible="False"
-              HorizontalAlignment="Stretch" VerticalAlignment="Top" Margin="24,20,28,0" MaxWidth="1100">
+              HorizontalAlignment="Stretch" VerticalAlignment="Top" Margin="28,24,32,0" MaxWidth="1100">
           <StackPanel Spacing="16">
-            <Border Classes="skeleton" Width="280" Height="30" HorizontalAlignment="Left" />
-            <Border Classes="skeleton" Width="190" Height="14" HorizontalAlignment="Left" />
+            <Border Classes="skeleton" Height="168" CornerRadius="6" />
+            <Border Classes="skeleton" Width="300" Height="28" HorizontalAlignment="Left" />
+            <Border Classes="skeleton" Width="190" Height="12" HorizontalAlignment="Left" />
             <Border Classes="card skeletonCard">
               <StackPanel Spacing="12">
-                <Border Classes="skeleton" Width="220" Height="20" HorizontalAlignment="Left" />
-                <Border Classes="skeleton" Height="13" />
-                <Border Classes="skeleton" Width="520" MaxWidth="520" Height="13" HorizontalAlignment="Left" />
+                <Border Classes="skeleton" Width="220" Height="18" HorizontalAlignment="Left" />
+                <Border Classes="skeleton" Height="12" />
+                <Border Classes="skeleton" Width="520" MaxWidth="520" Height="12" HorizontalAlignment="Left" />
                 <ProgressBar IsIndeterminate="True" Height="3" Margin="0,8,0,0" />
               </StackPanel>
             </Border>
             <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
-              <Border Grid.Column="0" Classes="card skeletonCard" Height="155" />
-              <Border Grid.Column="1" Classes="card skeletonCard" Height="155" />
-              <Border Grid.Column="2" Classes="card skeletonCard" Height="155" />
+              <Border Grid.Column="0" Classes="card skeletonCard" Height="140" />
+              <Border Grid.Column="1" Classes="card skeletonCard" Height="140" />
+              <Border Grid.Column="2" Classes="card skeletonCard" Height="140" />
             </Grid>
           </StackPanel>
         </Grid>
 
-        <Grid IsVisible="{Binding ShowWelcome}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="460" Margin="32"
+        <Grid IsVisible="{Binding ShowWelcome}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="440" Margin="32"
               IsHitTestVisible="{Binding ShowWelcome}">
-          <StackPanel Spacing="12" HorizontalAlignment="Center">
-            <TextBlock Text="Select a game" Classes="pageTitle" HorizontalAlignment="Center" />
-            <TextBlock Text="Installed Windows games from Steam and other launchers are discovered automatically. Choose one from the sidebar to get started."
+          <StackPanel Spacing="10" HorizontalAlignment="Center">
+            <TextBlock Text="NO GAME SELECTED" Classes="eyebrow accent" HorizontalAlignment="Center" />
+            <TextBlock Text="Pick a game to begin" Classes="pageTitle" HorizontalAlignment="Center" />
+            <TextBlock Text="Installed Windows games from Steam and other launchers are discovered automatically. Choose one from the library to inspect and enhance it."
                        Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
           </StackPanel>
         </Grid>
-        <Grid IsVisible="{Binding ShowNoGames}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="500" Margin="32"
+        <Grid IsVisible="{Binding ShowNoGames}" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="480" Margin="32"
               IsHitTestVisible="{Binding ShowNoGames}">
-          <StackPanel Spacing="12" HorizontalAlignment="Center">
+          <StackPanel Spacing="10" HorizontalAlignment="Center">
+            <TextBlock Text="EMPTY LIBRARY" Classes="eyebrow accent" HorizontalAlignment="Center" />
             <TextBlock Text="No compatible games found" Classes="pageTitle" HorizontalAlignment="Center" />
             <TextBlock Text="Check that Steam, Heroic, Lutris, or Bottles has at least one Windows game with a valid executable."
                        Classes="secondary" TextWrapping="Wrap" TextAlignment="Center" />
-            <Button Content="Scan again" Classes="primary" HorizontalAlignment="Center" Click="Refresh_Click" />
+            <Button Content="Scan again" Classes="primary" HorizontalAlignment="Center" Margin="0,6,0,0" Click="Refresh_Click" />
           </StackPanel>
         </Grid>
-        <Border IsVisible="{Binding HasError}" Classes="warning" VerticalAlignment="Bottom" Margin="24">
+        <Border IsVisible="{Binding HasError}" Classes="warning overlay" VerticalAlignment="Bottom" Margin="24">
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
             <TextBlock Text="{Binding ErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
             <Button Grid.Column="1" Content="Dismiss" Classes="compact quiet" Click="DismissError_Click" />
           </Grid>
         </Border>
-        <Border IsVisible="{Binding IsBusy}" Background="{DynamicResource OverlayBrush}">
-          <Border Classes="card" HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="280">
-            <StackPanel Spacing="12">
+        <Border IsVisible="{Binding IsBusy}" Classes="overlay" Background="{DynamicResource OverlayBrush}">
+          <Border Classes="card" HorizontalAlignment="Center" VerticalAlignment="Center" MinWidth="300" MaxWidth="420">
+            <StackPanel Spacing="14">
+              <TextBlock Text="WORKING" Classes="eyebrow accent" />
+              <TextBlock Text="{Binding GlobalStatus}" TextWrapping="Wrap" />
               <ProgressBar IsIndeterminate="True" />
-              <TextBlock Text="{Binding GlobalStatus}" TextAlignment="Center" TextWrapping="Wrap" />
-              <Button Content="Cancel" HorizontalAlignment="Center" Classes="compact secondary" Click="Cancel_Click" />
+              <Button Content="Cancel" HorizontalAlignment="Right" Classes="compact secondary" Click="Cancel_Click" />
             </StackPanel>
           </Border>
         </Border>
       </Grid>
     </Grid>
-    <Border Grid.Row="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource StrokeBrush}"
-            BorderThickness="0,1,0,0" Padding="20,8">
+    <Border Grid.Row="2" Background="{DynamicResource ChromeBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+            BorderThickness="0,1,0,0" Padding="16,6">
       <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
-        <Ellipse Width="6" Height="6" Fill="{DynamicResource SystemAccentColor}" VerticalAlignment="Center" />
-        <TextBlock Grid.Column="1" Text="{Binding LastScanSummary}" Classes="secondary" FontSize="11"
-                   TextTrimming="CharacterEllipsis" />
-        <TextBlock Grid.Column="2" Text="Ctrl+L  Search     F5  Refresh" Classes="secondary" FontSize="11" />
+        <Ellipse Width="6" Height="6" Fill="{DynamicResource AccentBrush}" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding LastScanSummary}" Classes="secondary mono" FontSize="11"
+                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="2" Text="CTRL+L SEARCH   F5 REFRESH" Classes="eyebrow" VerticalAlignment="Center" />
       </Grid>
     </Border>
   </Grid>

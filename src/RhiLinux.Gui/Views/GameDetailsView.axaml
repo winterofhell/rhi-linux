@@ -1,19 +1,32 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:gui="using:RhiLinux.Gui"
              x:Class="RhiLinux.Gui.Views.GameDetailsView">
   <ScrollViewer x:Name="GameContentScroll" Classes="gameContent pageScroll" Classes.motion="{Binding UseMotion}"
                 Classes.loading="{Binding IsSelectionLoading}" IsVisible="{Binding ShowGame}"
                 IsHitTestVisible="{Binding ShowGame}" Padding="0,0,4,0">
     <StackPanel Margin="28,28,28,48" Spacing="20" MaxWidth="1080" HorizontalAlignment="Stretch">
-      <StackPanel Spacing="8">
-        <TextBlock Text="GAME WORKSPACE" Classes="eyebrow" />
-        <TextBlock Text="{Binding SelectedGameTitle}" Classes="pageTitle" TextWrapping="Wrap" />
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-          <TextBlock Text="{Binding SelectedGameSubtitle}" Classes="secondary" TextWrapping="Wrap" VerticalAlignment="Center" />
-          <Button Grid.Column="1" Content="Check updates" Classes="compact secondary" Click="CheckForUpdates_Click"
-                  IsEnabled="{Binding CanCheckForUpdates}" ToolTip.Tip="Check official sources for newer compatible files" />
-        </Grid>
-      </StackPanel>
+      <Border Height="196" CornerRadius="6" ClipToBounds="True" Background="{DynamicResource ArtworkFallbackBrush}"
+              BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="1">
+        <Panel>
+          <Image Classes="artwork" Opacity="0" VerticalAlignment="Center"
+                 gui:ArtworkImage.Kind="Hero" gui:ArtworkImage.DecodeWidth="1600"
+                 gui:ArtworkImage.Game="{Binding SelectedGame}" />
+          <Border Background="{DynamicResource ArtworkScrimBrush}" />
+          <Grid Margin="22,0,18,18" VerticalAlignment="Bottom" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+            <StackPanel Spacing="6">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Border Classes="accentRule" Height="12" VerticalAlignment="Center" />
+                <TextBlock Text="GAME WORKSPACE" Classes="eyebrow accent" VerticalAlignment="Center" />
+              </StackPanel>
+              <TextBlock Text="{Binding SelectedGameTitle}" Classes="displayTitle" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" />
+              <TextBlock Text="{Binding SelectedGameSubtitle}" Classes="secondary" TextWrapping="Wrap" />
+            </StackPanel>
+            <Button Grid.Column="1" Content="Check updates" Classes="compact secondary" Click="CheckForUpdates_Click" VerticalAlignment="Bottom"
+                    IsEnabled="{Binding CanCheckForUpdates}" ToolTip.Tip="Check official sources for newer compatible files" />
+          </Grid>
+        </Panel>
+      </Border>
 
       <Border Classes="warning" IsVisible="{Binding HasRecoveryRequired}">
         <StackPanel Spacing="8">
@@ -44,6 +57,7 @@
       </Border>
 
       <StackPanel Spacing="6">
+        <TextBlock Text="CORE STACK" Classes="eyebrow" />
         <TextBlock Text="Your mod setup" Classes="sectionTitle" />
         <TextBlock Text="Official files, matched to this game. Review each plan before applying changes." Classes="secondary" TextWrapping="Wrap" />
       </StackPanel>
@@ -107,13 +121,71 @@
         </ItemsControl.ItemTemplate>
       </ItemsControl>
 
+      <StackPanel Spacing="12" IsVisible="{Binding ShowEnhancements}">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+          <StackPanel Spacing="6">
+            <TextBlock Text="EXTRAS" Classes="eyebrow" />
+            <TextBlock Text="Enhancements" Classes="sectionTitle" />
+            <TextBlock Text="Frame limiting, display control, engine frameworks and shader collections. Every change is planned, backed up and reversible."
+                       Classes="secondary" TextWrapping="Wrap" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Bottom">
+            <ProgressBar IsIndeterminate="True" Width="64" IsVisible="{Binding IsEnhancementBusy}" VerticalAlignment="Center" />
+            <Button Content="Remove all" Classes="compact quiet danger" Click="EnhancementRemoveAll_Click"
+                    IsEnabled="{Binding CanInteract}" ToolTip.Tip="Plan the removal of every managed enhancement for this game" />
+          </StackPanel>
+        </Grid>
+        <Border Classes="warning" IsVisible="{Binding EnhancementRecoveryPending}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock Text="An enhancement change was interrupted. Recover to restore the previous files before making new changes."
+                       TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Content="Recover" Classes="compact primary" Click="EnhancementRecover_Click" />
+          </Grid>
+        </Border>
+        <ItemsControl ItemsSource="{Binding EnhancementCards}" IsEnabled="{Binding CanInteract}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <UniformGrid Columns="2" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="card interactive rise" Margin="0,0,12,12" Padding="16">
+                <Grid ColumnDefinitions="40,*" ColumnSpacing="14" RowDefinitions="*,Auto">
+                  <Border Classes="componentIcon" VerticalAlignment="Top">
+                    <TextBlock Text="{Binding Glyph}" />
+                  </Border>
+                  <StackPanel Grid.Column="1" Spacing="6">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                      <TextBlock Text="{Binding Name}" Classes="cardTitle" TextTrimming="CharacterEllipsis" />
+                      <Border Grid.Column="1" Classes="statusBadge" Classes.installed="{Binding IsInstalled}"
+                              Classes.update="{Binding HasUpdate}" MaxWidth="150">
+                        <TextBlock Text="{Binding State}" TextTrimming="CharacterEllipsis" />
+                      </Border>
+                    </Grid>
+                    <TextBlock Text="{Binding Summary}" Classes="help" />
+                    <TextBlock Text="{Binding Detail}" IsVisible="{Binding HasDetail}" Classes="help mono" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <WrapPanel Grid.Row="1" Grid.Column="1" Classes="button-row" Margin="0,12,0,-8">
+                    <Button Content="{Binding Path=ActionText}" IsVisible="{Binding HasAction}" Classes="compact primary button-row-item"
+                            Click="EnhancementAction_Click" />
+                    <Button Content="Remove" IsVisible="{Binding CanRemove}" Classes="compact secondary button-row-item"
+                            Click="EnhancementRemove_Click" />
+                  </WrapPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+
       <Border Classes="card hero" IsVisible="{Binding HasLaunchOption}">
         <StackPanel Spacing="12">
           <TextBlock Text="Finish in Steam" Classes="sectionTitle" />
           <TextBlock Text="Open this game's Properties in Steam and paste this into Launch Options." Classes="secondary" TextWrapping="Wrap" />
           <TextBlock Text="{Binding LaunchOptionDescription}" Classes="help" />
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
-            <TextBox x:Name="LaunchOptionBox" Text="{Binding LaunchOption}" IsReadOnly="True" FontFamily="monospace"
+            <TextBox x:Name="LaunchOptionBox" Text="{Binding LaunchOption}" IsReadOnly="True" Classes="mono"
                      AutomationProperties.Name="Steam launch option" />
             <Button Grid.Column="1" x:Name="CopyLaunchButton" Content="Copy" Classes="primary" Click="CopyLaunch_Click" />
           </Grid>

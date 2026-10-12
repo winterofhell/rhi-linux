@@ -150,6 +150,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         artifactCache = new ArtifactCacheService(paths);
         platformCapabilities = new LinuxPlatformCapabilityProvider().Detect();
         var officialPlanBuilder = new OfficialRecommendedDeploymentPlanBuilder(httpClient, paths, planner);
+        enhancementPlanner = new EnhancementPlanner(new EnhancementSourceClient(httpClient, paths), paths);
         readinessService = new GameReadinessService(
             stackStatusService,
             detector,
@@ -307,7 +308,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
     public IReadOnlyList<string> NavigationItems { get; } = ["Overview", "Library", "Updates", "Diagnostics", "Settings"];
     public IReadOnlyList<string> LibraryFilters { get; } =
     [
-        "All", "Steam", "Epic", "GOG", "Amazon", "Heroic", "Legendary", "Lutris", "Bottles", "Minigalaxy", "Manual",
+        "All", "Steam", "Epic", "GOG", "Amazon", "Heroic", "Legendary", "Lutris", "Bottles", "Manual",
         "Windows", "Native/unsupported", "Needs executable confirmation",
         "Ready", "Needs attention", "Recovery required",
         "Not configured", "Anti-cheat", "Unsupported", "Unreal", "Unity", "RE Engine", "Installing"
@@ -643,21 +644,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         }
     }
 
-    public bool EnableMinigalaxy
-    {
-        get => Preferences.EnableMinigalaxy;
-        set
-        {
-            if (Preferences.EnableMinigalaxy == value) return;
-            Preferences.EnableMinigalaxy = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(OverviewEnabledSourceCount));
-            OnPropertyChanged(nameof(OverviewSummary));
-            OnPropertyChanged(nameof(OverviewSourceSummary));
-            ScheduleProviderRefresh();
-        }
-    }
-
     public bool AutomaticallyEvaluateReadiness
     {
         get => Preferences.AutomaticallyEvaluateReadiness;
@@ -738,7 +724,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
     public string LegendaryCustomRoot { get => CustomSourceRoot("legendary"); set => SetCustomSourceRoot("legendary", value); }
     public string LutrisCustomRoot { get => CustomSourceRoot("lutris"); set => SetCustomSourceRoot("lutris", value); }
     public string BottlesCustomRoot { get => CustomSourceRoot("bottles"); set => SetCustomSourceRoot("bottles", value); }
-    public string MinigalaxyCustomRoot { get => CustomSourceRoot("minigalaxy"); set => SetCustomSourceRoot("minigalaxy", value); }
     public string SelectionProgress => activeSnapshot?.Progress ?? string.Empty;
     public ExecutionResult? PreviousOperationResult => activeSnapshot?.PreviousOperationResult;
     public bool ShowWelcome => ShowLibraryPage && CurrentState == UiState.Empty;
@@ -793,7 +778,9 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
             .ThenBy(candidate => candidate.RelativePath.Length)
             .ThenBy(candidate => candidate.FileName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-    public string LaunchOption => activeSnapshot?.RequiredLaunchOption ?? string.Empty;
+    public string LaunchOption => activeSnapshot is null
+        ? string.Empty
+        : EnhancementPlanner.ComposeLaunchOption(activeSnapshot.RequiredLaunchOption, EnhancementDllOverrides);
     public bool HasLaunchOption => LaunchOption.Length > 0;
     public string LaunchOptionDescription => LaunchOption.Contains(SteamLaunchOptionService.DxvkHdr, StringComparison.Ordinal)
         ? LaunchOption.Contains(SteamLaunchOptionService.ProtonEnableWayland, StringComparison.Ordinal)
@@ -831,7 +818,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         Preferences.EnableLegendary = true;
         Preferences.EnableLutris = true;
         Preferences.EnableBottles = true;
-        Preferences.EnableMinigalaxy = true;
         Preferences.AutomaticallyEvaluateReadiness = true;
         Preferences.ShowUnsupportedNativeGames = true;
         Preferences.WarnBeforeAntiCheatDeployments = true;
@@ -846,13 +832,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         OnPropertyChanged(nameof(LegendaryCustomRoot));
         OnPropertyChanged(nameof(LutrisCustomRoot));
         OnPropertyChanged(nameof(BottlesCustomRoot));
-        OnPropertyChanged(nameof(MinigalaxyCustomRoot));
         OnPropertyChanged(nameof(ScanAllSources));
         OnPropertyChanged(nameof(EnableHeroic));
         OnPropertyChanged(nameof(EnableLegendary));
         OnPropertyChanged(nameof(EnableLutris));
         OnPropertyChanged(nameof(EnableBottles));
-        OnPropertyChanged(nameof(EnableMinigalaxy));
         OnPropertyChanged(nameof(AutomaticallyEvaluateReadiness));
         OnPropertyChanged(nameof(ShowUnsupportedNativeGames));
         OnPropertyChanged(nameof(WarnBeforeAntiCheatDeployments));
@@ -898,13 +882,11 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
             OnPropertyChanged(nameof(LegendaryCustomRoot));
             OnPropertyChanged(nameof(LutrisCustomRoot));
             OnPropertyChanged(nameof(BottlesCustomRoot));
-            OnPropertyChanged(nameof(MinigalaxyCustomRoot));
             OnPropertyChanged(nameof(ScanAllSources));
             OnPropertyChanged(nameof(EnableHeroic));
             OnPropertyChanged(nameof(EnableLegendary));
             OnPropertyChanged(nameof(EnableLutris));
             OnPropertyChanged(nameof(EnableBottles));
-            OnPropertyChanged(nameof(EnableMinigalaxy));
             applicationState = await stateStore.LoadAsync(cancellationToken);
             profiles = await profileStore.LoadAsync(cancellationToken);
             RecentOperations = await activityHistoryStore.LoadAsync(cancellationToken);
@@ -1012,7 +994,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         Preferences.EnableLegendary = providerPreferences.GetValueOrDefault("legendary", Preferences.EnableLegendary);
         Preferences.EnableLutris = providerPreferences.GetValueOrDefault("lutris", Preferences.EnableLutris);
         Preferences.EnableBottles = providerPreferences.GetValueOrDefault("bottles", Preferences.EnableBottles);
-        Preferences.EnableMinigalaxy = providerPreferences.GetValueOrDefault("minigalaxy", Preferences.EnableMinigalaxy);
         Preferences.OnboardingCompleted = true;
         await SavePreferencesAsync(cancellationToken);
     }
@@ -1161,7 +1142,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
                 if (Preferences.EnableLegendary) enabled.Add("legendary");
                 if (Preferences.EnableLutris) enabled.Add("lutris");
                 if (Preferences.EnableBottles) enabled.Add("bottles");
-                if (Preferences.EnableMinigalaxy) enabled.Add("minigalaxy");
             }
             enabled.Add("manual");
             adapter.EnabledProviders = enabled;
@@ -1395,6 +1375,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         Preferences.SelectedAppId = game.SteamAppId;
         if (gameChanged)
         {
+            ClearEnhancements();
             ComponentUpdates = [];
             Readiness.SetResult(null);
             OnPropertyChanged(nameof(Readiness));
@@ -1454,6 +1435,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
             var state = cards.Any(x => x.Health == ComponentHealth.Conflicting) ? UiState.Conflict :
                 game.RequiresConfirmation ? UiState.Unsupported : UiState.Ready;
             ApplySnapshot(snapshot, state, selectionToken);
+            await LoadEnhancementsAsync(game, selectionToken);
             UpdateLinuxDiagnostics(game, launch);
             SetSelectionStatus(support.Title, game.EffectiveInstallId, generation, selectionToken);
             if (Preferences.AutomaticallyEvaluateReadiness)
@@ -1515,6 +1497,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         linkedCancellation.CancelAfter(MetadataHttp.UpdateCheckBudget);
         var updateToken = linkedCancellation.Token;
         if (!IsCurrentSelection(game.EffectiveInstallId, generation, updateToken)) return;
+        StartBackground(() => CheckEnhancementUpdatesAsync(game, !automatic, selectionToken));
         var updateStarted = System.Diagnostics.Stopwatch.StartNew();
         ApplySnapshot(startingSnapshot with
         {
@@ -1670,8 +1653,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
             "heroic" => nameof(HeroicCustomRoot),
             "legendary" => nameof(LegendaryCustomRoot),
             "lutris" => nameof(LutrisCustomRoot),
-            "bottles" => nameof(BottlesCustomRoot),
-            _ => nameof(MinigalaxyCustomRoot)
+            _ => nameof(BottlesCustomRoot)
         });
         SchedulePreferencesSave();
         ScheduleProviderRefresh();
@@ -2841,6 +2823,7 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         ErrorMessage = null;
         Readiness.SetResult(null);
         GameDetailsPage.Clear();
+        ClearEnhancements();
         RaiseSelectionProperties();
     }
 
@@ -3404,7 +3387,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         if (Preferences.EnableLegendary) count++;
         if (Preferences.EnableLutris) count++;
         if (Preferences.EnableBottles) count++;
-        if (Preferences.EnableMinigalaxy) count++;
         return count;
     }
 
@@ -3415,7 +3397,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         "legendary" => Preferences.ScanAllSources && Preferences.EnableLegendary,
         "lutris" => Preferences.ScanAllSources && Preferences.EnableLutris,
         "bottles" => Preferences.ScanAllSources && Preferences.EnableBottles,
-        "minigalaxy" => Preferences.ScanAllSources && Preferences.EnableMinigalaxy,
         _ => false
     };
 
@@ -3538,7 +3519,6 @@ public sealed partial class MainViewModel : INotifyPropertyChanged, IAsyncDispos
         ("legendary", "Legendary"),
         ("lutris", "Lutris"),
         ("bottles", "Bottles"),
-        ("minigalaxy", "Minigalaxy"),
         ("manual", "Manual")
     ];
 

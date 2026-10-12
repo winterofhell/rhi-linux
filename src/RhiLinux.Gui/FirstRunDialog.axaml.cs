@@ -68,7 +68,6 @@ public sealed class FirstRunViewModel
             Row("legendary", "Legendary", viewModel.Preferences.EnableLegendary),
             Row("lutris", "Lutris", viewModel.Preferences.EnableLutris),
             Row("bottles", "Bottles", viewModel.Preferences.EnableBottles),
-            Row("minigalaxy", "Minigalaxy", viewModel.Preferences.EnableMinigalaxy),
             Row("manual", "Manual", true)
         };
         FirstRunSourceRow Row(string id, string name, bool enabled)

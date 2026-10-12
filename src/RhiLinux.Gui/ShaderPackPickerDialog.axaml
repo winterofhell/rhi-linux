@@ -1,0 +1,74 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RhiLinux.Gui.ShaderPackPickerDialog"
+        Title="Shader packs"
+        Width="820" Height="680" MinWidth="620" MinHeight="480"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <Grid RowDefinitions="Auto,Auto,*,Auto">
+    <Border Grid.Row="0" Background="{DynamicResource ChromeBrush}" Padding="24,20,24,14">
+      <StackPanel Spacing="6">
+        <TextBlock Text="RESHADE EFFECTS" Classes="eyebrow accent" />
+        <TextBlock Text="Choose shader packs" Classes="pageTitle" />
+        <TextBlock Text="Each pack is downloaded from its upstream repository at a pinned commit and merged into a managed reshade-shaders folder."
+                   Classes="secondary" TextWrapping="Wrap" />
+      </StackPanel>
+    </Border>
+    <Border Grid.Row="1" Background="{DynamicResource ChromeBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+            BorderThickness="0,0,0,1" Padding="24,0,24,14">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+        <TextBox Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Watermark="Filter packs"
+                 AutomationProperties.Name="Filter shader packs" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding Categories}" SelectedItem="{Binding Category, Mode=TwoWay}" MinWidth="140"
+                  AutomationProperties.Name="Shader pack category" />
+        <Button Grid.Column="2" Content="Recommended" Classes="secondary" Click="Recommended_Click"
+                ToolTip.Tip="Select the curated starter set while keeping installed packs" />
+        <Button Grid.Column="3" Content="Clear" Classes="quiet" Click="Clear_Click" />
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2">
+      <TextBlock IsVisible="{Binding !HasVisibleItems}" Text="No packs match this filter." Classes="secondary"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" />
+      <ListBox ItemsSource="{Binding VisibleItems}" Classes="gameList" Margin="16,10,8,10" SelectionMode="Single"
+               AutomationProperties.Name="Shader packs">
+        <ListBox.ItemsPanel>
+          <ItemsPanelTemplate>
+            <VirtualizingStackPanel />
+          </ItemsPanelTemplate>
+        </ListBox.ItemsPanel>
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12" Margin="10,8">
+              <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center"
+                        AutomationProperties.Name="{Binding Name}" />
+              <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                  <Border Classes="statusBadge installed" IsVisible="{Binding IsInstalled}" Padding="6,1">
+                    <TextBlock Text="installed" />
+                  </Border>
+                </StackPanel>
+                <TextBlock Text="{Binding Description}" Classes="help" />
+                <TextBlock Text="{Binding Requirement}" IsVisible="{Binding HasRequirement}" Classes="help"
+                           Foreground="{DynamicResource AccentTextBrush}" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center" HorizontalAlignment="Right">
+                <TextBlock Text="{Binding Category}" Classes="eyebrow" HorizontalAlignment="Right" />
+                <TextBlock Text="{Binding Source}" Classes="path secondary" FontSize="11" MaxWidth="220" HorizontalAlignment="Right" />
+              </StackPanel>
+            </Grid>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <Border Grid.Row="3" Background="{DynamicResource ChromeBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+            BorderThickness="0,1,0,0" Padding="24,14">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+        <TextBlock Text="{Binding SelectionSummary}" Classes="secondary mono" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        <Button Grid.Column="1" Content="Cancel" Classes="secondary" Click="Cancel_Click" />
+        <Button Grid.Column="2" Content="{Binding ApplyText}" Classes="primary" IsEnabled="{Binding CanApply}" Click="Apply_Click" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

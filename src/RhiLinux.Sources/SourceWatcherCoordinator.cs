@@ -555,12 +555,6 @@ public static class SourceWatchTargets
         return targets;
     }
 
-    public static IReadOnlyList<SourceWatchTarget> ForMinigalaxy(GameSourceRoot root) =>
-    [
-        new("minigalaxy", root.CanonicalPath, root.CanonicalPath, "config.json", SourceWatchTargetKind.File),
-        new("minigalaxy", root.CanonicalPath, Path.Combine(root.CanonicalPath, "games"), "*.json", SourceWatchTargetKind.Pattern)
-    ];
-
     public static IReadOnlyList<SourceWatchTarget> ForManual(GameSourceRoot root)
     {
         var directory = Path.GetDirectoryName(root.CanonicalPath) ?? root.CanonicalPath;

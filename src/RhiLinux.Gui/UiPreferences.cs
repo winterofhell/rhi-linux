@@ -26,7 +26,6 @@ public sealed class UiPreferences
     public bool EnableLegendary { get; set; } = true;
     public bool EnableLutris { get; set; } = true;
     public bool EnableBottles { get; set; } = true;
-    public bool EnableMinigalaxy { get; set; } = true;
     public bool AutomaticallyEvaluateReadiness { get; set; } = true;
     public bool ShowUnsupportedNativeGames { get; set; } = true;
     public bool WarnBeforeAntiCheatDeployments { get; set; } = true;

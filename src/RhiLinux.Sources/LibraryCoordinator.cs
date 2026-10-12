@@ -394,7 +394,6 @@ public sealed class LibraryCoordinator : ILibraryCoordinator
                     "legendary" => SourceWatchTargets.ForLegendary(root),
                     "lutris" => SourceWatchTargets.ForLutris(root, root.Attributes?.GetValueOrDefault("gamesYamlRoot")),
                     "bottles" => SourceWatchTargets.ForBottles(root),
-                    "minigalaxy" => SourceWatchTargets.ForMinigalaxy(root),
                     "manual" => SourceWatchTargets.ForManual(root),
                     _ => []
                 });

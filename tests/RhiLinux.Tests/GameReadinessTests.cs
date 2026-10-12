@@ -155,7 +155,6 @@ public sealed class GameReadinessTests
     [InlineData(GameLauncher.Lutris, GameStore.Gog)]
     [InlineData(GameLauncher.Bottles, GameStore.Other)]
     [InlineData(GameLauncher.Legendary, GameStore.Epic)]
-    [InlineData(GameLauncher.Minigalaxy, GameStore.Gog)]
     public async Task LaunchConfigurationCoversImplementedLaunchers(GameLauncher launcher, GameStore store)
     {
         using var fixture = GameFixture.Create();

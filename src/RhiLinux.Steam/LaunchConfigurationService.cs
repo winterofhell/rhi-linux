@@ -24,8 +24,6 @@ public sealed class LaunchConfigurationService : ILaunchConfigurationProvider
             GameLauncher.Bottles => ForBottles(wineAssignment, game),
             GameLauncher.Legendary => ForManualOnly(GameLauncher.Legendary, wineAssignment,
                 "Automatic Legendary config editing is not implemented. Add the environment variable to the game's launch options manually."),
-            GameLauncher.Minigalaxy => ForManualOnly(GameLauncher.Minigalaxy, wineAssignment,
-                "Automatic Minigalaxy config editing is not implemented. Add the environment variable before launching the game."),
             GameLauncher.Manual => ForManualOnly(GameLauncher.Manual, wineAssignment,
                 "Add this environment variable to the custom launcher or shell script that starts the game."),
             _ => ForManualOnly(game.Launcher, wineAssignment,

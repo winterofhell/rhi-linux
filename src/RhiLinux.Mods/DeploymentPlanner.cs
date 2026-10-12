@@ -1714,7 +1714,7 @@ public sealed partial class DeploymentPlanner(TargetFileClassifier? targetFileCl
                 $"{artifact.Component} payload architecture is {artifactArchitecture}, but the selected game is {gameArchitecture}.");
     }
 
-    private static PeArchitecture SelectedArchitecture(DeploymentTarget game)
+    internal static PeArchitecture SelectedArchitecture(DeploymentTarget game)
     {
         var candidate = game.Candidates.FirstOrDefault(item => game.Executable is not null &&
             Path.GetFullPath(item.Path).Equals(Path.GetFullPath(game.Executable), StringComparison.Ordinal));

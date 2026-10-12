@@ -1,0 +1,91 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RhiLinux.Gui.EnhancementPlanDialog"
+        Title="Review changes"
+        Width="720" Height="620" MinWidth="560" MinHeight="460"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Grid.Row="0" Background="{DynamicResource ChromeBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+            BorderThickness="0,0,0,1" Padding="24,20,24,16">
+      <StackPanel Spacing="6">
+        <TextBlock Text="CHANGE PLAN" Classes="eyebrow accent" />
+        <TextBlock Text="{Binding Title}" Classes="pageTitle" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding StepCount}" IsVisible="{Binding HasSteps}" Classes="secondary mono" />
+      </StackPanel>
+    </Border>
+
+    <Grid Grid.Row="1">
+      <StackPanel IsVisible="{Binding IsPreparing}" VerticalAlignment="Center" HorizontalAlignment="Center"
+                  Spacing="12" Width="360">
+        <ProgressBar IsIndeterminate="True" />
+        <TextBlock Text="{Binding ProgressText}" Classes="secondary" TextAlignment="Center" TextWrapping="Wrap" />
+      </StackPanel>
+
+      <ScrollViewer IsVisible="{Binding !IsPreparing}" Classes="pageScroll" Padding="0,0,4,0">
+        <StackPanel Spacing="16" Margin="24,20,24,20">
+          <Border Classes="blocker" IsVisible="{Binding HasBlockers}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="BLOCKED" Classes="eyebrow" Foreground="{DynamicResource ErrorTextBrush}" />
+              <ItemsControl ItemsSource="{Binding Blockers}">
+                <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+          <Border Classes="warning" IsVisible="{Binding HasWarnings}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="NOTES" Classes="eyebrow" />
+              <ItemsControl ItemsSource="{Binding Warnings}">
+                <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+
+          <StackPanel Spacing="4" IsVisible="{Binding HasSteps}">
+            <TextBlock Text="STEPS" Classes="eyebrow" Margin="0,0,0,4" />
+            <ItemsControl ItemsSource="{Binding Steps}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border BorderBrush="{DynamicResource StrokeBrush}" BorderThickness="0,0,0,1" Padding="0,9">
+                    <Grid ColumnDefinitions="28,52,*" ColumnSpacing="6">
+                      <TextBlock Text="{Binding Number}" Classes="mono" Foreground="{DynamicResource TertiaryTextBrush}" VerticalAlignment="Top" />
+                      <Border Grid.Column="1" Classes="stepTag">
+                        <TextBlock Text="{Binding Kind}" />
+                      </Border>
+                      <TextBlock Grid.Column="2" Text="{Binding Description}" TextWrapping="Wrap" />
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+
+          <StackPanel Spacing="6" IsVisible="{Binding HasDownloads}">
+            <TextBlock Text="DOWNLOADS FROM UPSTREAM" Classes="eyebrow" />
+            <ItemsControl ItemsSource="{Binding Downloads}">
+              <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Classes="path secondary" TextWrapping="Wrap" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+
+          <Border Classes="card" IsVisible="{Binding HasResult}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="{Binding ResultTitle}" Classes="cardTitle" />
+              <TextBlock Text="{Binding ResultMessage}" Classes="secondary" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+
+    <Border Grid.Row="2" Background="{DynamicResource ChromeBrush}" BorderBrush="{DynamicResource StrokeBrush}"
+            BorderThickness="0,1,0,0" Padding="24,14">
+      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+        <StackPanel VerticalAlignment="Center" Spacing="6">
+          <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsRunning}" Width="160" HorizontalAlignment="Left" />
+          <TextBlock Text="{Binding Footnote}" Classes="help" IsVisible="{Binding !IsRunning}" />
+        </StackPanel>
+        <Button Grid.Column="1" Content="{Binding CloseText}" Classes="secondary" IsEnabled="{Binding CanClose}" Click="Close_Click" />
+        <Button Grid.Column="2" Content="{Binding ActionText}" Classes="primary" IsVisible="{Binding CanExecute}" Click="Apply_Click" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

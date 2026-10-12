@@ -178,13 +178,12 @@ public sealed class GuiPageViewModelTests
             EnableLegendary = false,
             EnableLutris = true,
             EnableBottles = false,
-            EnableMinigalaxy = true,
             CacheLimitMiB = 2048
         });
 
         Assert.Equal("1 games · 1 ready · 0 need attention", overview.Summary);
         Assert.Equal(2, overview.UpdateCount);
-        Assert.Equal(5, settings.EnabledSourceCount);
+        Assert.Equal(4, settings.EnabledSourceCount);
         Assert.Equal(2, settings.CacheLimitGiB);
     }
 

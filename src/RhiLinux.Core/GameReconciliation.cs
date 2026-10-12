@@ -334,8 +334,16 @@ public static class GameReconciliation
                 ? "No executable was provided by launcher metadata."
                 : "Selected from launcher metadata.",
             fieldSelections,
-            false);
+            false,
+            SteamAttribute(orderedSources, "steamRoot"),
+            SteamAttribute(orderedSources, "libraryRoot"));
     }
+
+    private static string? SteamAttribute(IEnumerable<SourceGameRecord> sources, string key) =>
+        sources
+            .Where(source => source.Store == GameStore.Steam)
+            .Select(source => source.Attributes.TryGetValue(key, out var value) ? value : null)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
     private static uint? ResolveSteamAppId(SourceGameRecord primary)
     {

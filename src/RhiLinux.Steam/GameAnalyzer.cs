@@ -448,8 +448,9 @@ public sealed class GameAnalyzer : IGameAnalyzer
             relevant.Add(Path.GetRelativePath(root, file));
         }
 
-        if (name.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase) ||
-            name.EndsWith(".addon32", StringComparison.OrdinalIgnoreCase))
+        if ((name.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase) ||
+             name.EndsWith(".addon32", StringComparison.OrdinalIgnoreCase)) &&
+            name.Contains("renodx", StringComparison.OrdinalIgnoreCase))
         {
             hasRenoDx = true;
             componentPaths.Add(file);

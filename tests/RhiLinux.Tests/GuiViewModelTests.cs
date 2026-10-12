@@ -57,7 +57,6 @@ public sealed class GuiViewModelTests
             Game(10, "Steam Game") with { Store = GameStore.Steam, PrimaryLauncher = GameLauncher.Steam, ExternalId = "10" },
             Game(20, "Heroic Epic") with { Store = GameStore.Epic, PrimaryLauncher = GameLauncher.Heroic, ExternalId = "Control" },
             Game(25, "Legendary Epic") with { Store = GameStore.Epic, PrimaryLauncher = GameLauncher.Legendary, ExternalId = "Control" },
-            Game(28, "Minigalaxy Gog") with { Store = GameStore.Gog, PrimaryLauncher = GameLauncher.Minigalaxy, ExternalId = "456" },
             Game(30, "Lutris Gog") with { Store = GameStore.Gog, PrimaryLauncher = GameLauncher.Lutris, ExternalId = "123", IsActionable = false, UnsupportedReason = "Native" , Platform = GameBinaryPlatform.Linux }
         ]);
         var viewModel = Create(discovery);
@@ -69,10 +68,8 @@ public sealed class GuiViewModelTests
         Assert.Equal("Heroic Epic", Assert.Single(viewModel.FilteredGames).Name);
         viewModel.LibraryFilter = "Legendary";
         Assert.Equal("Legendary Epic", Assert.Single(viewModel.FilteredGames).Name);
-        viewModel.LibraryFilter = "Minigalaxy";
-        Assert.Equal("Minigalaxy Gog", Assert.Single(viewModel.FilteredGames).Name);
         viewModel.LibraryFilter = "GOG";
-        Assert.Equal(2, viewModel.FilteredGames.Count);
+        Assert.Equal("Lutris Gog", Assert.Single(viewModel.FilteredGames).Name);
         viewModel.LibraryFilter = "Native/unsupported";
         Assert.Equal("Lutris Gog", Assert.Single(viewModel.FilteredGames).Name);
         Assert.Contains("GOG", viewModel.FilteredGames[0].IdentitySummary, StringComparison.Ordinal);
@@ -186,8 +183,7 @@ public sealed class GuiViewModelTests
 
         foreach (var filter in new[]
                  {
-                     "All", "Steam", "Epic", "GOG", "Amazon", "Heroic", "Legendary", "Lutris", "Bottles",
-                     "Minigalaxy", "Manual"
+                     "All", "Steam", "Epic", "GOG", "Amazon", "Heroic", "Legendary", "Lutris", "Bottles", "Manual"
                  })
         {
             viewModel.LibraryFilter = filter;
@@ -1688,7 +1684,6 @@ public sealed class GuiViewModelTests
             EnableLegendary = preferences.EnableLegendary,
             EnableLutris = preferences.EnableLutris,
             EnableBottles = preferences.EnableBottles,
-            EnableMinigalaxy = preferences.EnableMinigalaxy,
             AutomaticallyEvaluateReadiness = preferences.AutomaticallyEvaluateReadiness,
             ShowUnsupportedNativeGames = preferences.ShowUnsupportedNativeGames,
             WarnBeforeAntiCheatDeployments = preferences.WarnBeforeAntiCheatDeployments,

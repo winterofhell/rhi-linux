@@ -306,7 +306,6 @@ public sealed class MultiSourceLibraryService(
         new LegendaryGameSourceProvider(),
         new LutrisGameSourceProvider(),
         new BottlesGameSourceProvider(),
-        new MinigalaxyGameSourceProvider(),
         new ManualGameSourceProvider()
     ];
 

@@ -6,7 +6,7 @@ using RhiLinux.Steam;
 
 return await CliApplication.RunAsync(args);
 
-internal static class CliApplication
+internal static partial class CliApplication
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
@@ -24,6 +24,7 @@ internal static class CliApplication
             if (command == "cache") return await HandleCache(cacheAction, options, xdg);
             if (command == "sources") return await HandleSources(sourcesAction, options, xdg);
             if (command == "doctor") return await HandleDoctor(options, xdg);
+            if (command == "shader-packs") return PrintShaderPackCatalog(options);
             var statePath = options.Value("state") ?? xdg.StateFile;
             IStateStore store = new JsonStateStore(statePath);
             var state = await store.LoadAsync();
@@ -176,6 +177,8 @@ internal static class CliApplication
                     }
                     var settingsPlan = await new DeploymentPlanner().BuildOptiScalerSettingsPlanAsync(target, requestedSettings);
                     return await ExecutePlan(settingsPlan, options, state, store);
+                case "enhance":
+                    return await HandleEnhance(game, options, xdg);
                 case "preset":
                     if (options.Has("reset") == (options.Value("source") is not null))
                         throw new ArgumentException("Choose either --source PRESET.ini or --reset.");
@@ -836,6 +839,10 @@ internal static class CliApplication
             [--vulkan auto|fsr22|fsr31|xess] [--dlss-inputs auto|true|false] [--frame-generation auto|true|false]
             [--fg-input auto|nofg|upscaler|fsrfg|fsrfg30] [--fg-output auto|nofg|fsrfg]
           preset --game GAME (--source PRESET.ini | --reset)
+          enhance --game GAME [--json]
+          enhance --game GAME (--install KIND | --remove KIND | --shaders ID,ID|none | --remove-all | --recover)
+            KIND: relimiter, display-commander, reframework, optipatcher
+          shader-packs [--json]
           cache list|verify|clean [--json]
           doctor [--json]
 

@@ -8,7 +8,7 @@ using RhiLinux.Core;
 
 namespace RhiLinux.Mods;
 
-public sealed record ReleaseAsset(string Name, Uri Url, long Size, string? Digest);
+public sealed record ReleaseAsset(string Name, Uri Url, long Size, string? Digest, DateTimeOffset? UpdatedAt = null);
 public sealed record UpstreamRelease(string Version, Uri PageUrl, IReadOnlyList<ReleaseAsset> Assets, DateTimeOffset PublishedAt);
 public sealed record RemoteManifestCheck(MetadataCheckState State, int? Version, bool Changed, bool IsCached, string? Reason);
 public sealed record RemoteManifestCatalog(
@@ -292,8 +292,22 @@ public sealed class GitHubReleaseClient(HttpClient httpClient, XdgPaths paths)
         bool forceRefresh = false)
     {
         if (!Repositories.TryGetValue(component, out var releaseSource)) return null;
+        return await GetReleaseAsync(releaseSource.Repository, releaseSource.Tag, component.ToString(), cancellationToken, forceRefresh);
+    }
+
+    public async Task<UpstreamRelease> GetReleaseAsync(
+        string repository,
+        string? tag,
+        string? cacheKey = null,
+        CancellationToken cancellationToken = default,
+        bool forceRefresh = false)
+    {
+        var releaseSource = (Repository: repository, Tag: tag);
+        cacheKey ??= repository.Replace('/', '_') + (tag is null ? string.Empty : "_" + tag);
+        if (cacheKey.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || cacheKey.Contains("..", StringComparison.Ordinal))
+            throw new ArgumentException("The release cache key is not a valid file name.", nameof(cacheKey));
         var cacheDirectory = Path.Combine(paths.AppCacheDirectory, "releases");
-        var cachePath = Path.Combine(cacheDirectory, component + ".json");
+        var cachePath = Path.Combine(cacheDirectory, cacheKey + ".json");
         var etagPath = cachePath + ".etag";
         var checkedPath = cachePath + ".checked";
         if (!forceRefresh && File.Exists(cachePath) && File.Exists(checkedPath) &&
@@ -327,7 +341,9 @@ public sealed class GitHubReleaseClient(HttpClient httpClient, XdgPaths paths)
         var root = document.RootElement;
         var assets = root.GetProperty("assets").EnumerateArray().Select(x => new ReleaseAsset(
             x.GetProperty("name").GetString()!, new Uri(x.GetProperty("browser_download_url").GetString()!),
-            x.GetProperty("size").GetInt64(), x.TryGetProperty("digest", out var digest) ? digest.GetString() : null)).ToArray();
+            x.GetProperty("size").GetInt64(), x.TryGetProperty("digest", out var digest) ? digest.GetString() : null,
+            x.TryGetProperty("updated_at", out var updated) && updated.ValueKind == JsonValueKind.String &&
+            updated.TryGetDateTimeOffset(out var updatedAt) ? updatedAt : null)).ToArray();
         return new UpstreamRelease(root.GetProperty("tag_name").GetString()!, new Uri(root.GetProperty("html_url").GetString()!), assets,
             root.GetProperty("published_at").GetDateTimeOffset());
     }
@@ -345,8 +361,11 @@ public sealed class ArtifactDownloader(HttpClient httpClient, XdgPaths paths)
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "github.com", "api.github.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com",
-        "raw.githubusercontent.com", "reshade.me", "www.reshade.me", "marat569.github.io"
+        "raw.githubusercontent.com", "reshade.me", "www.reshade.me", "marat569.github.io", "codeload.github.com"
     };
+
+    public static bool IsAllowedHost(Uri source) =>
+        source.Scheme == Uri.UriSchemeHttps && AllowedHosts.Contains(source.Host);
 
     public async Task<string> DownloadAsync(Uri source, string fileName, string? expectedSha256 = null, CancellationToken cancellationToken = default)
     {

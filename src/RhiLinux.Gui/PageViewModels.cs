@@ -82,7 +82,6 @@ public sealed class LibraryViewModel : PageViewModel
             "Legendary" => source.Where(game => game.Launcher == GameLauncher.Legendary),
             "Lutris" => source.Where(game => game.Launcher == GameLauncher.Lutris),
             "Bottles" => source.Where(game => game.Launcher == GameLauncher.Bottles),
-            "Minigalaxy" => source.Where(game => game.Launcher == GameLauncher.Minigalaxy),
             "Manual" => source.Where(game => game.Launcher == GameLauncher.Manual),
             "Windows" => source.Where(game => game.Platform == GameBinaryPlatform.Windows && game.IsActionable),
             "Native/unsupported" => source.Where(game => game.Platform == GameBinaryPlatform.Linux || game.IsNativeLinux || !game.IsActionable),
@@ -176,8 +175,7 @@ public sealed class SettingsViewModel : PageViewModel
                 preferences.EnableHeroic,
                 preferences.EnableLegendary,
                 preferences.EnableLutris,
-                preferences.EnableBottles,
-                preferences.EnableMinigalaxy
+                preferences.EnableBottles
             }.Count(enabled => enabled)
             : 1;
         CacheLimitGiB = preferences.CacheLimitMiB / 1024d;

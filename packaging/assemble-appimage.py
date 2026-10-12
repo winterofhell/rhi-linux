@@ -16,7 +16,7 @@ parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--appdir', type=Path, required=True)
 parser.add_argument('--patchelf', default='patchelf')
 parser.add_argument('--mksquashfs', default='mksquashfs')
-parser.add_argument('--version', default='0.3.1')
+parser.add_argument('--version', default='0.4.0')
 parser.add_argument('--library-directory', type=Path, action='append', default=[])
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent

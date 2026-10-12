@@ -65,3 +65,7 @@ Thumbs.db
 
 !tests/fixtures/**/*.dll
 !tests/fixtures/**/*.exe
+
+/RHI-RHI-*/
+/.tmp/
+/appimagetool*
